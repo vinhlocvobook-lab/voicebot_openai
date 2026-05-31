@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../../voice_chat_bot"
+		},
+		{
+			"name": "SSH FS - gcall.com.vn",
+			"uri": "ssh://gcall.com.vn/"
+		},
+		{
+			"name": "SSH FS - cn_trungan",
+			"uri": "ssh://cn_trungan/"
+		}
+	],
+	"settings": {}
+}
