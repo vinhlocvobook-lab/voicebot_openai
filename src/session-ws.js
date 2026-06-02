@@ -11,7 +11,7 @@
 import WebSocket from "ws";
 import { dispatchTool } from "./tools.js";
 import { log } from "./logger.js";
-import { TOOLS } from "./system-prompt.js";
+// import { TOOLS } from "./system-prompt.js";
 
 const OPENAI_WS_URL = "wss://api.openai.com/v1/realtime";
 
@@ -41,26 +41,26 @@ export function openSessionWebSocket(callId, callOps) {
 
     // 1. Cập nhật session config (tools, voice, VAD)
     // session.type: "realtime" là bắt buộc cho SIP sessions
-    ws.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        type: "realtime",                         // ← bắt buộc, fix lỗi "Missing session.type"
-        voice: process.env.OPENAI_VOICE || "alloy",
-        tools: TOOLS,
-        tool_choice: "auto",
-        input_audio_transcription: { model: "whisper-1" },
-        turn_detection: {
-          type: "server_vad",
-          // Tăng threshold & silence_duration để tránh AI bị interrupt liên tục:
-          // - threshold 0.7: chỉ kích hoạt khi giọng nói đủ to, tránh noise/echo SIP
-          // - silence_duration_ms 1200: chờ 1.2s im lặng mới coi là hết lượt nói
-          // - prefix_padding_ms 500: đệm 500ms trước khi bắt đầu nghe để tránh echo AI
-          threshold: 0.7,
-          prefix_padding_ms: 500,
-          silence_duration_ms: 1200,
-        },
-      },
-    }));
+    // ws.send(JSON.stringify({
+    //   type: "session.update",
+    //   session: {
+    //     type: "realtime",                         // ← bắt buộc, fix lỗi "Missing session.type"
+    //     voice: process.env.OPENAI_VOICE || "alloy",
+    //     tools: TOOLS,
+    //     tool_choice: "auto",
+    //     input_audio_transcription: { model: "whisper-1" },
+    //     turn_detection: {
+    //       type: "server_vad",
+    //       // Tăng threshold & silence_duration để tránh AI bị interrupt liên tục:
+    //       // - threshold 0.7: chỉ kích hoạt khi giọng nói đủ to, tránh noise/echo SIP
+    //       // - silence_duration_ms 1200: chờ 1.2s im lặng mới coi là hết lượt nói
+    //       // - prefix_padding_ms 500: đệm 500ms trước khi bắt đầu nghe để tránh echo AI
+    //       threshold: 0.7,
+    //       prefix_padding_ms: 500,
+    //       silence_duration_ms: 1200,
+    //     },
+    //   },
+    // }));
 
     // 2. Trigger AI nói câu chào ngay lập tức
     ws.send(JSON.stringify({
@@ -80,42 +80,68 @@ export function openSessionWebSocket(callId, callOps) {
     }
 
     // Log tất cả events để debug (dùng LOG_LEVEL=debug để xem đầy đủ)
-    log.info(`[WS][${callId}] ← ${event.type}`);
+    // log.info(`[WS][${callId}] ← ${event.type}`);
 
     switch (event.type) {
-      // ── Function call hoàn chỉnh → xử lý và trả kết quả ──────────────────
-      case "response.function_call_arguments.done": {
-        const { call_id: toolCallId, name, arguments: argsStr } = event;
-        log.info(`[WS][${callId}] Tool call: ${name}(${argsStr})`);
+      // ── Response hoàn chỉnh → kiểm tra có function_call không ─────────────
+      // Theo pattern của openai_nestle_step3.js: bắt function call qua
+      // response.done → response.output[], lọc item.type === "function_call".
+      case "response.done": {
+        const usage = event?.response?.usage;
+        if (usage) log.debug(`[WS][${callId}] response.done usage:`, usage);
 
-        let args = {};
-        try { args = JSON.parse(argsStr); } catch { /* ignore */ }
+        const output = event?.response?.output;
+        if (!Array.isArray(output) || output.length === 0) break;
 
-        // Gửi kết quả tool về cho OpenAI
-        const output = await dispatchTool(name, args);
-        log.debug(`[WS][${callId}] Tool output: ${output}`);
+        for (const item of output) {
+          if (item?.type !== "function_call") continue;
 
-        ws.send(
-          JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "function_call_output",
-              call_id: toolCallId,
-              output,
-            },
-          })
-        );
+          const toolCallId = item.call_id;
+          const name = item.name;
+          const argsStr = item.arguments;
+          log.info(`[WS][${callId}] Tool call: ${name}(${argsStr})`);
 
-        // Yêu cầu AI tiếp tục phản hồi dựa trên kết quả tool
-        ws.send(JSON.stringify({ type: "response.create" }));
+          let args = {};
+          try { args = JSON.parse(argsStr); } catch { /* ignore */ }
 
-        // Xử lý side effects cho transfer_to_agent và end_call
-        const result = JSON.parse(output);
-        if (result.action === "transfer_to_agent") {
-          await _handleTransfer(callId, callOps, result.ly_do);
-        } else if (result.action === "end_call") {
-          // Delay để AI kịp nói lời tạm biệt trước khi cúp máy
-          setTimeout(() => callOps.hangup(callId), 4000);
+          // Gọi handler và gửi kết quả tool về cho OpenAI
+          const toolOutput = await dispatchTool(name, args);
+          log.debug(`[WS][${callId}] Tool output: ${toolOutput}`);
+
+          ws.send(
+            JSON.stringify({
+              type: "conversation.item.create",
+              item: {
+                type: "function_call_output",
+                call_id: toolCallId,
+                output: toolOutput,
+              },
+            })
+          );
+
+          // Xử lý side effects và xác định instructions cho phản hồi tiếp theo
+          let nextInstructions = "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
+          let result = {};
+          try { result = JSON.parse(toolOutput); } catch { /* ignore */ }
+
+          if (result.action === "transfer_to_agent") {
+            nextInstructions = "Thông báo lịch sự rằng đang chuyển máy cho tổng đài viên.";
+          } else if (result.action === "end_call") {
+            nextInstructions = "Nói lời chào tạm biệt lịch sự và kết thúc cuộc gọi.";
+          }
+
+          // Yêu cầu AI tiếp tục phản hồi dựa trên kết quả tool
+          ws.send(JSON.stringify({
+            type: "response.create",
+            response: { instructions: nextInstructions },
+          }));
+
+          if (result.action === "transfer_to_agent") {
+            await _handleTransfer(callId, callOps, result.ly_do);
+          } else if (result.action === "end_call") {
+            // Delay để AI kịp nói lời tạm biệt trước khi cúp máy
+            setTimeout(() => callOps.hangup(callId), 4000);
+          }
         }
         break;
       }

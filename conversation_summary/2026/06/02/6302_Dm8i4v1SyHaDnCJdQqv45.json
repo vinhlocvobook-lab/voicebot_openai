@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "callId": "rtc_u0_Dm8i4v1SyHaDnCJdQqv45",
+    "tel": "6302",
+    "startTime": "2026-06-02T02:00:27.746Z",
+    "endTime": "2026-06-02T02:00:33.581Z",
+    "durationSec": 6,
+    "outcome": "disconnected",
+    "asterisk": {
+      "uniqueid": "1780365596.256836",
+      "recordPath": "/mnt/data/records/1/in/2026/06/02/1780365596.256835_6302_7d9305e51.wav",
+      "phoneNumber": "6302"
+    }
+  },
+  "stats": {
+    "totalTurns": 0,
+    "aiTurns": 0,
+    "customerTurns": 0,
+    "toolCallCount": 0
+  },
+  "call_params": {
+    "accept": {
+      "type": "realtime",
+      "model": "gpt-realtime-mini",
+      "instructions": "Bạn đóng vai trò là nhân viên hỗ trợ khách hàng của công ty cấp nước Trung An. Nhiệm vụ của bạn là hỗ trợ khách hàng trả lời các câu hỏi của khách hàng một cách nhiệt tình và chu đáo.",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "getLuuLuong",
+            "description": "Cung cấp thông tin về lượng nước tiêu thụ. Khi cần hỏi số danh bộ, bạn cần đọc lại số danh bộ (sodanhbo) mã khách hàng đã cung cấp, đọc từng số một, chậm rãi và rõ ràng để khách hàng xác nhận lại số danh bộ trước khi gọi tool này",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "sodanhbo": {
+                  "type": "string",
+                  "description": "Số danh bộ"
+                }
+              },
+              "required": [
+                "sodanhbo"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "getCupNuoc",
+            "description": "Lấy chỉ số tiêu thụ nước. Khi cần hỏi số danh bộ, bạn cần đọc lại số danh bộ (sodanhbo) mã khách hàng đã cung cấp, đọc từng số một, chậm rãi và rõ ràng để khách hàng xác nhận lại số danh bộ trước khi gọi tool này",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "sodanhbo": {
+                  "type": "string",
+                  "description": "Số danh bộ"
+                }
+              },
+              "required": [
+                "sodanhbo"
+              ]
+            }
+          }
+        }
+      ],
+      "audio": {
+        "input": {
+          "transcription": {
+            "model": "gpt-4o-mini-transcribe",
+            "language": "vi"
+          }
+        }
+      }
+    },
+    "session_update": null,
+    "session_created": null
+  },
+  "transcript": [],
+  "toolCalls": [],
+  "summary": {
+    "luu_y": "Cuộc gọi không có transcript (khách hàng cúp máy sớm hoặc im lặng)."
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "callId": "rtc_u0_DllQClOmUnX1OQRK3JDxu",
+    "tel": "6309",
+    "startTime": "2026-06-01T01:07:58.609Z",
+    "endTime": "2026-06-01T01:13:02.547Z",
+    "durationSec": 304,
+    "outcome": "disconnected"
+  },
+  "stats": {
+    "totalTurns": 1,
+    "aiTurns": 1,
+    "customerTurns": 0,
+    "toolCallCount": 0
+  },
+  "call_params": {
+    "accept": {
+      "type": "realtime",
+      "model": "gpt-realtime-2",
+      "instructions": "[see system-prompt.js]"
+    },
+    "session_update": {
+      "type": "realtime",
+      "voice": "alloy",
+      "tools": "[8 tools defined]",
+      "tool_choice": "auto",
+      "input_audio_transcription": {
+        "model": "whisper-1"
+      },
+      "turn_detection": {
+        "type": "server_vad",
+        "threshold": 0.7,
+        "prefix_padding_ms": 500,
+        "silence_duration_ms": 1200
+      }
+    },
+    "session_created": null
+  },
+  "transcript": [
+    {
+      "time": "2026-06-01T01:08:01.503Z",
+      "speaker": "AI",
+      "text": "Xin chào Quý khách đã gọi đến Tổng đài. Rất vui được hỗ trợ Quý khách hôm nay. Quý khách muốn mình giúp gì ạ?"
+    }
+  ],
+  "toolCalls": [],
+  "summary": {
+    "yeu_cau_chinh": "Khách hàng không đưa ra yêu cầu cụ thể.",
+    "da_xu_ly": "AI đã chào hỏi và sẵn sàng hỗ trợ khách hàng.",
+    "chua_xu_ly": "Không có vấn đề nào được giải quyết do cuộc gọi bị ngắt.",
+    "hanh_dong_tiep_theo": "Không có hành động tiếp theo cần thực hiện do cuộc gọi đã bị ngắt.",
+    "diem_noi_bat": "Cuộc gọi kết thúc nhanh chóng mà không có thông tin bổ sung từ khách hàng.",
+    "danh_gia_cuoc_goi": "Kém - Cuộc gọi không có nội dung và bị ngắt ngay sau khi bắt đầu."
+  }
+}

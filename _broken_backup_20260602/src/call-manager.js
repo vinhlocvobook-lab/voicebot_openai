@@ -6,7 +6,7 @@
 
 import { SYSTEM_PROMPT, TOOLS } from "./system-prompt.js";
 import { log } from "./logger.js";
-// import { TOOLS } from "./system-prompt.js";
+
 const BASE = "https://api.openai.com/v1/realtime/calls";
 
 function authHeaders() {
@@ -21,6 +21,44 @@ function authHeaders() {
  * @param {string} callId
  * @returns {Promise<object>} - Response body từ OpenAI
  */
+
+let acceptCall_intructions = `Bạn đóng vai trò là nhân viên hỗ trợ khách hàng của công ty cấp nước Trung An. Nhiệm vụ của bạn là hỗ trợ khách hàng trả lời các câu hỏi của khách hàng một cách nhiệt tình và chu đáo.`
+const getLuuLuong_tool = {
+  "type": "function",
+  "function": {
+    "name": "getLuuLuong",
+    "description": "Cung cấp thông tin về lượng nước tiêu thụ. Khi cần hỏi số danh bộ, bạn cần đọc lại số danh bộ (sodanhbo) mã khách hàng đã cung cấp, đọc từng số một, chậm rãi và rõ ràng để khách hàng xác nhận lại số danh bộ trước khi gọi tool này",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "sodanhbo": {
+          "type": "string",
+          "description": "Số danh bộ"
+        }
+      },
+      "required": ["sodanhbo"]
+    }
+  }
+}
+const getCupNuoc_tool = {
+  "type": "function",
+  "function": {
+    "name": "getCupNuoc",
+    "description": "Lấy chỉ số tiêu thụ nước. Khi cần hỏi số danh bộ, bạn cần đọc lại số danh bộ (sodanhbo) mã khách hàng đã cung cấp, đọc từng số một, chậm rãi và rõ ràng để khách hàng xác nhận lại số danh bộ trước khi gọi tool này",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "sodanhbo": {
+          "type": "string",
+          "description": "Số danh bộ"
+        }
+      },
+      "required": ["sodanhbo"]
+    }
+  }
+}
+
+
 export async function acceptCall(callId) {
   // Giữ body tối giản giống Python example trong docs OpenAI.
   // Các config nâng cao (tools, voice, VAD, transcription) sẽ được gửi
@@ -28,17 +66,13 @@ export async function acceptCall(callId) {
   const body = {
     type: "realtime",
     model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2",
-    instructions: SYSTEM_PROMPT,
-    tools: TOOLS,
+    instructions: acceptCall_intructions,//SYSTEM_PROMPT,
+    tools: [getLuuLuong_tool, getCupNuoc_tool],
+
+    "audio": { "input": { "transcription": { "model": "gpt-4o-mini-transcribe", "language": "vi" } } }
   };
 
-  log.info(`[CallMgr] Accepting call ${callId}`);
-  console.log("[acceptCall]", {
-    BASE,
-    callId,
-    authHeaders,
-    body: JSON.stringify(body)
-  })
+  log.info(`[CallMgr] Accepting call ${callId} | model=${body.model}`);
   const res = await fetch(`${BASE}/${callId}/accept`, {
     method: "POST",
     headers: authHeaders(),
@@ -46,15 +80,16 @@ export async function acceptCall(callId) {
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Accept call failed ${res.status}: ${text}`);
+    const errText = await res.text();
+    throw new Error(`Accept call failed ${res.status}: ${errText}`);
   }
 
   log.info(`[CallMgr] Call ${callId} accepted`);
-  // OpenAI trả 200 OK với body rỗng hoặc JSON – xử lý cả hai trường hợp
   const text = await res.text();
-  console.log("[CallMgr] :text :", text);
-  return "";// text ? JSON.parse(text) : {};
+  const responseBody = text ? JSON.parse(text) : {};
+
+  // Trả về cả params đã gửi để logger có thể ghi lại
+  return { acceptParams: body, acceptResponse: responseBody };
 }
 
 /**

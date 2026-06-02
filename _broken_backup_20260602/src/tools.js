@@ -22,6 +22,7 @@ async function handleVerifyCustomer({ ma_danh_bo }) {
 }
 
 async function handleGetBill({ ma_danh_bo }) {
+  console.log("[handleGetBill]: ma_danh_bo", ma_danh_bo);
   const bill = await getBill(ma_danh_bo);
   if (bill.error) return JSON.stringify({ success: false, message: bill.error });
   const trangThai = bill.daNopTien ? "đã thanh toán" : `chưa thanh toán, hạn nộp ${bill.hanNop}`;
@@ -66,7 +67,6 @@ async function handleCreateTicket({ ma_danh_bo, loai, mo_ta, khu_vuc }) {
 }
 
 function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
-  console.log("==========[handleGetProcedureInfo]==================")
   const procedure = PROCEDURES[loai_thu_tuc];
   if (!procedure) {
     return JSON.stringify({ success: false, message: "Không tìm thấy thủ tục này." });
