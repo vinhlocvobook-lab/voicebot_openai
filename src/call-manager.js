@@ -30,6 +30,7 @@ export async function acceptCall(callId) {
     model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2",
     instructions: SYSTEM_PROMPT,
     tools: TOOLS,
+    audio: { input: { transcription: { model: "gpt-4o-mini-transcribe", language: "vi" } } }
   };
 
   log.info(`[CallMgr] Accepting call ${callId}`);
@@ -83,16 +84,18 @@ export async function rejectCall(callId, statusCode = 486) {
  */
 export async function referCall(callId, targetUri) {
   log.info(`[CallMgr] Referring call ${callId} → ${targetUri}`);
-  const res = await fetch(`${BASE}/${callId}/refer`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ target_uri: targetUri }),
-  });
+  setTimeout(async () => {
+    const res = await fetch(`${BASE}/${callId}/refer`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ target_uri: targetUri }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Refer call failed ${res.status}: ${text}`);
+    }
+  }, 2000)
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Refer call failed ${res.status}: ${text}`);
-  }
 }
 
 /**
@@ -101,13 +104,16 @@ export async function referCall(callId, targetUri) {
  */
 export async function hangupCall(callId) {
   log.info(`[CallMgr] Hanging up call ${callId}`);
-  const res = await fetch(`${BASE}/${callId}/hangup`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
+  setTimeout(async () => {
+    const res = await fetch(`${BASE}/${callId}/hangup`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Hangup call failed ${res.status}: ${text}`);
+    }
+  }, 3000);
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Hangup call failed ${res.status}: ${text}`);
-  }
+
 }

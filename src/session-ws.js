@@ -63,12 +63,16 @@ export function openSessionWebSocket(callId, callOps) {
     // }));
 
     // 2. Trigger AI nói câu chào ngay lập tức
-    ws.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        instructions: 'im lặng 5 giây, rồi nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo "Ây Ai ", Quý khách cần em hỗ trợ gì ạ?"',
-      },
-    }));
+    //delay 2 giây
+    setTimeout(() => {
+      ws.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions: 'im lặng 5 giây, rồi nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo "Ây Ai ", Quý khách cần em hỗ trợ gì ạ?"',
+        },
+      }));
+    }, 1000);
+
   });
 
   ws.on("message", async (raw) => {
@@ -86,6 +90,7 @@ export function openSessionWebSocket(callId, callOps) {
       // ── Response hoàn chỉnh → kiểm tra có function_call không ─────────────
       // Theo pattern của openai_nestle_step3.js: bắt function call qua
       // response.done → response.output[], lọc item.type === "function_call".
+
       case "response.done": {
         const usage = event?.response?.usage;
         if (usage) log.debug(`[WS][${callId}] response.done usage:`, usage);
@@ -151,9 +156,19 @@ export function openSessionWebSocket(callId, callOps) {
         log.info(`[WS][${callId}] [KH nói]: ${event.transcript}`);
         break;
 
+      case "conversation.item.done":
+        log.info(`[OpenAI] Câu trả lời đã được thêm vào conversation`);
+        log.info(event?.item?.content);
+        if (event?.item?.content === "undefined") {
+          log.info(event);
+        }
+        break;
+
       case "response.audio_transcript.done":
         log.info(`[WS][${callId}] [AI nói]: ${event.transcript}`);
         break;
+
+
 
       // ── Lỗi từ OpenAI ─────────────────────────────────────────────────────
       case "error":
