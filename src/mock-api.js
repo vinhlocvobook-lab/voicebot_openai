@@ -29,45 +29,45 @@ const CUSTOMERS = {
 };
 
 const BILLS = {
-  "12345678901": { thang: "04/2026", soTienPhaiTra: 185000, daNopTien: false, hanNop: "25/05/2026" },
-  "98765432100": { thang: "04/2026", soTienPhaiTra: 320000, daNopTien: true,  hanNop: "25/05/2026" },
-  "11122334455": { thang: "04/2026", soTienPhaiTra: 95000,  daNopTien: false, hanNop: "25/05/2026" },
+  "12345678901": { thang: "05/2026", soTienPhaiTra: 185000, daNopTien: false, hanNop: "25/05/2026" },
+  "98765432100": { thang: "05/2026", soTienPhaiTra: 320000, daNopTien: true, hanNop: "25/05/2026" },
+  "11122334455": { thang: "05/2026", soTienPhaiTra: 95000, daNopTien: false, hanNop: "25/05/2026" },
 };
 
 const WATER_USAGE = {
   "12345678901": [
-    { thang: "04/2026", luongNuoc: 14, donVi: "m³" },
-    { thang: "03/2026", luongNuoc: 12, donVi: "m³" },
-    { thang: "02/2026", luongNuoc: 11, donVi: "m³" },
+    { thang: "05/2026", luongNuoc: 14, donVi: "m³" },
+    { thang: "04/2026", luongNuoc: 12, donVi: "m³" },
+    { thang: "03/2026", luongNuoc: 11, donVi: "m³" },
   ],
   "98765432100": [
-    { thang: "04/2026", luongNuoc: 24, donVi: "m³" },
-    { thang: "03/2026", luongNuoc: 20, donVi: "m³" },
-    { thang: "02/2026", luongNuoc: 22, donVi: "m³" },
+    { thang: "05/2026", luongNuoc: 24, donVi: "m³" },
+    { thang: "04/2026", luongNuoc: 20, donVi: "m³" },
+    { thang: "03/2026", luongNuoc: 22, donVi: "m³" },
   ],
   "11122334455": [
-    { thang: "04/2026", luongNuoc: 8, donVi: "m³" },
-    { thang: "03/2026", luongNuoc: 9, donVi: "m³" },
-    { thang: "02/2026", luongNuoc: 7, donVi: "m³" },
+    { thang: "05/2026", luongNuoc: 8, donVi: "m³" },
+    { thang: "04/2026", luongNuoc: 9, donVi: "m³" },
+    { thang: "03/2026", luongNuoc: 7, donVi: "m³" },
   ],
 };
 
-const OUTAGES = [
-  {
+const OUTAGES = {
+  "12345678901": {
     id: "TB001",
     khuVuc: "Quận 12, phường Thạnh Lộc",
     lyDo: "Bảo trì đường ống định kỳ",
     tuNgay: "30/05/2026 08:00",
-    denNgay: "30/05/2026 17:00",
+    denNgay: "30/06/2026 17:00",
   },
-  {
+  "98765432100": {
     id: "TB002",
     khuVuc: "Gò Vấp, phường 12",
     lyDo: "Sự cố đường ống",
     tuNgay: "29/05/2026 14:00",
-    denNgay: "29/05/2026 22:00",
+    denNgay: "29/06/2026 22:00",
   },
-];
+};
 
 // ─── API functions ────────────────────────────────────────────────────────────
 
@@ -124,9 +124,15 @@ export async function getWaterUsage(maDanhBo) {
  * Lấy danh sách thông báo gián đoạn cung cấp nước.
  * @returns {{ outages: Array }}
  */
-export async function getOutages() {
-  return { outages: OUTAGES };
+export async function getOutages(maDanhBo) {
+  console.log(`[MockAPI] getOutages ${maDanhBo}`);
+  const outage = OUTAGES[maDanhBo];
+  if (!outage) return { error: "Không tìm thấy thông báo gián đoạn cung cấp nước" };
+  return { outages: outage };
 }
+// export async function getOutages() {
+//   return { outages: OUTAGES };
+// }
 
 /**
  * Tạo phiếu tiếp nhận sự cố / phản ánh.

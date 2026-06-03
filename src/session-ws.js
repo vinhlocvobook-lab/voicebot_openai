@@ -66,7 +66,7 @@ export function openSessionWebSocket(callId, callOps) {
     ws.send(JSON.stringify({
       type: "response.create",
       response: {
-        instructions: 'Hãy nói câu chào theo system prompt. Bắt đầu bằng "Xin chào Quý khách đã gọi đến Tổng đài..."',
+        instructions: 'im lặng 5 giây, rồi nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo "Ây Ai ", Quý khách cần em hỗ trợ gì ạ?"',
       },
     }));
   });
