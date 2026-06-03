@@ -124,15 +124,11 @@ export async function getWaterUsage(maDanhBo) {
  * Lấy danh sách thông báo gián đoạn cung cấp nước.
  * @returns {{ outages: Array }}
  */
-export async function getOutages(maDanhBo) {
-  console.log(`[MockAPI] getOutages ${maDanhBo}`);
-  const outage = OUTAGES[maDanhBo];
-  if (!outage) return { error: "Không tìm thấy thông báo gián đoạn cung cấp nước" };
-  return { outages: outage };
+export async function getOutages() {
+  console.log(`[MockAPI] getOutages`);
+  // get_outages không nhận tham số → trả về toàn bộ thông báo gián đoạn hiện có.
+  return { outages: Object.values(OUTAGES) };
 }
-// export async function getOutages() {
-//   return { outages: OUTAGES };
-// }
 
 /**
  * Tạo phiếu tiếp nhận sự cố / phản ánh.
