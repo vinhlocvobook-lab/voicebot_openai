@@ -31,10 +31,20 @@ export class ConversationLogger {
     this.transcript = []; // { time, speaker: "AI" | "KH", text }
 
     // Tool calls trong cuộc gọi
-    this.toolCalls  = []; // { time, name, args, output }
+    this.toolCalls  = []; // { time, name, args, output, durationMs }
+
+    // Timeline sự kiện kỹ thuật (diễn tiến cuộc gọi) để debug
+    this.events     = []; // { time, stage, detail }
+
+    // Lỗi phát sinh trong cuộc gọi
+    this.errors     = []; // { time, where, message }
 
     // Kết quả cuộc gọi
     this.outcome    = "disconnected"; // "completed" | "transferred" | "after_hours" | "disconnected"
+
+    // Thông tin kỹ thuật phiên
+    this.model      = process.env.OPENAI_REALTIME_MODEL || null;
+    this.voice      = process.env.OPENAI_VOICE || null;
 
     // Params kỹ thuật để debug/phân tích prompt
     this.acceptParams        = null;  // body gửi lúc POST /accept (gồm instructions đầy đủ)
@@ -62,9 +72,11 @@ export class ConversationLogger {
   flushAI(doneText) {
     const text = (doneText ?? this._aiBuffer).trim();
     this._aiBuffer = "";
-    if (text) {
-      this.transcript.push({ time: _now(), speaker: "AI", text });
-    }
+    if (!text) return;
+    // Chống ghi trùng: nhiều event có thể trả về cùng 1 câu AI
+    const last = this.transcript[this.transcript.length - 1];
+    if (last && last.speaker === "AI" && last.text === text) return;
+    this.transcript.push({ time: _now(), speaker: "AI", text });
   }
 
   /** Thêm lượt nói của khách hàng (từ input_audio_transcription.completed) */
@@ -76,9 +88,25 @@ export class ConversationLogger {
 
   // ── Tool calls ──────────────────────────────────────────────────────────────
 
-  /** Ghi nhận một tool call + kết quả */
-  addToolCall(name, args, output) {
-    this.toolCalls.push({ time: _now(), name, args, output });
+  /** Ghi nhận một tool call + kết quả (đầu vào / đầu ra của function tool) */
+  addToolCall(name, args, output, durationMs = null) {
+    const entry = { time: _now(), name, args, output, durationMs };
+    this.toolCalls.push(entry);
+    this.addEvent("tool_call", `${name}(${_safeJson(args)})`);
+    return entry;
+  }
+
+  // ── Timeline sự kiện & lỗi ────────────────────────────────────────────────────
+
+  /** Ghi một mốc sự kiện kỹ thuật vào timeline (call accepted, ws open, greeting...) */
+  addEvent(stage, detail = null) {
+    this.events.push({ time: _now(), stage, detail });
+  }
+
+  /** Ghi nhận một lỗi phát sinh trong cuộc gọi */
+  addError(where, message) {
+    this.errors.push({ time: _now(), where, message: String(message ?? "") });
+    this.addEvent("error", `${where}: ${message}`);
   }
 
   // ── Outcome ─────────────────────────────────────────────────────────────────
@@ -117,13 +145,18 @@ export class ConversationLogger {
   async save() {
     this.endTime = new Date();
     this.flushAI(); // flush buffer nếu còn
+    this.addEvent("call_ended", `outcome=${this.outcome}`);
 
     const durationSec = Math.round((this.endTime - this.startTime) / 1000);
 
     // Tạo AI summary từ transcript
     const aiSummary = await _generateSummary(this.transcript, this.toolCalls, this.outcome);
 
+    // Timeline gộp (diễn tiến cuộc gọi theo thời gian): hội thoại + tool + sự kiện
+    const timeline = _buildTimeline(this.transcript, this.toolCalls, this.events);
+
     const document = {
+      // ── 1. Thông tin định danh cuộc gọi ───────────────────────────────────
       meta: {
         callId:      this.callId,
         tel:         this.tel,
@@ -131,36 +164,50 @@ export class ConversationLogger {
         endTime:     this.endTime.toISOString(),
         durationSec,
         outcome:     this.outcome,
-        // Thông tin từ Asterisk
+        model:       this.model,
+        voice:       this.voice,
+        // Thông tin từ Asterisk (phục vụ debug + đối chiếu file ghi âm)
         asterisk: {
           uniqueid:    this.asteriskData?.uniqueid   ?? null,
           recordPath:  this.asteriskData?.recordPath ?? null,
           phoneNumber: this.asteriskData?.phoneNumber ?? this.tel,
         },
       },
+
+      // ── 2. Thống kê nhanh ──────────────────────────────────────────────────
       stats: {
         totalTurns:    this.transcript.length,
         aiTurns:       this.transcript.filter((t) => t.speaker === "AI").length,
         customerTurns: this.transcript.filter((t) => t.speaker === "KH").length,
         toolCallCount: this.toolCalls.length,
+        errorCount:    this.errors.length,
       },
-      // Params kỹ thuật để phân tích hiệu quả prompt
+
+      // ── 3. Tóm tắt do AI tạo ra (đánh giá chất lượng cuộc gọi) ──────────────
+      summary: aiSummary,
+
+      // ── 4. Diễn tiến cuộc gọi theo thời gian (debug tổng quan) ──────────────
+      timeline,
+
+      // ── 5. Hội thoại đầy đủ KH ↔ AI ────────────────────────────────────────
+      transcript: this.transcript,
+
+      // ── 6. Đầu vào / đầu ra của các function tool ──────────────────────────
+      toolCalls: this.toolCalls,
+
+      // ── 7. Lỗi phát sinh trong cuộc gọi ────────────────────────────────────
+      errors: this.errors,
+
+      // ── 8. Sự kiện kỹ thuật chi tiết ───────────────────────────────────────
+      events: this.events,
+
+      // ── 9. Params kỹ thuật để phân tích/điều chỉnh prompt ──────────────────
       call_params: {
-        accept: {
-          // Body gửi lúc POST /accept — instructions đầy đủ để so sánh khi điều chỉnh prompt
-          ...this.acceptParams,
-        },
+        accept: this.acceptParams ? { ...this.acceptParams } : null,
         session_update: this.sessionUpdateParams,
-        // session_created: phản ánh những gì OpenAI thực sự nhận và cấu hình
-        // So sánh instructions ở đây với accept.instructions để phát hiện sai lệch
+        // session_created phản ánh cấu hình OpenAI thực sự nhận — so với accept để phát hiện sai lệch
         session_created: this.sessionCreatedData,
       },
-      // Full transcript theo thứ tự thời gian
-      transcript: this.transcript,
-      // Danh sách tool calls trong cuộc gọi
-      toolCalls: this.toolCalls,
-      // Tóm tắt do AI tạo ra
-      summary: aiSummary,
     };
 
     const filePath = _buildFilePath(this.startTime, this.tel, this.callId);
@@ -176,6 +223,44 @@ export class ConversationLogger {
 
 function _now() {
   return new Date().toISOString();
+}
+
+function _safeJson(obj) {
+  try { return JSON.stringify(obj); } catch { return String(obj); }
+}
+
+/**
+ * Gộp transcript + tool calls + events thành 1 timeline thống nhất, sắp xếp theo thời gian.
+ * Giúp đọc nhanh diễn tiến cuộc gọi từ trên xuống.
+ */
+function _buildTimeline(transcript, toolCalls, events) {
+  const items = [];
+
+  for (const t of transcript) {
+    items.push({ time: t.time, kind: t.speaker === "AI" ? "ai" : "customer", text: t.text });
+  }
+  for (const tc of toolCalls) {
+    items.push({
+      time: tc.time,
+      kind: "tool",
+      tool: tc.name,
+      args: tc.args,
+      output: _tryParse(tc.output),
+    });
+  }
+  for (const e of events) {
+    // Bỏ qua tool_call trong events (đã có dòng "tool" chi tiết hơn) để tránh trùng
+    if (e.stage === "tool_call") continue;
+    items.push({ time: e.time, kind: "event", stage: e.stage, detail: e.detail });
+  }
+
+  items.sort((a, b) => new Date(a.time) - new Date(b.time));
+  return items;
+}
+
+function _tryParse(s) {
+  if (typeof s !== "string") return s;
+  try { return JSON.parse(s); } catch { return s; }
 }
 
 /**

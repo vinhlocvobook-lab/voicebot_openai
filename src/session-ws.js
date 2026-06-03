@@ -11,6 +11,7 @@
 import WebSocket from "ws";
 import { dispatchTool } from "./tools.js";
 import { log } from "./logger.js";
+import { ConversationLogger } from "./conversation-logger.js";
 // import { TOOLS } from "./system-prompt.js";
 
 const OPENAI_WS_URL = "wss://api.openai.com/v1/realtime";
@@ -27,6 +28,29 @@ export function openSessionWebSocket(callId, callOps) {
   const url = `${OPENAI_WS_URL}?call_id=${callId}`;
   log.info(`[WS][${callId}] Kết nối WebSocket: ${url}`);
 
+  // ── Khởi tạo logger cho cuộc gọi này ────────────────────────────────────────
+  const logger = new ConversationLogger(callId, callOps.tel);
+  if (callOps.acceptParams) logger.setAcceptParams(callOps.acceptParams);
+  if (callOps.asteriskData) logger.setAsteriskData(callOps.asteriskData);
+  logger.addEvent("ws_connecting", url);
+
+  // Guard riêng cho từng hành động để tránh thực thi trùng (không chặn chéo nhau)
+  let _hungUp = false;      // đã lên lịch cúp máy chưa
+  let _transferred = false; // đã chuyển máy chưa
+
+  // Tránh save() 2 lần (close + error retry)
+  let _saved = false;
+  const _saveOnce = async (reason) => {
+    if (_saved) return;
+    _saved = true;
+    logger.addEvent("saving_log", reason);
+    try {
+      await logger.save();
+    } catch (err) {
+      log.error(`[WS][${callId}] Lỗi lưu conversation summary:`, err.message);
+    }
+  };
+
   const ws = new WebSocket(url, {
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -35,6 +59,7 @@ export function openSessionWebSocket(callId, callOps) {
 
   ws.on("open", () => {
     log.info(`[WS][${callId}] Kết nối WebSocket thành công`);
+    logger.addEvent("ws_open", "WebSocket đã kết nối");
 
     // Với SIP calls, session.created KHÔNG được gửi (khác WebSocket thông thường).
     // Phải gửi session.update + response.create ngay khi open – giống Python example.
@@ -68,9 +93,10 @@ export function openSessionWebSocket(callId, callOps) {
       ws.send(JSON.stringify({
         type: "response.create",
         response: {
-          instructions: 'im lặng 5 giây, rồi nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo "Ây Ai ", Quý khách cần em hỗ trợ gì ạ?"',
+          instructions: 'nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo "Ây Ai ", Quý khách cần em hỗ trợ gì ạ?"',
         },
       }));
+      logger.addEvent("greeting_sent", "Đã gửi yêu cầu chào khách");
     }, 1000);
 
   });
@@ -93,7 +119,10 @@ export function openSessionWebSocket(callId, callOps) {
 
       case "response.done": {
         const usage = event?.response?.usage;
-        if (usage) log.debug(`[WS][${callId}] response.done usage:`, usage);
+        if (usage) {
+          log.debug(`[WS][${callId}] response.done usage:`, usage);
+          logger.addEvent("usage", _safeJson(usage));
+        }
 
         const output = event?.response?.output;
         if (!Array.isArray(output) || output.length === 0) break;
@@ -109,10 +138,22 @@ export function openSessionWebSocket(callId, callOps) {
           let args = {};
           try { args = JSON.parse(argsStr); } catch { /* ignore */ }
 
-          // Gọi handler và gửi kết quả tool về cho OpenAI
+          // Gọi handler và gửi kết quả tool về cho OpenAI (đo thời gian xử lý)
+          const _t0 = Date.now();
           const toolOutput = await dispatchTool(name, args);
-          log.debug(`[WS][${callId}] Tool output: ${toolOutput}`);
+          const _durationMs = Date.now() - _t0;
+          log.debug(`[WS][${callId}] Tool output (${_durationMs}ms): ${toolOutput}`);
 
+          // Ghi đầu vào / đầu ra của function tool vào log
+          try {
+            logger.addToolCall(name, args, _tryParseJson(toolOutput), _durationMs);
+          } catch { /* ignore */ }
+
+          let result = {};
+          try { result = JSON.parse(toolOutput); } catch { /* ignore */ }
+          const action = result.action;
+
+          // Luôn gửi function_call_output về OpenAI (mỗi call_id cần đúng 1 output)
           ws.send(
             JSON.stringify({
               type: "conversation.item.create",
@@ -124,63 +165,90 @@ export function openSessionWebSocket(callId, callOps) {
             })
           );
 
-          // Xử lý side effects và xác định instructions cho phản hồi tiếp theo
-          let nextInstructions = "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
-          let result = {};
-          try { result = JSON.parse(toolOutput); } catch { /* ignore */ }
-
-          if (result.action === "transfer_to_agent") {
-            nextInstructions = "Thông báo lịch sự rằng đang chuyển máy cho tổng đài viên.";
-          } else if (result.action === "end_call") {
-            nextInstructions = "Nói lời chào tạm biệt lịch sự và kết thúc cuộc gọi.";
-          }
-
-          // Yêu cầu AI tiếp tục phản hồi dựa trên kết quả tool
-          ws.send(JSON.stringify({
-            type: "response.create",
-            response: { instructions: nextInstructions },
-          }));
-
-          if (result.action === "transfer_to_agent") {
-            await _handleTransfer(callId, callOps, result.ly_do);
-          } else if (result.action === "end_call") {
-            // Delay để AI kịp nói lời tạm biệt trước khi cúp máy
-            setTimeout(() => callOps.hangup(callId), 4000);
+          if (action === "end_call") {
+            // KHÔNG gửi response.create: model đã nói lời tạm biệt ngay trong response
+            // chứa end_call → gửi thêm sẽ gây lỗi conversation_already_has_active_response.
+            logger.setOutcome("completed");
+            logger.addEvent("end_call", result.ly_do || null);
+            if (!_hungUp) {
+              _hungUp = true;
+              // Delay để AI kịp nói lời tạm biệt trước khi cúp máy
+              setTimeout(() => callOps.hangup(callId), 5000);
+            } else {
+              logger.addEvent("end_call_duplicate_ignored", "đã lên lịch cúp máy");
+            }
+          } else if (action === "transfer_to_agent") {
+            // Tương tự: không gửi response.create (model đã thông báo chuyển máy)
+            logger.setOutcome("transferred");
+            logger.addEvent("transfer_to_agent", result.ly_do || null);
+            if (!_transferred) {
+              _transferred = true;
+              await _handleTransfer(callId, callOps, result.ly_do);
+            } else {
+              logger.addEvent("transfer_duplicate_ignored", null);
+            }
+          } else {
+            // Tool dữ liệu thông thường → yêu cầu AI đọc kết quả cho khách
+            ws.send(JSON.stringify({
+              type: "response.create",
+              response: { instructions: "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được." },
+            }));
           }
         }
         break;
       }
 
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
-      case "conversation.item.input_audio_transcription.completed":
-        log.info(`[WS][${callId}] [KH nói]: ${event.transcript}`);
-        break;
-
-      case "conversation.item.done":
-        log.info(`[OpenAI] Câu trả lời đã được thêm vào conversation`);
-        log.info(event?.item?.content);
-        if (event?.item?.content === "undefined") {
-          log.info(event);
+      case "conversation.item.input_audio_transcription.completed": {
+        const khText = event.transcript?.trim();
+        // Chỉ log + ghi khi khách thực sự nói (bỏ qua transcript rỗng do im lặng/nhiễu)
+        if (khText) {
+          log.info(`[WS][${callId}] [KH nói]: ${khText}`);
+          logger.addCustomerTurn(khText);
+        } else {
+          log.info(`[WS][${callId}] [KH nói]: `, { khText });
         }
         break;
+      }
 
-      case "response.audio_transcript.done":
-        log.info(`[WS][${callId}] [AI nói]: ${event.transcript}`);
+      // conversation.item.done: bắt lời AI (output_audio transcript) để ghi log đủ 2 chiều
+      case "conversation.item.done": {
+        const content = event?.item?.content;
+        if (Array.isArray(content)) {
+          const aiPart = content.find((c) => c?.type === "output_audio" && c?.transcript);
+          if (aiPart?.transcript?.trim()) {
+            const txt = aiPart.transcript.trim();
+            log.info(`[WS][${callId}] [AI nói]: ${txt}`);
+            logger.flushAI(txt);
+          }
+        }
         break;
+      }
+
+      case "response.audio_transcript.done": {
+        const aiText = event.transcript?.trim();
+        log.info(`[WS][${callId}] [AI nói]: ${aiText}`);
+        if (aiText) logger.flushAI(aiText);
+        break;
+      }
 
 
 
       // ── Lỗi từ OpenAI ─────────────────────────────────────────────────────
       case "error":
         log.error(`[WS][${callId}] OpenAI error:`, event.error);
+        logger.addError("openai_event", event.error?.message || _safeJson(event.error));
         break;
 
       case "session.created":
         log.info(`[WS][${callId}] session.created: ${event.session?.id}`);
+        logger.setSessionCreatedData(event.session ?? {});
+        logger.addEvent("session_created", event.session?.id || null);
         break;
 
       case "session.updated":
         log.info(`[WS][${callId}] session.updated OK`);
+        logger.addEvent("session_updated", null);
         break;
 
       default:
@@ -188,22 +256,37 @@ export function openSessionWebSocket(callId, callOps) {
     }
   });
 
-  ws.on("close", (code, reason) => {
+  ws.on("close", async (code, reason) => {
     log.info(`[WS][${callId}] WebSocket đóng: ${code} ${reason?.toString()}`);
+    logger.addEvent("ws_close", `${code} ${reason?.toString() || ""}`.trim());
+    await _saveOnce(`ws_close ${code}`);
   });
 
   ws.on("error", (err) => {
     log.error(`[WS][${callId}] WebSocket lỗi: ${err.message}`);
+    logger.addError("ws_error", err.message);
     // Nếu 404 → session chưa sẵn sàng → retry sau 2s (tối đa 3 lần)
     if (err.message.includes("404") && (callOps._wsRetry ?? 0) < 3) {
       callOps._wsRetry = (callOps._wsRetry ?? 0) + 1;
       const delay = callOps._wsRetry * 2000;
       log.info(`[WS][${callId}] Retry lần ${callOps._wsRetry} sau ${delay}ms...`);
+      // Lần này không lưu log (sẽ mở lại session mới); session retry sẽ tự lưu khi đóng
+      _saved = true;
       setTimeout(() => openSessionWebSocket(callId, callOps), delay);
     }
   });
 
   return ws;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function _safeJson(obj) {
+  try { return JSON.stringify(obj); } catch { return String(obj); }
+}
+
+function _tryParseJson(s) {
+  try { return JSON.parse(s); } catch { return s; }
 }
 
 // ─── Chuyển máy sang tổng đài viên ──────────────────────────────────────────

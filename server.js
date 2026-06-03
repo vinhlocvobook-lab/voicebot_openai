@@ -21,6 +21,39 @@ const app = express();
 const PORT = process.env.PORT || 8000;
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || "/webhook";
 
+function extractAsteriskHeaders(payload) {
+  try {
+    // 1. Parse chuỗi JSON thành Object
+    // const payload = JSON.parse(jsonString);
+
+    // 2. Lấy mảng sip_headers
+    const headers = payload?.data?.sip_headers || [];
+
+    // 3. Chuyển mảng thành một object dạng key-value
+    const headerMap = headers.reduce((acc, current) => {
+      acc[current.name] = current.value;
+      return acc;
+    }, {});
+
+    // 4. Trích xuất số điện thoại từ header 'From' bằng Regex
+    let phoneNumber = null;
+    if (headerMap['From']) {
+      const match = headerMap['From'].match(/sip:([^@]+)@/);
+      phoneNumber = match ? match[1] : null;
+    }
+
+    // 5. Trả về đầy đủ các trường dữ liệu
+    return {
+      uniqueid: headerMap['Uniqueid'] || null,
+      recordPath: headerMap['RecordPath'] || null,
+      phoneNumber: phoneNumber // <-- Đã bổ sung số điện thoại
+    };
+
+  } catch (error) {
+    console.error("Lỗi khi parse chuỗi JSON:", error.message);
+    return { uniqueid: null, recordPath: null, phoneNumber: null };
+  }
+}
 // ─── Đọc raw body để verify signature ────────────────────────────────────────
 app.use(
   express.json({
@@ -35,7 +68,7 @@ app.post(WEBHOOK_PATH, async (req, res) => {
   // 1. Xác minh chữ ký
   if (!verifyWebhookSignature(req.rawBody, req.headers)) {
     log.warn("[Webhook] Chữ ký không hợp lệ – từ chối request");
-    return res.status(400).json({ error: "Invalid signature" }); n
+    return res.status(400).json({ error: "Invalid signature" });
   }
 
   const event = req.body;
@@ -54,21 +87,24 @@ app.post(WEBHOOK_PATH, async (req, res) => {
   const { call_id: callId, sip_headers: sipHeaders } = event.data;
   const fromHeader = sipHeaders?.find((h) => h.name === "From")?.value || "unknown";
   log.info(`[Webhook] 3.Incoming call ${callId} from ${fromHeader}`);
+
+  // Trích thông tin Asterisk (uniqueid, recordPath, phoneNumber) để log/debug
+  const asteriskData = extractAsteriskHeaders(event);
+  log.info(`[Webhook] Asterisk: uniqueid=${asteriskData.uniqueid} recordPath=${asteriskData.recordPath} phone=${asteriskData.phoneNumber}`);
+
   let tel = "Unknown";
   if (fromHeader) {
-    // const match = fromHeader.value.match(/sip:([^@]+)@/);
-    // if (match) tel = match[1];
     const regex = /sip:([^@]+)@/;
     const match = fromHeader.match(regex);
-
     // Nếu match thành công, kết quả sẽ nằm ở index 1 của mảng
     tel = match ? match[1] : null;
   }
-  // console.log("4.[Webhook] :callId, fromHeader, tel :")
-  // console.log({ callId, fromHeader, tel })
+  // Ưu tiên số điện thoại từ Asterisk nếu có
+  tel = asteriskData.phoneNumber || tel;
+
   res.sendStatus(200);
   try {
-    await _handleIncomingCall(callId, fromHeader, tel);
+    await _handleIncomingCall(callId, fromHeader, tel, asteriskData);
   } catch (err) {
     log.error(`[Webhook] Lỗi xử lý call ${callId}: `, err.message);
   }
@@ -76,7 +112,7 @@ app.post(WEBHOOK_PATH, async (req, res) => {
 
 // ─── Xử lý cuộc gọi đến ──────────────────────────────────────────────────────
 
-async function _handleIncomingCall(callId, fromHeader, tel) {
+async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null) {
   // Kiểm tra xem đang ngoài giờ hành chính không (để điều chỉnh behavior nếu cần)
   const hour = new Date().getHours();
   let isAfterHours = hour >= 22 || hour < 6;
@@ -88,13 +124,16 @@ async function _handleIncomingCall(callId, fromHeader, tel) {
   }
 
   // Accept cuộc gọi (cấu hình session được set trong call-manager.js)
-  await acceptCall(callId);
+  // acceptCall trả về body đã gửi (instructions + tools) để logger lưu lại
+  const acceptParams = await acceptCall(callId);
 
   // Tạo callOps object để session-ws gọi lại khi cần
   const callOps = {
     hangup: (id) => hangupCall(id).catch((e) => log.error(`Hangup lỗi: `, e.message)),
     refer: (id, uri) => referCall(id, uri),
-    fromHeader, tel
+    fromHeader, tel,
+    asteriskData,
+    acceptParams,
   };
 
   // Mở WebSocket để điều khiển session
@@ -117,4 +156,12 @@ app.listen(PORT, () => {
 process.on("SIGTERM", () => {
   log.info("[Server] SIGTERM nhận – đang tắt...");
   process.exit(0);
+});
+
+// ─── Lưới an toàn: không để lỗi async sót lại làm sập server giữa cuộc gọi ──────
+process.on("unhandledRejection", (reason) => {
+  log.error("[Server] unhandledRejection:", reason?.message || reason);
+});
+process.on("uncaughtException", (err) => {
+  log.error("[Server] uncaughtException:", err?.message || err);
 });

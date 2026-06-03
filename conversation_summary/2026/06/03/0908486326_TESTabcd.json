@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "callId": "rtc_u0_TESTabcd",
+    "tel": "0908486326",
+    "startTime": "2026-06-03T04:46:38.532Z",
+    "endTime": "2026-06-03T04:46:38.537Z",
+    "durationSec": 0,
+    "outcome": "completed",
+    "model": null,
+    "voice": null,
+    "asterisk": {
+      "uniqueid": "1700000000.123",
+      "recordPath": "/rec/2026/06/03/abc.wav",
+      "phoneNumber": "0908486326"
+    }
+  },
+  "stats": {
+    "totalTurns": 2,
+    "aiTurns": 1,
+    "customerTurns": 1,
+    "toolCallCount": 1,
+    "errorCount": 0
+  },
+  "summary": {
+    "loi": "Không thể tạo summary: 0"
+  },
+  "timeline": [
+    {
+      "time": "2026-06-03T04:46:38.532Z",
+      "kind": "event",
+      "stage": "ws_open",
+      "detail": "ok"
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "kind": "customer",
+      "text": "Cho tôi hỏi tiền nước"
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "kind": "ai",
+      "text": "Dạ hóa đơn của quý khách là..."
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "kind": "tool",
+      "tool": "get_bill",
+      "args": {
+        "ma_danh_bo": "15122890724"
+      },
+      "output": {
+        "success": true,
+        "message": "OK"
+      }
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "kind": "event",
+      "stage": "call_ended",
+      "detail": "outcome=completed"
+    }
+  ],
+  "transcript": [
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "speaker": "KH",
+      "text": "Cho tôi hỏi tiền nước"
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "speaker": "AI",
+      "text": "Dạ hóa đơn của quý khách là..."
+    }
+  ],
+  "toolCalls": [
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "name": "get_bill",
+      "args": {
+        "ma_danh_bo": "15122890724"
+      },
+      "output": {
+        "success": true,
+        "message": "OK"
+      },
+      "durationMs": 42
+    }
+  ],
+  "errors": [],
+  "events": [
+    {
+      "time": "2026-06-03T04:46:38.532Z",
+      "stage": "ws_open",
+      "detail": "ok"
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "stage": "tool_call",
+      "detail": "get_bill({\"ma_danh_bo\":\"15122890724\"})"
+    },
+    {
+      "time": "2026-06-03T04:46:38.537Z",
+      "stage": "call_ended",
+      "detail": "outcome=completed"
+    }
+  ],
+  "call_params": {
+    "accept": {
+      "type": "realtime",
+      "model": "gpt-realtime-mini",
+      "instructions": "PROMPT...",
+      "tools": [
+        {
+          "name": "get_bill"
+        }
+      ]
+    },
+    "session_update": null,
+    "session_created": null
+  }
+}

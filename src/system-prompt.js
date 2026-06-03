@@ -80,11 +80,13 @@ export const TOOLS = [
   {
     type: "function",
     name: "get_bill",
-    description: "Tra cứu hóa đơn tiền nước tháng hiện tại của khách hàng.",
+    description: "Tra cứu hóa đơn tiền nước của khách hàng. Không truyền kỳ/năm sẽ lấy kỳ gần nhất.",
     parameters: {
       type: "object",
       properties: {
         ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
+        nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
       },
       required: ["ma_danh_bo"],
     },
@@ -92,11 +94,27 @@ export const TOOLS = [
   {
     type: "function",
     name: "get_water_usage",
-    description: "Tra cứu lượng nước sử dụng và so sánh với tháng trước. .",
+    description: "Tra cứu sản lượng nước sử dụng. Không truyền kỳ/năm sẽ lấy kỳ gần nhất.",
     parameters: {
       type: "object",
       properties: {
         ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
+        nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
+      },
+      required: ["ma_danh_bo"],
+    },
+  },
+  {
+    type: "function",
+    name: "compare_usage",
+    description: "So sánh tăng/giảm sản lượng nước so với kỳ trước.",
+    parameters: {
+      type: "object",
+      properties: {
+        ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ky: { type: "integer", description: "Kỳ (tháng) cần so sánh, tùy chọn" },
+        nam: { type: "integer", description: "Năm cần so sánh, tùy chọn" },
       },
       required: ["ma_danh_bo"],
     },

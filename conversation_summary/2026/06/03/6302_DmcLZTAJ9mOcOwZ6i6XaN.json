@@ -1,0 +1,697 @@
+{
+  "meta": {
+    "callId": "rtc_u1_DmcLZTAJ9mOcOwZ6i6XaN",
+    "tel": "6302",
+    "startTime": "2026-06-03T09:38:44.282Z",
+    "endTime": "2026-06-03T09:41:28.583Z",
+    "durationSec": 164,
+    "outcome": "transferred",
+    "model": "gpt-realtime-mini",
+    "voice": "alloy",
+    "asterisk": {
+      "uniqueid": "1780479521.269488",
+      "recordPath": "/mnt/data/records/1/in/2026/06/03/1780479521.269487_6302_7d9305e51.wav",
+      "phoneNumber": "6302"
+    }
+  },
+  "stats": {
+    "totalTurns": 8,
+    "aiTurns": 0,
+    "customerTurns": 8,
+    "toolCallCount": 3,
+    "errorCount": 0
+  },
+  "summary": {
+    "yeu_cau_chinh": "Khách hàng yêu cầu kiểm tra số tiền nước trong tháng.",
+    "da_xu_ly": "Khách hàng đã cung cấp mã danh bộ để kiểm tra.",
+    "chua_xu_ly": "Chưa có thông tin về số tiền nước được cung cấp cho khách hàng.",
+    "hanh_dong_tiep_theo": "Chuyển tiếp khách hàng đến nhân viên để xác minh thông tin và hỗ trợ thêm.",
+    "diem_noi_bat": "Khách hàng có thái độ thân thiện và nói tiếng Thái ở cuối cuộc gọi.",
+    "danh_gia_cuoc_goi": "Cuộc gọi được xử lý trung bình do chưa cung cấp được thông tin cần thiết cho khách hàng."
+  },
+  "timeline": [
+    {
+      "time": "2026-06-03T09:38:44.282Z",
+      "kind": "event",
+      "stage": "ws_connecting",
+      "detail": "wss://api.openai.com/v1/realtime?call_id=rtc_u1_DmcLZTAJ9mOcOwZ6i6XaN"
+    },
+    {
+      "time": "2026-06-03T09:38:44.990Z",
+      "kind": "event",
+      "stage": "ws_open",
+      "detail": "WebSocket đã kết nối"
+    },
+    {
+      "time": "2026-06-03T09:38:45.993Z",
+      "kind": "event",
+      "stage": "greeting_sent",
+      "detail": "Đã gửi yêu cầu chào khách"
+    },
+    {
+      "time": "2026-06-03T09:38:47.536Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":947,\"input_tokens\":708,\"output_tokens\":239,\"input_token_details\":{\"text_tokens\":708,\"audio_tokens\":0,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":73,\"audio_tokens\":166}}"
+    },
+    {
+      "time": "2026-06-03T09:39:03.940Z",
+      "kind": "customer",
+      "text": "Cho tôi hỏi tháng này tiền nước nhà tôi là bao nhiêu?"
+    },
+    {
+      "time": "2026-06-03T09:39:04.843Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1545,\"input_tokens\":1329,\"output_tokens\":216,\"input_token_details\":{\"text_tokens\":1125,\"audio_tokens\":204,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":60,\"audio_tokens\":156}}"
+    },
+    {
+      "time": "2026-06-03T09:39:19.906Z",
+      "kind": "customer",
+      "text": "một năm một hai hai tám chín không bảy hai bốn"
+    },
+    {
+      "time": "2026-06-03T09:39:21.254Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1689,\"input_tokens\":1437,\"output_tokens\":252,\"input_token_details\":{\"text_tokens\":1181,\"audio_tokens\":256,\"image_tokens\":0,\"cached_tokens\":1024,\"cached_tokens_details\":{\"text_tokens\":1024,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":74,\"audio_tokens\":178}}"
+    },
+    {
+      "time": "2026-06-03T09:39:31.061Z",
+      "kind": "customer",
+      "text": "Đúng rồi."
+    },
+    {
+      "time": "2026-06-03T09:39:31.061Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1584,\"input_tokens\":1541,\"output_tokens\":43,\"input_token_details\":{\"text_tokens\":1251,\"audio_tokens\":290,\"image_tokens\":0,\"cached_tokens\":1152,\"cached_tokens_details\":{\"text_tokens\":1088,\"audio_tokens\":64,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":43,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:39:31.165Z",
+      "kind": "tool",
+      "tool": "get_bill",
+      "args": {
+        "ma_danh_bo": "1-5-1-2-2-8-9-0-7-2-4"
+      },
+      "output": {
+        "success": false,
+        "message": "Không tìm thấy thông tin khách hàng."
+      }
+    },
+    {
+      "time": "2026-06-03T09:39:33.016Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1328,\"input_tokens\":1031,\"output_tokens\":297,\"input_token_details\":{\"text_tokens\":919,\"audio_tokens\":112,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":80,\"audio_tokens\":217}}"
+    },
+    {
+      "time": "2026-06-03T09:39:47.174Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1953,\"input_tokens\":1723,\"output_tokens\":230,\"input_token_details\":{\"text_tokens\":1388,\"audio_tokens\":335,\"image_tokens\":0,\"cached_tokens\":1216,\"cached_tokens_details\":{\"text_tokens\":1152,\"audio_tokens\":64,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":64,\"audio_tokens\":166}}"
+    },
+    {
+      "time": "2026-06-03T09:39:54.774Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0,\"input_token_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":0,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:39:56.725Z",
+      "kind": "customer",
+      "text": "thật vậy, bye bye."
+    },
+    {
+      "time": "2026-06-03T09:39:56.892Z",
+      "kind": "tool",
+      "tool": "transfer_to_agent",
+      "args": {
+        "ly_do": "Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm"
+      },
+      "output": {
+        "success": true,
+        "action": "transfer_to_agent",
+        "message": "Đang chuyển máy cho tổng đài viên, Quý khách vui lòng chờ trong giây lát.",
+        "ly_do": "Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm"
+      }
+    },
+    {
+      "time": "2026-06-03T09:39:56.892Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1798,\"input_tokens\":1763,\"output_tokens\":35,\"input_token_details\":{\"text_tokens\":1454,\"audio_tokens\":309,\"image_tokens\":0,\"cached_tokens\":1408,\"cached_tokens_details\":{\"text_tokens\":1280,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":35,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:39:56.893Z",
+      "kind": "event",
+      "stage": "transfer_to_agent",
+      "detail": "Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm"
+    },
+    {
+      "time": "2026-06-03T09:39:58.439Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1489,\"input_tokens\":1294,\"output_tokens\":195,\"input_token_details\":{\"text_tokens\":1151,\"audio_tokens\":143,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":57,\"audio_tokens\":138}}"
+    },
+    {
+      "time": "2026-06-03T09:40:23.766Z",
+      "kind": "customer",
+      "text": "เอ่อ ก็ได้ บ๊ายบาย"
+    },
+    {
+      "time": "2026-06-03T09:40:23.927Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1918,\"input_tokens\":1892,\"output_tokens\":26,\"input_token_details\":{\"text_tokens\":1598,\"audio_tokens\":294,\"image_tokens\":0,\"cached_tokens\":1472,\"cached_tokens_details\":{\"text_tokens\":1344,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":26,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:40:23.928Z",
+      "kind": "tool",
+      "tool": "end_call",
+      "args": {
+        "ly_do": "Khách kết thúc cuộc gọi."
+      },
+      "output": {
+        "success": true,
+        "action": "end_call",
+        "message": "Kết thúc cuộc gọi.",
+        "ly_do": "Khách kết thúc cuộc gọi."
+      }
+    },
+    {
+      "time": "2026-06-03T09:40:23.928Z",
+      "kind": "event",
+      "stage": "duplicate_terminal_ignored",
+      "detail": "end_call"
+    },
+    {
+      "time": "2026-06-03T09:40:41.637Z",
+      "kind": "customer",
+      "text": "Kết hợp Google"
+    },
+    {
+      "time": "2026-06-03T09:40:42.665Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2016,\"input_tokens\":1803,\"output_tokens\":213,\"input_token_details\":{\"text_tokens\":1634,\"audio_tokens\":169,\"image_tokens\":0,\"cached_tokens\":1664,\"cached_tokens_details\":{\"text_tokens\":1536,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":66,\"audio_tokens\":147}}"
+    },
+    {
+      "time": "2026-06-03T09:40:49.916Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0,\"input_token_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":0,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:40:51.507Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2236,\"input_tokens\":2045,\"output_tokens\":191,\"input_token_details\":{\"text_tokens\":1718,\"audio_tokens\":327,\"image_tokens\":0,\"cached_tokens\":1984,\"cached_tokens_details\":{\"text_tokens\":1664,\"audio_tokens\":320,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":54,\"audio_tokens\":137}}"
+    },
+    {
+      "time": "2026-06-03T09:41:05.540Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2228,\"input_tokens\":2091,\"output_tokens\":137,\"input_token_details\":{\"text_tokens\":1768,\"audio_tokens\":323,\"image_tokens\":0,\"cached_tokens\":1728,\"cached_tokens_details\":{\"text_tokens\":1600,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":39,\"audio_tokens\":98}}"
+    },
+    {
+      "time": "2026-06-03T09:41:11.000Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2161,\"input_tokens\":2096,\"output_tokens\":65,\"input_token_details\":{\"text_tokens\":1805,\"audio_tokens\":291,\"image_tokens\":0,\"cached_tokens\":1728,\"cached_tokens_details\":{\"text_tokens\":1600,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":26,\"audio_tokens\":39}}"
+    },
+    {
+      "time": "2026-06-03T09:41:12.171Z",
+      "kind": "customer",
+      "text": "Good lady."
+    },
+    {
+      "time": "2026-06-03T09:41:13.267Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2294,\"input_tokens\":2076,\"output_tokens\":218,\"input_token_details\":{\"text_tokens\":1833,\"audio_tokens\":243,\"image_tokens\":0,\"cached_tokens\":1920,\"cached_tokens_details\":{\"text_tokens\":1728,\"audio_tokens\":192,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":64,\"audio_tokens\":154}}"
+    },
+    {
+      "time": "2026-06-03T09:41:21.828Z",
+      "kind": "customer",
+      "text": "Hãy"
+    },
+    {
+      "time": "2026-06-03T09:41:22.585Z",
+      "kind": "event",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2408,\"input_tokens\":2267,\"output_tokens\":141,\"input_token_details\":{\"text_tokens\":1899,\"audio_tokens\":368,\"image_tokens\":0,\"cached_tokens\":1984,\"cached_tokens_details\":{\"text_tokens\":1792,\"audio_tokens\":192,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":45,\"audio_tokens\":96}}"
+    },
+    {
+      "time": "2026-06-03T09:41:28.582Z",
+      "kind": "event",
+      "stage": "ws_close",
+      "detail": "1006"
+    },
+    {
+      "time": "2026-06-03T09:41:28.582Z",
+      "kind": "event",
+      "stage": "saving_log",
+      "detail": "ws_close 1006"
+    },
+    {
+      "time": "2026-06-03T09:41:28.583Z",
+      "kind": "event",
+      "stage": "call_ended",
+      "detail": "outcome=transferred"
+    }
+  ],
+  "transcript": [
+    {
+      "time": "2026-06-03T09:39:03.940Z",
+      "speaker": "KH",
+      "text": "Cho tôi hỏi tháng này tiền nước nhà tôi là bao nhiêu?"
+    },
+    {
+      "time": "2026-06-03T09:39:19.906Z",
+      "speaker": "KH",
+      "text": "một năm một hai hai tám chín không bảy hai bốn"
+    },
+    {
+      "time": "2026-06-03T09:39:31.061Z",
+      "speaker": "KH",
+      "text": "Đúng rồi."
+    },
+    {
+      "time": "2026-06-03T09:39:56.725Z",
+      "speaker": "KH",
+      "text": "thật vậy, bye bye."
+    },
+    {
+      "time": "2026-06-03T09:40:23.766Z",
+      "speaker": "KH",
+      "text": "เอ่อ ก็ได้ บ๊ายบาย"
+    },
+    {
+      "time": "2026-06-03T09:40:41.637Z",
+      "speaker": "KH",
+      "text": "Kết hợp Google"
+    },
+    {
+      "time": "2026-06-03T09:41:12.171Z",
+      "speaker": "KH",
+      "text": "Good lady."
+    },
+    {
+      "time": "2026-06-03T09:41:21.828Z",
+      "speaker": "KH",
+      "text": "Hãy"
+    }
+  ],
+  "toolCalls": [
+    {
+      "time": "2026-06-03T09:39:31.165Z",
+      "name": "get_bill",
+      "args": {
+        "ma_danh_bo": "1-5-1-2-2-8-9-0-7-2-4"
+      },
+      "output": {
+        "success": false,
+        "message": "Không tìm thấy thông tin khách hàng."
+      },
+      "durationMs": 104
+    },
+    {
+      "time": "2026-06-03T09:39:56.892Z",
+      "name": "transfer_to_agent",
+      "args": {
+        "ly_do": "Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm"
+      },
+      "output": {
+        "success": true,
+        "action": "transfer_to_agent",
+        "message": "Đang chuyển máy cho tổng đài viên, Quý khách vui lòng chờ trong giây lát.",
+        "ly_do": "Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm"
+      },
+      "durationMs": 0
+    },
+    {
+      "time": "2026-06-03T09:40:23.928Z",
+      "name": "end_call",
+      "args": {
+        "ly_do": "Khách kết thúc cuộc gọi."
+      },
+      "output": {
+        "success": true,
+        "action": "end_call",
+        "message": "Kết thúc cuộc gọi.",
+        "ly_do": "Khách kết thúc cuộc gọi."
+      },
+      "durationMs": 0
+    }
+  ],
+  "errors": [],
+  "events": [
+    {
+      "time": "2026-06-03T09:38:44.282Z",
+      "stage": "ws_connecting",
+      "detail": "wss://api.openai.com/v1/realtime?call_id=rtc_u1_DmcLZTAJ9mOcOwZ6i6XaN"
+    },
+    {
+      "time": "2026-06-03T09:38:44.990Z",
+      "stage": "ws_open",
+      "detail": "WebSocket đã kết nối"
+    },
+    {
+      "time": "2026-06-03T09:38:45.993Z",
+      "stage": "greeting_sent",
+      "detail": "Đã gửi yêu cầu chào khách"
+    },
+    {
+      "time": "2026-06-03T09:38:47.536Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":947,\"input_tokens\":708,\"output_tokens\":239,\"input_token_details\":{\"text_tokens\":708,\"audio_tokens\":0,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":73,\"audio_tokens\":166}}"
+    },
+    {
+      "time": "2026-06-03T09:39:04.843Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1545,\"input_tokens\":1329,\"output_tokens\":216,\"input_token_details\":{\"text_tokens\":1125,\"audio_tokens\":204,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":60,\"audio_tokens\":156}}"
+    },
+    {
+      "time": "2026-06-03T09:39:21.254Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1689,\"input_tokens\":1437,\"output_tokens\":252,\"input_token_details\":{\"text_tokens\":1181,\"audio_tokens\":256,\"image_tokens\":0,\"cached_tokens\":1024,\"cached_tokens_details\":{\"text_tokens\":1024,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":74,\"audio_tokens\":178}}"
+    },
+    {
+      "time": "2026-06-03T09:39:31.061Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1584,\"input_tokens\":1541,\"output_tokens\":43,\"input_token_details\":{\"text_tokens\":1251,\"audio_tokens\":290,\"image_tokens\":0,\"cached_tokens\":1152,\"cached_tokens_details\":{\"text_tokens\":1088,\"audio_tokens\":64,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":43,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:39:31.165Z",
+      "stage": "tool_call",
+      "detail": "get_bill({\"ma_danh_bo\":\"1-5-1-2-2-8-9-0-7-2-4\"})"
+    },
+    {
+      "time": "2026-06-03T09:39:33.016Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1328,\"input_tokens\":1031,\"output_tokens\":297,\"input_token_details\":{\"text_tokens\":919,\"audio_tokens\":112,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":80,\"audio_tokens\":217}}"
+    },
+    {
+      "time": "2026-06-03T09:39:47.174Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1953,\"input_tokens\":1723,\"output_tokens\":230,\"input_token_details\":{\"text_tokens\":1388,\"audio_tokens\":335,\"image_tokens\":0,\"cached_tokens\":1216,\"cached_tokens_details\":{\"text_tokens\":1152,\"audio_tokens\":64,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":64,\"audio_tokens\":166}}"
+    },
+    {
+      "time": "2026-06-03T09:39:54.774Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0,\"input_token_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":0,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:39:56.892Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1798,\"input_tokens\":1763,\"output_tokens\":35,\"input_token_details\":{\"text_tokens\":1454,\"audio_tokens\":309,\"image_tokens\":0,\"cached_tokens\":1408,\"cached_tokens_details\":{\"text_tokens\":1280,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":35,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:39:56.892Z",
+      "stage": "tool_call",
+      "detail": "transfer_to_agent({\"ly_do\":\"Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm\"})"
+    },
+    {
+      "time": "2026-06-03T09:39:56.893Z",
+      "stage": "transfer_to_agent",
+      "detail": "Khách cần xác minh thông tin mã danh bộ và hỗ trợ thêm"
+    },
+    {
+      "time": "2026-06-03T09:39:58.439Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1489,\"input_tokens\":1294,\"output_tokens\":195,\"input_token_details\":{\"text_tokens\":1151,\"audio_tokens\":143,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":57,\"audio_tokens\":138}}"
+    },
+    {
+      "time": "2026-06-03T09:40:23.927Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":1918,\"input_tokens\":1892,\"output_tokens\":26,\"input_token_details\":{\"text_tokens\":1598,\"audio_tokens\":294,\"image_tokens\":0,\"cached_tokens\":1472,\"cached_tokens_details\":{\"text_tokens\":1344,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":26,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:40:23.928Z",
+      "stage": "tool_call",
+      "detail": "end_call({\"ly_do\":\"Khách kết thúc cuộc gọi.\"})"
+    },
+    {
+      "time": "2026-06-03T09:40:23.928Z",
+      "stage": "duplicate_terminal_ignored",
+      "detail": "end_call"
+    },
+    {
+      "time": "2026-06-03T09:40:42.665Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2016,\"input_tokens\":1803,\"output_tokens\":213,\"input_token_details\":{\"text_tokens\":1634,\"audio_tokens\":169,\"image_tokens\":0,\"cached_tokens\":1664,\"cached_tokens_details\":{\"text_tokens\":1536,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":66,\"audio_tokens\":147}}"
+    },
+    {
+      "time": "2026-06-03T09:40:49.916Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":0,\"input_tokens\":0,\"output_tokens\":0,\"input_token_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0,\"cached_tokens\":0,\"cached_tokens_details\":{\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":0,\"audio_tokens\":0}}"
+    },
+    {
+      "time": "2026-06-03T09:40:51.507Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2236,\"input_tokens\":2045,\"output_tokens\":191,\"input_token_details\":{\"text_tokens\":1718,\"audio_tokens\":327,\"image_tokens\":0,\"cached_tokens\":1984,\"cached_tokens_details\":{\"text_tokens\":1664,\"audio_tokens\":320,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":54,\"audio_tokens\":137}}"
+    },
+    {
+      "time": "2026-06-03T09:41:05.540Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2228,\"input_tokens\":2091,\"output_tokens\":137,\"input_token_details\":{\"text_tokens\":1768,\"audio_tokens\":323,\"image_tokens\":0,\"cached_tokens\":1728,\"cached_tokens_details\":{\"text_tokens\":1600,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":39,\"audio_tokens\":98}}"
+    },
+    {
+      "time": "2026-06-03T09:41:11.000Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2161,\"input_tokens\":2096,\"output_tokens\":65,\"input_token_details\":{\"text_tokens\":1805,\"audio_tokens\":291,\"image_tokens\":0,\"cached_tokens\":1728,\"cached_tokens_details\":{\"text_tokens\":1600,\"audio_tokens\":128,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":26,\"audio_tokens\":39}}"
+    },
+    {
+      "time": "2026-06-03T09:41:13.267Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2294,\"input_tokens\":2076,\"output_tokens\":218,\"input_token_details\":{\"text_tokens\":1833,\"audio_tokens\":243,\"image_tokens\":0,\"cached_tokens\":1920,\"cached_tokens_details\":{\"text_tokens\":1728,\"audio_tokens\":192,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":64,\"audio_tokens\":154}}"
+    },
+    {
+      "time": "2026-06-03T09:41:22.585Z",
+      "stage": "usage",
+      "detail": "{\"total_tokens\":2408,\"input_tokens\":2267,\"output_tokens\":141,\"input_token_details\":{\"text_tokens\":1899,\"audio_tokens\":368,\"image_tokens\":0,\"cached_tokens\":1984,\"cached_tokens_details\":{\"text_tokens\":1792,\"audio_tokens\":192,\"image_tokens\":0}},\"output_token_details\":{\"text_tokens\":45,\"audio_tokens\":96}}"
+    },
+    {
+      "time": "2026-06-03T09:41:28.582Z",
+      "stage": "ws_close",
+      "detail": "1006"
+    },
+    {
+      "time": "2026-06-03T09:41:28.582Z",
+      "stage": "saving_log",
+      "detail": "ws_close 1006"
+    },
+    {
+      "time": "2026-06-03T09:41:28.583Z",
+      "stage": "call_ended",
+      "detail": "outcome=transferred"
+    }
+  ],
+  "call_params": {
+    "accept": {
+      "type": "realtime",
+      "model": "gpt-realtime-mini",
+      "instructions": "\n# Role\nBạn là trợ lý AI tổng đài CSKH của Công ty Cổ phần Cấp nước Trung An.\nMục tiêu: hiểu nhu cầu, hỗ trợ nhanh, hoặc chuyển nhân viên khi cần.\n\n# Tone\n- Luôn nói tiếng Việt.\n- Xưng là “em”, gọi khách là “Quý Khách”.\n- Thân thiện, lịch sự, bình tĩnh.\n- Trả lời ngắn, tự nhiên.\n\n\n# Rules\n- Không ngắt lời khách.\n- Chỉ phản hồi khi nghe rõ ý khách.\n- Nếu nghe không rõ, hỏi lại.\n- Không tự suy diễn thông tin.\n- Không lặp cùng một câu mở đầu quá nhiều lần.\n\n# Scope\nHỗ trợ: tiền nước, lượng nước, so sánh lượng nước, tình trạng cấp nước, thủ tục hành chính, phản ánh/khiếu nại.\n\n# Number Reading\nKhi xác nhận số danh bộ:\n- Đọc từng chữ số, cách nhau bằng dấu gạch ngang.\n- Không đọc gộp số.\n- Hỏi xác nhận trước khi tra cứu.\n\nVí dụ: 52487336008 đọc là:\nNăm - Hai - Bốn - Tám - Bảy - Ba - Ba - Sáu - Không - Không - Tám.\n\n# Flow\n1. Chào ngắn và hỏi nhu cầu.\n2. Xác định ý định.\n3. Thu thập thông tin tối thiểu.\n4. Xác nhận thông tin quan trọng.\n5. Gọi tool phù hợp nếu đủ dữ liệu.\n6. Trả kết quả.\n7. Hỏi khách còn cần hỗ trợ gì không.\n\n# Escalation\nChuyển nhân viên nếu:\n- Khách yêu cầu gặp người thật.\n- Khách bức xúc hoặc khiếu nại phức tạp.\n- Ngoài phạm vi hỗ trợ.\n- Không hiểu khách sau 2 lần hỏi lại.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_bill",
+          "description": "Tra cứu hóa đơn tiền nước của khách hàng. Không truyền kỳ/năm sẽ lấy kỳ gần nhất.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ma_danh_bo": {
+                "type": "string",
+                "description": "Mã danh bộ"
+              },
+              "ky": {
+                "type": "integer",
+                "description": "Kỳ (tháng) cần tra cứu, tùy chọn"
+              },
+              "nam": {
+                "type": "integer",
+                "description": "Năm cần tra cứu, tùy chọn"
+              }
+            },
+            "required": [
+              "ma_danh_bo"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "get_water_usage",
+          "description": "Tra cứu sản lượng nước sử dụng. Không truyền kỳ/năm sẽ lấy kỳ gần nhất.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ma_danh_bo": {
+                "type": "string",
+                "description": "Mã danh bộ"
+              },
+              "ky": {
+                "type": "integer",
+                "description": "Kỳ (tháng) cần tra cứu, tùy chọn"
+              },
+              "nam": {
+                "type": "integer",
+                "description": "Năm cần tra cứu, tùy chọn"
+              }
+            },
+            "required": [
+              "ma_danh_bo"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "compare_usage",
+          "description": "So sánh tăng/giảm sản lượng nước so với kỳ trước.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ma_danh_bo": {
+                "type": "string",
+                "description": "Mã danh bộ"
+              },
+              "ky": {
+                "type": "integer",
+                "description": "Kỳ (tháng) cần so sánh, tùy chọn"
+              },
+              "nam": {
+                "type": "integer",
+                "description": "Năm cần so sánh, tùy chọn"
+              }
+            },
+            "required": [
+              "ma_danh_bo"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "get_outages",
+          "description": "Tra cứu thông tin gián đoạn cung cấp nước/lịch cúp nước bảo trì hiện tại.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ma_danh_bo": {
+                "type": "string",
+                "description": "Mã danh bộ"
+              }
+            },
+            "required": [
+              "ma_danh_bo"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "create_ticket",
+          "description": "Tạo phiếu tiếp nhận phản ánh sự cố hoặc khiếu nại ban đầu.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ma_danh_bo": {
+                "type": "string",
+                "description": "Mã danh bộ khách hàng"
+              },
+              "loai": {
+                "type": "string",
+                "enum": [
+                  "su_co",
+                  "phan_anh",
+                  "khan_cap",
+                  "khieunai"
+                ],
+                "description": "Loại phiếu: su_co (sự cố thường), phan_anh (phản ánh), khieu_nai (khiếu nại), khan_cap (sự cố ngoài giờ sau 22h)"
+              },
+              "mo_ta": {
+                "type": "string",
+                "description": "Mô tả ngắn gọn vấn đề khách hàng phản ánh"
+              }
+            },
+            "required": [
+              "ma_danh_bo",
+              "loai",
+              "mo_ta"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "get_procedure_info",
+          "description": "Lấy hướng dẫn thủ tục hành chính: đăng ký định mức nước, lắp đặt đồng hồ, sang tên, nâng/dời đồng hồ.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "loai_thu_tuc": {
+                "type": "string",
+                "enum": [
+                  "dinh_muc_nuoc",
+                  "lap_dat_dong_ho",
+                  "sang_ten_dong_ho",
+                  "nang_doi_dong_ho"
+                ],
+                "description": "Loại thủ tục cần hướng dẫn"
+              },
+              "doi_tuong": {
+                "type": "string",
+                "enum": [
+                  "ho_gia_dinh",
+                  "doanh_nghiep"
+                ],
+                "description": "Đối tượng áp dụng (nếu thủ tục có phân biệt)"
+              }
+            },
+            "required": [
+              "loai_thu_tuc"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "transfer_to_agent",
+          "description": "Chuyển cuộc gọi sang tổng đài viên (người thật). Dùng khi khách yêu cầu hoặc vượt quá khả năng AI.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ly_do": {
+                "type": "string",
+                "description": "Lý do chuyển máy (để log nội bộ)"
+              }
+            },
+            "required": [
+              "ly_do"
+            ]
+          }
+        },
+        {
+          "type": "function",
+          "name": "end_call",
+          "description": "Kết thúc cuộc gọi sau khi đã hỗ trợ xong và chào tạm biệt khách hàng.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ly_do": {
+                "type": "string",
+                "description": "Lý do kết thúc"
+              }
+            }
+          }
+        }
+      ],
+      "audio": {
+        "input": {
+          "transcription": {
+            "model": "gpt-4o-mini-transcribe",
+            "language": "vi"
+          }
+        }
+      }
+    },
+    "session_update": null,
+    "session_created": null
+  }
+}

@@ -55,7 +55,8 @@ export async function acceptCall(callId) {
   // OpenAI trả 200 OK với body rỗng hoặc JSON – xử lý cả hai trường hợp
   const text = await res.text();
   console.log("[CallMgr] :text :", text);
-  return "";// text ? JSON.parse(text) : {};
+  // Trả về body đã gửi để logger lưu lại (phân tích/điều chỉnh prompt)
+  return body;
 }
 
 /**
@@ -85,17 +86,22 @@ export async function rejectCall(callId, statusCode = 486) {
 export async function referCall(callId, targetUri) {
   log.info(`[CallMgr] Referring call ${callId} → ${targetUri}`);
   setTimeout(async () => {
-    const res = await fetch(`${BASE}/${callId}/refer`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ target_uri: targetUri }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Refer call failed ${res.status}: ${text}`);
+    try {
+      const res = await fetch(`${BASE}/${callId}/refer`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ target_uri: targetUri }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        log.error(`[CallMgr] Refer ${callId} thất bại ${res.status}: ${text}`);
+      } else {
+        log.info(`[CallMgr] Refer ${callId} thành công`);
+      }
+    } catch (err) {
+      log.error(`[CallMgr] Refer ${callId} lỗi mạng: ${err.message}`);
     }
-  }, 2000)
-
+  }, 2000);
 }
 
 /**
@@ -105,15 +111,25 @@ export async function referCall(callId, targetUri) {
 export async function hangupCall(callId) {
   log.info(`[CallMgr] Hanging up call ${callId}`);
   setTimeout(async () => {
-    const res = await fetch(`${BASE}/${callId}/hangup`, {
-      method: "POST",
-      headers: authHeaders(),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Hangup call failed ${res.status}: ${text}`);
+    try {
+      const res = await fetch(`${BASE}/${callId}/hangup`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        // 404/call_id_not_found = cuộc gọi đã kết thúc → coi như thành công, KHÔNG ném lỗi
+        if (res.status === 404) {
+          log.info(`[CallMgr] Hangup ${callId}: cuộc gọi đã kết thúc trước đó (404), bỏ qua.`);
+        } else {
+          log.error(`[CallMgr] Hangup ${callId} thất bại ${res.status}: ${text}`);
+        }
+      } else {
+        log.info(`[CallMgr] Hangup ${callId} thành công`);
+      }
+    } catch (err) {
+      // Bắt mọi lỗi mạng để không làm sập tiến trình
+      log.error(`[CallMgr] Hangup ${callId} lỗi mạng: ${err.message}`);
     }
   }, 3000);
-
-
 }

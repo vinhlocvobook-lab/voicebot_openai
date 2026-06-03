@@ -4,64 +4,102 @@
  * Mỗi handler nhận arguments object, trả về string để gửi lại cho AI.
  */
 
-import { verifyCustomer, getBill, getWaterUsage, getOutages, createTicket } from "./mock-api.js";
+import {
+  getTienNuoc,
+  getSanLuong,
+  getSoSanhTangGiam,
+  getThongBaoCupNuoc,
+  baoSuCo,
+} from "./api.js";
 import { PROCEDURES } from "./huongdanthutuc-data.js";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const fmtTien = (n) => (typeof n === "number" ? n.toLocaleString("vi-VN") : n);
+
+/**
+ * Chuẩn hoá mã danh bộ trước khi gọi API:
+ * AI thường đọc số kèm dấu gạch ngang / khoảng trắng (vd "1-5-1-2-...").
+ * Bỏ mọi ký tự không phải chữ số.
+ */
+function normalizeDanhBo(raw) {
+  return String(raw ?? "").replace(/\D/g, "");
+}
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-async function handleVerifyCustomer({ ma_danh_bo }) {
-  const result = await verifyCustomer(ma_danh_bo);
-  if (!result.valid) {
-    return JSON.stringify({ success: false, message: "Mã danh bộ không hợp lệ. Quý khách vui lòng kiểm tra lại." });
+async function handleGetBill({ ma_danh_bo, ky, nam }) {
+  const r = await getTienNuoc(normalizeDanhBo(ma_danh_bo), ky, nam);
+  if (!r.success) {
+    return JSON.stringify({ success: false, message: r.message || "Không tìm thấy hóa đơn." });
   }
   return JSON.stringify({
     success: true,
-    message: `Xác thực thành công. Khách hàng: ${result.customer.hoTen}, địa chỉ: ${result.customer.diaChi}.`,
-    customer: { hoTen: result.customer.hoTen, diaChi: result.customer.diaChi },
+    message: r.message || "Lấy thông tin tiền nước thành công.",
+    data: r.data,
   });
 }
 
-async function handleGetBill({ ma_danh_bo }) {
-  const bill = await getBill(ma_danh_bo);
-  if (bill.error) return JSON.stringify({ success: false, message: bill.error });
-  const trangThai = bill.daNopTien ? "đã thanh toán" : `chưa thanh toán, hạn nộp ${bill.hanNop}`;
-  return JSON.stringify({
-    success: true,
-    message: `Hóa đơn tháng ${bill.thang}: ${bill.soTienPhaiTra.toLocaleString("vi-VN")} đồng, ${trangThai}.`,
-    data: bill,
-  });
-}
-
-async function handleGetWaterUsage({ ma_danh_bo }) {
-  const result = await getWaterUsage(ma_danh_bo);
-  if (result.error) return JSON.stringify({ success: false, message: result.error });
-  const c = result.comparison;
-  const trend = c.xu_huong === "tăng" ? `tăng ${c.chenh_lech} m³` :
-    c.xu_huong === "giảm" ? `giảm ${Math.abs(c.chenh_lech)} m³` : "không đổi";
-  return JSON.stringify({
-    success: true,
-    message: `Tháng ${c.thangHienTai}: ${c.luongHienTai} m³ (${trend} so với tháng ${c.thangTruoc} là ${c.luongTruoc} m³).`,
-    data: result,
-  });
-}
-
-async function handleGetOutages() {
-  const { outages } = await getOutages();
-  if (outages.length === 0) {
-    return JSON.stringify({ success: true, message: "Hiện tại không có thông báo gián đoạn cấp nước nào." });
+async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
+  const r = await getSanLuong(normalizeDanhBo(ma_danh_bo), ky, nam);
+  if (!r.success) {
+    return JSON.stringify({ success: false, message: r.message || "Không tìm thấy dữ liệu sản lượng." });
   }
-  const list = outages
-    .map((o) => `Khu vực ${o.khuVuc}: ${o.lyDo}, từ ${o.tuNgay} đến ${o.denNgay}.`)
-    .join(" | ");
-  return JSON.stringify({ success: true, message: `Các thông báo gián đoạn: ${list}`, data: outages });
-}
-
-async function handleCreateTicket({ ma_danh_bo, loai, mo_ta, khu_vuc }) {
-  const result = await createTicket({ maDanhBo: ma_danh_bo, loai, moTa: mo_ta, khuVuc: khu_vuc });
+  const arr = Array.isArray(r.data) ? r.data : [];
+  const parts = arr.map(
+    (d) => `Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${fmtTien(d.TongTien)} đồng`
+  );
   return JSON.stringify({
     success: true,
-    message: result.message,
-    ticketId: result.ticketId,
+    message: parts.length ? parts.join("; ") + "." : r.message,
+    data: r.data,
+  });
+}
+
+async function handleCompareUsage({ ma_danh_bo, ky, nam }) {
+  const r = await getSoSanhTangGiam(normalizeDanhBo(ma_danh_bo), ky, nam);
+  if (!r.success) {
+    return JSON.stringify({ success: false, message: r.message || "Không có dữ liệu so sánh." });
+  }
+  return JSON.stringify({
+    success: true,
+    message: r.message || "Lấy thông tin so sánh sản lượng thành công.",
+    data: r.data,
+  });
+}
+
+async function handleGetOutages({ ma_danh_bo }) {
+  const r = await getThongBaoCupNuoc(normalizeDanhBo(ma_danh_bo));
+  if (!r.success) {
+    return JSON.stringify({ success: false, message: r.message || "Không tra cứu được thông tin cúp nước." });
+  }
+  const d = r.data || {};
+  if (!d.coSuCo) {
+    return JSON.stringify({
+      success: true,
+      message: d.thongBao || "Khách hàng không nằm trong vùng bị sự cố.",
+      data: d,
+    });
+  }
+  const tg = d.thoiGianDuKienHoanThanh ? ` Dự kiến hoàn thành: ${d.thoiGianDuKienHoanThanh}.` : "";
+  return JSON.stringify({
+    success: true,
+    message: `${d.thongBao || "Khu vực của Quý khách đang bị sự cố cấp nước."}${tg}`,
+    data: d,
+  });
+}
+
+async function handleCreateTicket({ ma_danh_bo, loai, mo_ta }) {
+  // Gộp loại + mô tả thành nội dung gửi lên endpoint bao-su-co.
+  const noiDung = loai ? `[${loai}] ${mo_ta}` : mo_ta;
+  const r = await baoSuCo(normalizeDanhBo(ma_danh_bo), noiDung);
+  if (!r.success) {
+    return JSON.stringify({ success: false, message: r.message || "Không tạo được phiếu sự cố." });
+  }
+  return JSON.stringify({
+    success: true,
+    message: r.message || "Phiếu tiếp nhận sự cố đã được ghi nhận.",
+    data: r.data,
   });
 }
 
@@ -131,10 +169,10 @@ function handleEndCall({ ly_do } = {}) {
 export async function dispatchTool(name, args) {
   try {
     switch (name) {
-      case "verify_customer": return await handleVerifyCustomer(args);
       case "get_bill": return await handleGetBill(args);
       case "get_water_usage": return await handleGetWaterUsage(args);
-      case "get_outages": return await handleGetOutages();
+      case "compare_usage": return await handleCompareUsage(args);
+      case "get_outages": return await handleGetOutages(args);
       case "create_ticket": return await handleCreateTicket(args);
       case "get_procedure_info": return handleGetProcedureInfo(args);
       case "transfer_to_agent": return handleTransferToAgent(args);
