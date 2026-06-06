@@ -137,8 +137,14 @@ export function openSessionWebSocket(callId, callOps) {
       case "response.done": {
         const usage = event?.response?.usage;
         if (usage) {
-          log.debug(`[WS][${callId}] response.done usage:`, usage);
-          logger.addEvent("usage", _safeJson(usage));
+          // Tích lũy token để tính cost cuối cuộc gọi
+          logger.addUsage(usage);
+          // Log tóm tắt nhanh để debug
+          const totalIn  = usage.input_tokens  ?? 0;
+          const totalOut = usage.output_tokens ?? 0;
+          const audioIn  = usage.input_token_details?.audio_tokens  ?? 0;
+          const audioOut = usage.output_token_details?.audio_tokens ?? 0;
+          log.debug(`[WS][${callId}] response.done usage: in=${totalIn}(audio=${audioIn}) out=${totalOut}(audio=${audioOut})`);
         }
 
         const output = event?.response?.output;

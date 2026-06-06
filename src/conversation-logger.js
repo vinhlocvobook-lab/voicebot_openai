@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { calcRealtimeCost, calcChatCost } from "./pricing.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Lưu trong thư mục gốc của project, cùng cấp với server.js
@@ -56,6 +57,21 @@ export class ConversationLogger {
 
     // Buffer tạm cho AI response đang stream
     this._aiBuffer  = "";
+
+    // ── Token usage & cost ──────────────────────────────────────────────────
+    // Tổng hợp usage từ tất cả response.done events trong cuộc gọi
+    this._realtimeTotals = {
+      input_tokens: 0,
+      output_tokens: 0,
+      text_input_tokens: 0,
+      audio_input_tokens: 0,
+      cached_text_input_tokens: 0,
+      cached_audio_input_tokens: 0,
+      text_output_tokens: 0,
+      audio_output_tokens: 0,
+      response_count: 0,        // số lần response.done nhận được
+    };
+    this._summaryUsage = null;  // usage từ gpt-4o-mini summary call
   }
 
   // ── Transcript ──────────────────────────────────────────────────────────────
@@ -94,6 +110,30 @@ export class ConversationLogger {
     this.toolCalls.push(entry);
     this.addEvent("tool_call", `${name}(${_safeJson(args)})`);
     return entry;
+  }
+
+  // ── Token usage ─────────────────────────────────────────────────────────────
+
+  /**
+   * Tích lũy usage từ mỗi response.done event của Realtime API.
+   * Gọi nhiều lần trong 1 cuộc gọi (mỗi lần AI trả lời là 1 response.done).
+   *
+   * @param {object} usage - event.response.usage từ response.done
+   */
+  addUsage(usage) {
+    if (!usage) return;
+    const d  = usage.input_token_details  ?? {};
+    const od = usage.output_token_details ?? {};
+
+    this._realtimeTotals.input_tokens              += usage.input_tokens  ?? 0;
+    this._realtimeTotals.output_tokens             += usage.output_tokens ?? 0;
+    this._realtimeTotals.text_input_tokens         += d.text_tokens            ?? 0;
+    this._realtimeTotals.audio_input_tokens        += d.audio_tokens           ?? 0;
+    this._realtimeTotals.cached_text_input_tokens  += d.cached_text_tokens     ?? 0;
+    this._realtimeTotals.cached_audio_input_tokens += d.cached_audio_tokens    ?? 0;
+    this._realtimeTotals.text_output_tokens        += od.text_tokens           ?? 0;
+    this._realtimeTotals.audio_output_tokens       += od.audio_tokens          ?? 0;
+    this._realtimeTotals.response_count            += 1;
   }
 
   // ── Timeline sự kiện & lỗi ────────────────────────────────────────────────────
@@ -150,13 +190,39 @@ export class ConversationLogger {
     const durationSec = Math.round((this.endTime - this.startTime) / 1000);
 
     // Tạo AI summary từ transcript
-    const aiSummary = await _generateSummary(this.transcript, this.toolCalls, this.outcome);
+    const { summary: aiSummary, usage: summaryUsage } =
+      await _generateSummary(this.transcript, this.toolCalls, this.outcome);
+    this._summaryUsage = summaryUsage ?? null;
 
     // Timeline gộp (diễn tiến cuộc gọi theo thời gian): hội thoại + tool + sự kiện
     const timeline = _buildTimeline(this.transcript, this.toolCalls, this.events);
 
     // Hội thoại liên tục KH ↔ AI (kèm tool gọi/kết quả) – dễ đọc khi debug
     const conversation = _buildConversation(this.transcript, this.toolCalls);
+
+    // ── Tính chi phí ──────────────────────────────────────────────────────────
+    const realtimeModel = this.model ?? process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-mini";
+    const summaryModel  = "gpt-4o-mini";
+
+    // Tổng hợp usage dạng mà calcRealtimeCost mong đợi
+    const realtimeUsageObj = {
+      input_tokens:  this._realtimeTotals.input_tokens,
+      output_tokens: this._realtimeTotals.output_tokens,
+      input_token_details: {
+        text_tokens:         this._realtimeTotals.text_input_tokens,
+        audio_tokens:        this._realtimeTotals.audio_input_tokens,
+        cached_text_tokens:  this._realtimeTotals.cached_text_input_tokens,
+        cached_audio_tokens: this._realtimeTotals.cached_audio_input_tokens,
+      },
+      output_token_details: {
+        text_tokens:  this._realtimeTotals.text_output_tokens,
+        audio_tokens: this._realtimeTotals.audio_output_tokens,
+      },
+    };
+
+    const realtimeCostInfo = calcRealtimeCost(realtimeUsageObj, realtimeModel);
+    const summaryCostInfo  = this._summaryUsage ? calcChatCost(this._summaryUsage, summaryModel) : null;
+    const totalCostUsd     = +((realtimeCostInfo?.cost_usd ?? 0) + (summaryCostInfo?.cost_usd ?? 0)).toFixed(6);
 
     const document = {
       // ── 1. Thông tin định danh cuộc gọi ───────────────────────────────────
@@ -186,28 +252,61 @@ export class ConversationLogger {
         errorCount:    this.errors.length,
       },
 
-      // ── 3. Tóm tắt do AI tạo ra (đánh giá chất lượng cuộc gọi) ──────────────
+      // ── 3. Token usage & chi phí cuộc gọi ─────────────────────────────────
+      token_usage: {
+        realtime: {
+          model:           realtimeModel,
+          response_count:  this._realtimeTotals.response_count,
+          input_tokens:    this._realtimeTotals.input_tokens,
+          output_tokens:   this._realtimeTotals.output_tokens,
+          input_details: {
+            text_tokens:         this._realtimeTotals.text_input_tokens,
+            audio_tokens:        this._realtimeTotals.audio_input_tokens,
+            cached_text_tokens:  this._realtimeTotals.cached_text_input_tokens,
+            cached_audio_tokens: this._realtimeTotals.cached_audio_input_tokens,
+          },
+          output_details: {
+            text_tokens:  this._realtimeTotals.text_output_tokens,
+            audio_tokens: this._realtimeTotals.audio_output_tokens,
+          },
+        },
+        summary: this._summaryUsage ? {
+          model:             summaryModel,
+          prompt_tokens:     this._summaryUsage.prompt_tokens     ?? 0,
+          completion_tokens: this._summaryUsage.completion_tokens ?? 0,
+          total_tokens:      this._summaryUsage.total_tokens      ?? 0,
+        } : null,
+      },
+
+      cost_usd: {
+        total:    totalCostUsd,
+        realtime: realtimeCostInfo  ? { cost: realtimeCostInfo.cost_usd,  breakdown: realtimeCostInfo.breakdown  } : null,
+        summary:  summaryCostInfo   ? { cost: summaryCostInfo.cost_usd,   breakdown: summaryCostInfo.breakdown   } : null,
+        note:     `Giá model: ${realtimeModel} (realtime) + ${summaryModel} (summary)`,
+      },
+
+      // ── 4. Tóm tắt do AI tạo ra (đánh giá chất lượng cuộc gọi) ──────────────
       summary: aiSummary,
 
-      // ── 4. Hội thoại liên tục KH ↔ AI (đọc nhanh diễn biến) ────────────────
+      // ── 5. Hội thoại liên tục KH ↔ AI (đọc nhanh diễn biến) ────────────────
       conversation,
 
-      // ── 5. Diễn tiến cuộc gọi theo thời gian (debug tổng quan) ──────────────
+      // ── 6. Diễn tiến cuộc gọi theo thời gian (debug tổng quan) ──────────────
       timeline,
 
-      // ── 5. Hội thoại đầy đủ KH ↔ AI ────────────────────────────────────────
+      // ── 7. Hội thoại đầy đủ KH ↔ AI ────────────────────────────────────────
       transcript: this.transcript,
 
-      // ── 6. Đầu vào / đầu ra của các function tool ──────────────────────────
+      // ── 8. Đầu vào / đầu ra của các function tool ──────────────────────────
       toolCalls: this.toolCalls,
 
-      // ── 7. Lỗi phát sinh trong cuộc gọi ────────────────────────────────────
+      // ── 9. Lỗi phát sinh trong cuộc gọi ────────────────────────────────────
       errors: this.errors,
 
-      // ── 8. Sự kiện kỹ thuật chi tiết ───────────────────────────────────────
+      // ── 10. Sự kiện kỹ thuật chi tiết ──────────────────────────────────────
       events: this.events,
 
-      // ── 9. Params kỹ thuật để phân tích/điều chỉnh prompt ──────────────────
+      // ── 11. Params kỹ thuật để phân tích/điều chỉnh prompt ─────────────────
       call_params: {
         accept: this.acceptParams ? { ...this.acceptParams } : null,
         session_update: this.sessionUpdateParams,
@@ -357,7 +456,7 @@ function _ensureDir(dir) {
  */
 async function _generateSummary(transcript, toolCalls, outcome) {
   if (!transcript.length) {
-    return { luu_y: "Cuộc gọi không có transcript (khách hàng cúp máy sớm hoặc im lặng)." };
+    return { summary: { luu_y: "Cuộc gọi không có transcript (khách hàng cúp máy sớm hoặc im lặng)." }, usage: null };
   }
 
   // Chuẩn bị nội dung hội thoại để gửi cho AI
@@ -410,15 +509,16 @@ Chỉ trả về JSON, không thêm text khác.`;
     if (!res.ok) {
       const err = await res.text();
       log.warn(`[Logger] Summary API lỗi ${res.status}: ${err}`);
-      return { loi: `Không thể tạo summary: ${res.status}` };
+      return { summary: { loi: `Không thể tạo summary: ${res.status}` }, usage: null };
     }
 
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
-    return content ? JSON.parse(content) : { loi: "Không có nội dung từ API" };
+    const summary = content ? JSON.parse(content) : { loi: "Không có nội dung từ API" };
+    return { summary, usage: data.usage ?? null };
 
   } catch (err) {
     log.warn(`[Logger] Lỗi tạo AI summary: ${err.message}`);
-    return { loi: err.message };
+    return { summary: { loi: err.message }, usage: null };
   }
 }

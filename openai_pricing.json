@@ -1,0 +1,74 @@
+{
+  "updated": "2026-06",
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "note": "Giá tính bằng USD trên 1 triệu tokens (per 1M tokens)",
+  "currency": "USD",
+  "unit": "per_1M_tokens",
+  "models": {
+    "gpt-4o-mini": {
+      "description": "GPT-4o mini - Chat Completions (text only)",
+      "type": "text",
+      "input": 0.15,
+      "cached_input": 0.075,
+      "output": 0.60
+    },
+    "gpt-4o": {
+      "description": "GPT-4o - Chat Completions (text only)",
+      "type": "text",
+      "input": 2.50,
+      "cached_input": 1.25,
+      "output": 10.00
+    },
+    "gpt-4o-2024-08-06": {
+      "description": "GPT-4o (2024-08-06) - Chat Completions",
+      "type": "text",
+      "input": 2.50,
+      "cached_input": 1.25,
+      "output": 10.00
+    },
+    "gpt-4o-mini-realtime-preview": {
+      "description": "GPT-4o mini Realtime API - voice + text",
+      "type": "realtime",
+      "text_input": 0.60,
+      "cached_text_input": 0.30,
+      "text_output": 2.40,
+      "audio_input": 10.00,
+      "cached_audio_input": 0.30,
+      "audio_output": 20.00,
+      "approx_cost_per_min_usd": 0.33
+    },
+    "gpt-realtime-mini": {
+      "description": "gpt-realtime-mini (alias: gpt-4o-mini-realtime-preview)",
+      "type": "realtime",
+      "text_input": 0.60,
+      "cached_text_input": 0.30,
+      "text_output": 2.40,
+      "audio_input": 10.00,
+      "cached_audio_input": 0.30,
+      "audio_output": 20.00,
+      "approx_cost_per_min_usd": 0.33
+    },
+    "gpt-4o-realtime-preview": {
+      "description": "GPT-4o Realtime API - voice + text (full model)",
+      "type": "realtime",
+      "text_input": 4.00,
+      "cached_text_input": 0.40,
+      "text_output": 24.00,
+      "audio_input": 32.00,
+      "cached_audio_input": 0.40,
+      "audio_output": 64.00,
+      "approx_cost_per_min_usd": 1.63
+    },
+    "gpt-realtime-2": {
+      "description": "gpt-realtime-2 (alias: gpt-4o-realtime-preview)",
+      "type": "realtime",
+      "text_input": 4.00,
+      "cached_text_input": 0.40,
+      "text_output": 24.00,
+      "audio_input": 32.00,
+      "cached_audio_input": 0.40,
+      "audio_output": 64.00,
+      "approx_cost_per_min_usd": 1.63
+    }
+  }
+}
