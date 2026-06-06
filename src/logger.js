@@ -5,8 +5,14 @@
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = LEVELS[process.env.LOG_LEVEL || "info"] ?? 1;
 
+// Múi giờ Việt Nam (GMT+7) – hiển thị log console theo giờ địa phương
+const TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+function _nowGmt7() {
+  return new Date(Date.now() + TZ_OFFSET_MS).toISOString().replace("Z", "+07:00");
+}
+
 function format(level, args) {
-  const ts = new Date().toISOString();
+  const ts = _nowGmt7();
   return [`[${ts}] [${level.toUpperCase()}]`, ...args];
 }
 

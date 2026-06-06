@@ -155,13 +155,16 @@ export class ConversationLogger {
     // Timeline gộp (diễn tiến cuộc gọi theo thời gian): hội thoại + tool + sự kiện
     const timeline = _buildTimeline(this.transcript, this.toolCalls, this.events);
 
+    // Hội thoại liên tục KH ↔ AI (kèm tool gọi/kết quả) – dễ đọc khi debug
+    const conversation = _buildConversation(this.transcript, this.toolCalls);
+
     const document = {
       // ── 1. Thông tin định danh cuộc gọi ───────────────────────────────────
       meta: {
         callId:      this.callId,
         tel:         this.tel,
-        startTime:   this.startTime.toISOString(),
-        endTime:     this.endTime.toISOString(),
+        startTime:   _toGmt7(this.startTime),
+        endTime:     _toGmt7(this.endTime),
         durationSec,
         outcome:     this.outcome,
         model:       this.model,
@@ -186,7 +189,10 @@ export class ConversationLogger {
       // ── 3. Tóm tắt do AI tạo ra (đánh giá chất lượng cuộc gọi) ──────────────
       summary: aiSummary,
 
-      // ── 4. Diễn tiến cuộc gọi theo thời gian (debug tổng quan) ──────────────
+      // ── 4. Hội thoại liên tục KH ↔ AI (đọc nhanh diễn biến) ────────────────
+      conversation,
+
+      // ── 5. Diễn tiến cuộc gọi theo thời gian (debug tổng quan) ──────────────
       timeline,
 
       // ── 5. Hội thoại đầy đủ KH ↔ AI ────────────────────────────────────────
@@ -221,8 +227,22 @@ export class ConversationLogger {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Múi giờ Việt Nam (GMT+7)
+const TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/** Định dạng thời gian theo GMT+7, dạng ISO có offset (vẫn parse/sort được). */
+function _toGmt7(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  return new Date(d.getTime() + TZ_OFFSET_MS).toISOString().replace("Z", "+07:00");
+}
+
 function _now() {
-  return new Date().toISOString();
+  return _toGmt7(new Date());
+}
+
+/** Lấy HH:mm:ss từ chuỗi thời gian GMT+7 (để hiển thị trong hội thoại). */
+function _hms(t) {
+  return typeof t === "string" && t.length >= 19 ? t.slice(11, 19) : "";
 }
 
 function _safeJson(obj) {
@@ -261,6 +281,44 @@ function _buildTimeline(transcript, toolCalls, events) {
 function _tryParse(s) {
   if (typeof s !== "string") return s;
   try { return JSON.parse(s); } catch { return s; }
+}
+
+/**
+ * Tạo hội thoại liên tục KH ↔ AI dạng dòng dễ đọc, gồm cả lượt gọi tool & kết quả.
+ * Ví dụ:
+ *   [10:08:05] 🧑 Khách: Cho tôi hỏi tiền nước tháng này
+ *   [10:08:06] 🤖 AI: Quý khách cho em xin mã danh bộ ạ
+ *   [10:08:55] 🔧 AI gọi tool: get_bill({"ma_danh_bo":"15122890724"})
+ *   [10:08:56] 📋 Kết quả tool get_bill: {"success":true,...}
+ *   [10:08:57] 🤖 AI: Số tiền của Quý khách là ...
+ */
+function _buildConversation(transcript, toolCalls) {
+  const items = [];
+
+  for (const t of transcript) {
+    const icon = t.speaker === "AI" ? "🤖 AI" : "🧑 Khách";
+    items.push({ time: t.time, order: 1, line: `[${_hms(t.time)}] ${icon}: ${t.text}` });
+  }
+
+  for (const tc of toolCalls) {
+    const argsStr = _safeJson(tc.args ?? {});
+    items.push({
+      time: tc.time, order: 2,
+      line: `[${_hms(tc.time)}] 🔧 AI gọi tool: ${tc.name}(${argsStr})`,
+    });
+    const out = typeof tc.output === "string" ? tc.output : _safeJson(tc.output);
+    items.push({
+      time: tc.time, order: 3,
+      line: `[${_hms(tc.time)}] 📋 Kết quả tool ${tc.name}: ${out}`,
+    });
+  }
+
+  items.sort((a, b) => {
+    const d = new Date(a.time) - new Date(b.time);
+    return d !== 0 ? d : a.order - b.order;
+  });
+
+  return items.map((i) => i.line);
 }
 
 /**

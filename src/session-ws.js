@@ -87,16 +87,33 @@ export function openSessionWebSocket(callId, callOps) {
     //   },
     // }));
 
+    // Fix: thêm type: "realtime" – bắt buộc cho SIP sessions, tránh lỗi "Missing session.type"
+    ws.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        type: "realtime",
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,          // tăng từ 0.4 → tránh noise/echo kích hoạt VAD giả
+          prefix_padding_ms: 500,
+          silence_duration_ms: 1200
+        }
+      }
+    }));
     // 2. Trigger AI nói câu chào ngay lập tức
-    //delay 2 giây
+    // Nếu có customerContext → AI xác nhận danh bộ luôn; nếu không → chào thông thường
+    // const greetingInstruction = callOps.customerContext
+    //   ? "Chào khách hàng ngắn gọn rồi đọc danh bộ tìm thấy để xác nhận, theo đúng hướng dẫn trong system instructions."
+    //   : 'nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
+
+    const greetingInstruction = 'đợi 1 giây rồi nói "... Alo ... Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
+
     setTimeout(() => {
       ws.send(JSON.stringify({
         type: "response.create",
-        response: {
-          instructions: 'nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo "Ây Ai ", Quý khách cần em hỗ trợ gì ạ?"',
-        },
+        response: { instructions: greetingInstruction },
       }));
-      logger.addEvent("greeting_sent", "Đã gửi yêu cầu chào khách");
+      logger.addEvent("greeting_sent", callOps.customerContext ? "greeting chuẩn (có context danh bộ)" : "greeting chuẩn");
     }, 1000);
 
   });

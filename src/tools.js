@@ -23,8 +23,25 @@ const fmtTien = (n) => (typeof n === "number" ? n.toLocaleString("vi-VN") : n);
  * Bỏ mọi ký tự không phải chữ số.
  */
 function normalizeDanhBo(raw) {
-  return String(raw ?? "").replace(/\D/g, "");
+  console.log("==========[normalizeDanhBo]==================")
+  console.log("raw:", raw);
+
+  // Bảo vệ code nếu raw là null/undefined, sau đó xóa sạch ký tự không phải số
+  let normalized = String(raw ?? "").replace(/\D/g, "");
+
+  console.log("normalized:", normalized);
+  return normalized;
 }
+// function normalizeDanhBo(raw) {
+//   console.log("==========[normalizeDanhBo]==================")
+//   console.log("raw", raw)
+//   // loại bỏ tất cả cá các khoảng trắng và dầu - 
+//   let normalized = String(raw ?? "").replace(/\s/g, "");
+//   normalized = String(normalized ?? "").replace(/-/g, "");
+//   normalized = String(normalized ?? "").replace(/\D/g, "");
+//   console.log("normalized", normalized)
+//   return normalized;
+// }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 

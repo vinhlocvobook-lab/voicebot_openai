@@ -16,6 +16,7 @@ import { acceptCall, rejectCall, referCall, hangupCall } from "./src/call-manage
 import { openSessionWebSocket } from "./src/session-ws.js";
 import { verifyWebhookSignature } from "./src/webhook-verify.js";
 import { log } from "./src/logger.js";
+import { getThongTinKhachHang } from "./src/api.js";
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -93,12 +94,12 @@ app.post(WEBHOOK_PATH, async (req, res) => {
   log.info(`[Webhook] Asterisk: uniqueid=${asteriskData.uniqueid} recordPath=${asteriskData.recordPath} phone=${asteriskData.phoneNumber}`);
 
   let tel = "Unknown";
-  if (fromHeader) {
-    const regex = /sip:([^@]+)@/;
-    const match = fromHeader.match(regex);
-    // Nếu match thành công, kết quả sẽ nằm ở index 1 của mảng
-    tel = match ? match[1] : null;
-  }
+  // if (fromHeader) {
+  //   const regex = /sip:([^@]+)@/;
+  //   const match = fromHeader.match(regex);
+  //   // Nếu match thành công, kết quả sẽ nằm ở index 1 của mảng
+  //   tel = match ? match[1] : null;
+  // }
   // Ưu tiên số điện thoại từ Asterisk nếu có
   tel = asteriskData.phoneNumber || tel;
 
@@ -109,6 +110,51 @@ app.post(WEBHOOK_PATH, async (req, res) => {
     log.error(`[Webhook] Lỗi xử lý call ${callId}: `, err.message);
   }
 });
+
+// ─── Chuyển danh bộ thành chuỗi đọc từng chữ số bằng tiếng Việt ─────────────
+// Mục đích: tránh LLM tự convert số → chữ (dễ bị sai/nhảy số)
+
+const DIGIT_WORDS = { '0': 'Không', '1': 'Một', '2': 'Hai', '3': 'Ba', '4': 'Bốn', '5': 'Năm', '6': 'Sáu', '7': 'Bảy', '8': 'Tám', '9': 'Chín' };
+
+function spokenDanhBo(danhBo) {
+  return String(danhBo).split('').map(d => DIGIT_WORDS[d] ?? d).join(' - ');
+}
+
+// ─── Build customer context từ kết quả lookup SĐT ───────────────────────────
+
+// Đọc ĐÚNG NGUYÊN VĂN chuỗi "Cách đọc xác nhận" ở trên cho khách hàng nghe, không tự chuyển đổi lại.
+// Nếu khách xác nhận đúng → dùng danh bộ ${db} cho tất cả tra cứu trong cuộc gọi.
+// Nếu khách muốn dùng danh bộ khác → dùng danh bộ khách cung cấp.
+function buildCustomerContext(apiResult) {
+  const list = Array.isArray(apiResult?.data) ? apiResult.data : [];
+  if (list.length === 0) return "";
+
+  if (list.length === 1) {
+    const db = list[0].danhBa;
+    const spoken = spokenDanhBo(db);
+    return `# Thông tin từ hệ thống (tra cứu theo số điện thoại gọi đến)
+Tìm thấy 1 hợp đồng liên kết với số điện thoại này:
+- Danh bộ: ${db}
+- Khi xác nhận, đọc ĐÚNG NGUYÊN VĂN: ${spoken}
+
+QUAN TRỌNG:
+- Xác nhận danh bộ đúng 1 LẦN DUY NHẤT (trước tra cứu đầu tiên trong cuộc gọi).
+- Sau khi khách đã xác nhận → dùng danh bộ ${db} cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.
+- Chỉ hỏi lại nếu khách chủ động báo sai hoặc muốn dùng danh bộ khác.`;
+  }
+
+  const lines = list.map((c, i) => {
+    const spoken = spokenDanhBo(c.danhBa);
+    return `- Danh bộ ${i + 1}: ${c.danhBa} (đọc: ${spoken})`;
+  }).join("\n");
+
+  return `# Thông tin từ hệ thống (tra cứu theo số điện thoại gọi đến)
+Tìm thấy ${list.length} hợp đồng liên kết với số điện thoại này:
+${lines}
+
+Hỏi khách muốn tra cứu hợp đồng nào. Đọc ĐÚNG NGUYÊN VĂN phần "(đọc: ...)" của từng danh bộ, không tự chuyển đổi lại.
+QUAN TRỌNG: Sau khi khách chọn → dùng danh bộ đó cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.`;
+}
 
 // ─── Xử lý cuộc gọi đến ──────────────────────────────────────────────────────
 
@@ -123,9 +169,25 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
     log.info(`[Call][${callId}]Cuộc gọi ngoài giờ(${hour}h) – chỉ tiếp nhận sự cố`);
   }
 
-  // Accept cuộc gọi (cấu hình session được set trong call-manager.js)
-  // acceptCall trả về body đã gửi (instructions + tools) để logger lưu lại
-  const acceptParams = await acceptCall(callId);
+  // Lookup thông tin khách hàng theo SĐT (timeout 3s, fallback nếu chậm/lỗi)
+  let customerContext = "";
+  if (tel && tel !== "Unknown") {
+    try {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 3000)
+      );
+      const r = await Promise.race([getThongTinKhachHang(null, tel), timeoutPromise]);
+      console.log('==getThongTinKhachHang===tel: ', tel);
+      console.log('==getThongTinKhachHang===r : ', r);
+      customerContext = buildCustomerContext(r);
+      log.info(`[Call][${callId}] Lookup SĐT ${tel}: ${r?.data?.length ?? 0} hợp đồng`);
+    } catch (err) {
+      log.warn(`[Call][${callId}] Lookup SĐT thất bại (${err.message}), tiếp tục không có context`);
+    }
+  }
+
+  // Accept cuộc gọi – instructions đã bao gồm customerContext (nếu có)
+  const acceptParams = await acceptCall(callId, customerContext);
 
   // Tạo callOps object để session-ws gọi lại khi cần
   const callOps = {
@@ -134,6 +196,7 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
     fromHeader, tel,
     asteriskData,
     acceptParams,
+    customerContext,
   };
 
   // Mở WebSocket để điều khiển session

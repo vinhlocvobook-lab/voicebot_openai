@@ -21,14 +21,18 @@ function authHeaders() {
  * @param {string} callId
  * @returns {Promise<object>} - Response body từ OpenAI
  */
-export async function acceptCall(callId) {
+export async function acceptCall(callId, customerContext = "") {
   // Giữ body tối giản giống Python example trong docs OpenAI.
   // Các config nâng cao (tools, voice, VAD, transcription) sẽ được gửi
   // qua session.update sau khi WebSocket kết nối thành công.
+  const instructions = customerContext
+    ? `${SYSTEM_PROMPT}\n\n${customerContext}`
+    : SYSTEM_PROMPT;
+
   const body = {
     type: "realtime",
     model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2",
-    instructions: SYSTEM_PROMPT,
+    instructions,
     tools: TOOLS,
     audio: { input: { transcription: { model: "gpt-4o-mini-transcribe", language: "vi" } } }
   };
