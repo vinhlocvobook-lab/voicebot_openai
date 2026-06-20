@@ -224,6 +224,14 @@ export function openSessionWebSocket(callId, callOps) {
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
       case "conversation.item.input_audio_transcription.completed": {
         const khText = event.transcript?.trim();
+        // Tích lũy transcription token usage (tính phí riêng cho model transcription)
+        if (event.usage) {
+          const txModel = callOps.acceptParams?.audio?.input?.transcription?.model ?? "gpt-4o-mini-transcribe";
+          logger.addTranscriptionUsage(event.usage, txModel);
+          const audioIn = event.usage.input_token_details?.audio_tokens  ?? event.usage.input_tokens  ?? 0;
+          const textOut = event.usage.output_token_details?.text_tokens  ?? event.usage.output_tokens ?? 0;
+          log.debug(`[WS][${callId}] transcription usage: audio_in=${audioIn} text_out=${textOut}`);
+        }
         // Chỉ log + ghi khi khách thực sự nói (bỏ qua transcript rỗng do im lặng/nhiễu)
         if (khText) {
           log.info(`[WS][${callId}] [KH nói]: ${khText}`);

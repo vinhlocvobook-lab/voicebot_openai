@@ -123,6 +123,52 @@ export function calcChatCost(usage, modelName) {
   };
 }
 
+/**
+ * Tính chi phí từ usage của model transcription (gpt-4o-mini-transcribe, gpt-4o-transcribe).
+ *
+ * Usage đến từ event: conversation.item.input_audio_transcription.completed
+ * Cấu trúc:
+ * {
+ *   input_tokens,
+ *   input_token_details:  { audio_tokens, text_tokens },
+ *   output_tokens,
+ *   output_token_details: { text_tokens, audio_tokens }
+ * }
+ *
+ * @param {object} usage     - usage tổng hợp (đã cộng dồn từ nhiều transcription events)
+ * @param {string} modelName - vd: "gpt-4o-mini-transcribe"
+ * @returns {{ cost_usd: number, breakdown: object } | null}
+ */
+export function calcTranscribeCost(usage, modelName) {
+  const pricing = _getPricing();
+  const mp = pricing.models?.[modelName];
+  if (!mp || mp.type !== "transcribe") return null;
+
+  const d  = usage?.input_token_details  ?? {};
+  const od = usage?.output_token_details ?? {};
+
+  // Input: chủ yếu là audio tokens (tiếng khách nói)
+  const audioIn = d.audio_tokens ?? usage?.input_tokens ?? 0;
+  // Output: text tokens (transcript text)
+  const textOut = od.text_tokens ?? usage?.output_tokens ?? 0;
+
+  const M = 1_000_000;
+  const costs = {
+    audio_input:  audioIn * (mp.audio_input  ?? 0) / M,
+    text_output:  textOut * (mp.text_output  ?? 0) / M,
+  };
+
+  const totalCost = costs.audio_input + costs.text_output;
+
+  return {
+    cost_usd: +totalCost.toFixed(6),
+    breakdown: {
+      audio_input: { tokens: audioIn, unit_price: mp.audio_input ?? 0, cost: +costs.audio_input.toFixed(6) },
+      text_output: { tokens: textOut, unit_price: mp.text_output ?? 0, cost: +costs.text_output.toFixed(6) },
+    },
+  };
+}
+
 /** Lấy toàn bộ bảng giá (để hiển thị/debug). */
 export function getPricingTable() {
   return _getPricing();

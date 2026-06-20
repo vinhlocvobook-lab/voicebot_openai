@@ -9,7 +9,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
-import { calcRealtimeCost, calcChatCost } from "./pricing.js";
+import { calcRealtimeCost, calcChatCost, calcTranscribeCost } from "./pricing.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Lưu trong thư mục gốc của project, cùng cấp với server.js
@@ -71,7 +71,14 @@ export class ConversationLogger {
       audio_output_tokens: 0,
       response_count: 0,        // số lần response.done nhận được
     };
-    this._summaryUsage = null;  // usage từ gpt-4o-mini summary call
+    // Tổng hợp usage từ tất cả input_audio_transcription.completed events
+    this._transcriptionTotals = {
+      audio_input_tokens: 0,   // audio tokens từ tiếng khách nói
+      text_output_tokens: 0,   // text tokens của transcript text
+      transcription_count: 0,  // số lần khách nói
+    };
+    this._transcriptionModel = null;  // model transcription thực tế (từ acceptParams)
+    this._summaryUsage = null;        // usage từ gpt-4o-mini summary call
   }
 
   // ── Transcript ──────────────────────────────────────────────────────────────
@@ -136,6 +143,25 @@ export class ConversationLogger {
     this._realtimeTotals.response_count            += 1;
   }
 
+  /**
+   * Tích lũy usage từ mỗi input_audio_transcription.completed event.
+   * Gọi mỗi lần khách hàng nói xong 1 lượt.
+   *
+   * @param {object} usage        - event.usage từ input_audio_transcription.completed
+   * @param {string} [modelName]  - model đang dùng (vd: "gpt-4o-mini-transcribe")
+   */
+  addTranscriptionUsage(usage, modelName = null) {
+    if (!usage) return;
+    if (modelName && !this._transcriptionModel) this._transcriptionModel = modelName;
+
+    const d  = usage.input_token_details  ?? {};
+    const od = usage.output_token_details ?? {};
+
+    this._transcriptionTotals.audio_input_tokens  += d.audio_tokens  ?? usage.input_tokens  ?? 0;
+    this._transcriptionTotals.text_output_tokens  += od.text_tokens  ?? usage.output_tokens ?? 0;
+    this._transcriptionTotals.transcription_count += 1;
+  }
+
   // ── Timeline sự kiện & lỗi ────────────────────────────────────────────────────
 
   /** Ghi một mốc sự kiện kỹ thuật vào timeline (call accepted, ws open, greeting...) */
@@ -158,6 +184,9 @@ export class ConversationLogger {
   /** Lưu params đã gửi lúc POST /accept — giữ nguyên instructions đầy đủ để so sánh prompt */
   setAcceptParams(params) {
     this.acceptParams = params;
+    // Tự detect transcription model từ accept params
+    const txModel = params?.audio?.input?.transcription?.model;
+    if (txModel && !this._transcriptionModel) this._transcriptionModel = txModel;
   }
 
   /** Lưu params session.update — giữ tools names để biết tools nào được kích hoạt */
@@ -201,8 +230,9 @@ export class ConversationLogger {
     const conversation = _buildConversation(this.transcript, this.toolCalls);
 
     // ── Tính chi phí ──────────────────────────────────────────────────────────
-    const realtimeModel = this.model ?? process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-mini";
-    const summaryModel  = "gpt-4o-mini";
+    const realtimeModel      = this.model ?? process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-mini";
+    const summaryModel       = "gpt-4o-mini";
+    const transcriptionModel = this._transcriptionModel ?? process.env.OPENAI_TRANSCRIPTION_MODEL ?? "gpt-4o-mini-transcribe";
 
     // Tổng hợp usage dạng mà calcRealtimeCost mong đợi
     const realtimeUsageObj = {
@@ -220,9 +250,23 @@ export class ConversationLogger {
       },
     };
 
-    const realtimeCostInfo = calcRealtimeCost(realtimeUsageObj, realtimeModel);
-    const summaryCostInfo  = this._summaryUsage ? calcChatCost(this._summaryUsage, summaryModel) : null;
-    const totalCostUsd     = +((realtimeCostInfo?.cost_usd ?? 0) + (summaryCostInfo?.cost_usd ?? 0)).toFixed(6);
+    // Tổng hợp transcription usage
+    const transcriptionUsageObj = {
+      input_token_details:  { audio_tokens: this._transcriptionTotals.audio_input_tokens },
+      output_token_details: { text_tokens:  this._transcriptionTotals.text_output_tokens },
+    };
+
+    const realtimeCostInfo      = calcRealtimeCost(realtimeUsageObj, realtimeModel);
+    const transcriptionCostInfo = this._transcriptionTotals.transcription_count > 0
+      ? calcTranscribeCost(transcriptionUsageObj, transcriptionModel)
+      : null;
+    const summaryCostInfo       = this._summaryUsage ? calcChatCost(this._summaryUsage, summaryModel) : null;
+
+    const totalCostUsd = +(
+      (realtimeCostInfo?.cost_usd      ?? 0) +
+      (transcriptionCostInfo?.cost_usd ?? 0) +
+      (summaryCostInfo?.cost_usd       ?? 0)
+    ).toFixed(6);
 
     const document = {
       // ── 1. Thông tin định danh cuộc gọi ───────────────────────────────────
@@ -270,6 +314,12 @@ export class ConversationLogger {
             audio_tokens: this._realtimeTotals.audio_output_tokens,
           },
         },
+        transcription: this._transcriptionTotals.transcription_count > 0 ? {
+          model:               transcriptionModel,
+          transcription_count: this._transcriptionTotals.transcription_count,
+          audio_input_tokens:  this._transcriptionTotals.audio_input_tokens,
+          text_output_tokens:  this._transcriptionTotals.text_output_tokens,
+        } : null,
         summary: this._summaryUsage ? {
           model:             summaryModel,
           prompt_tokens:     this._summaryUsage.prompt_tokens     ?? 0,
@@ -279,10 +329,11 @@ export class ConversationLogger {
       },
 
       cost_usd: {
-        total:    totalCostUsd,
-        realtime: realtimeCostInfo  ? { cost: realtimeCostInfo.cost_usd,  breakdown: realtimeCostInfo.breakdown  } : null,
-        summary:  summaryCostInfo   ? { cost: summaryCostInfo.cost_usd,   breakdown: summaryCostInfo.breakdown   } : null,
-        note:     `Giá model: ${realtimeModel} (realtime) + ${summaryModel} (summary)`,
+        total:         totalCostUsd,
+        realtime:      realtimeCostInfo      ? { cost: realtimeCostInfo.cost_usd,      breakdown: realtimeCostInfo.breakdown      } : null,
+        transcription: transcriptionCostInfo ? { cost: transcriptionCostInfo.cost_usd, breakdown: transcriptionCostInfo.breakdown } : null,
+        summary:       summaryCostInfo       ? { cost: summaryCostInfo.cost_usd,       breakdown: summaryCostInfo.breakdown       } : null,
+        note:          `Models: ${realtimeModel} (realtime) + ${transcriptionModel} (transcription) + ${summaryModel} (summary)`,
       },
 
       // ── 4. Tóm tắt do AI tạo ra (đánh giá chất lượng cuộc gọi) ──────────────

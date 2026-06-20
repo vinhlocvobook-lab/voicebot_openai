@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "SSH FS - cn_trungan",
+			"uri": "ssh://cn_trungan/"
+		},
+		{
+			"name": "SSH FS - gcall.com.vn",
+			"uri": "ssh://gcall.com.vn/"
+		}
+	],
+	"settings": {}
+}
