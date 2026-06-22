@@ -12,6 +12,7 @@ import WebSocket from "ws";
 import { dispatchTool } from "./tools.js";
 import { log } from "./logger.js";
 import { ConversationLogger } from "./conversation-logger.js";
+import { insertCallStub, insertTicket } from "./db.js";
 // import { TOOLS } from "./system-prompt.js";
 
 const OPENAI_WS_URL = "wss://api.openai.com/v1/realtime";
@@ -33,6 +34,16 @@ export function openSessionWebSocket(callId, callOps) {
   if (callOps.acceptParams) logger.setAcceptParams(callOps.acceptParams);
   if (callOps.asteriskData) logger.setAsteriskData(callOps.asteriskData);
   logger.addEvent("ws_connecting", url);
+
+  // Pha 1 — ghi dòng "mầm" vào DB ngay khi mở cuộc gọi (fire-and-forget, idempotent).
+  // Lỗi DB không làm sập cuộc gọi (hàm tự nuốt lỗi).
+  insertCallStub({
+    callId,
+    customerTel: callOps.asteriskData?.phoneNumber ?? callOps.tel,
+    uniqueid:    callOps.asteriskData?.uniqueid,
+    recordPath:  callOps.asteriskData?.recordPath,
+    voiceModel:  logger.model,
+  });
 
   // Guard riêng cho từng hành động để tránh thực thi trùng (không chặn chéo nhau)
   let _hungUp = false;      // đã lên lịch cúp máy chưa
@@ -92,11 +103,18 @@ export function openSessionWebSocket(callId, callOps) {
       type: "session.update",
       session: {
         type: "realtime",
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.5,          // tăng từ 0.4 → tránh noise/echo kích hoạt VAD giả
-          prefix_padding_ms: 500,
-          silence_duration_ms: 1200
+        // GA Realtime: turn_detection nằm trong audio.input, KHÔNG để phẳng ở session
+        // (đặt sai chỗ gây lỗi "Unknown parameter: 'session.turn_detection'" → VAD bị bỏ qua,
+        //  cắt mất các chữ số đầu khi khách đọc danh bộ).
+        audio: {
+          input: {
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.5,          // tránh noise/echo kích hoạt VAD giả
+              prefix_padding_ms: 500,  // giữ ~0.5s audio trước khi VAD kích hoạt → không mất số đầu
+              silence_duration_ms: 1200
+            }
+          }
         }
       }
     }));
@@ -175,6 +193,17 @@ export function openSessionWebSocket(callId, callOps) {
           let result = {};
           try { result = JSON.parse(toolOutput); } catch { /* ignore */ }
           const action = result.action;
+
+          // Lưu phiếu ticket nội bộ mỗi khi tạo phiếu (đối soát với remote).
+          // Fire-and-forget, lỗi DB không ảnh hưởng luồng cuộc gọi.
+          if (name === "create_ticket") {
+            insertTicket({
+              callId,
+              customerTel: callOps.asteriskData?.phoneNumber ?? callOps.tel,
+              args,
+              output: result,
+            });
+          }
 
           // Luôn gửi function_call_output về OpenAI (mỗi call_id cần đúng 1 output)
           ws.send(

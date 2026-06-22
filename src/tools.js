@@ -32,6 +32,36 @@ function normalizeDanhBo(raw) {
   console.log("normalized:", normalized);
   return normalized;
 }
+
+const DANH_BO_LENGTH = 11;
+
+/**
+ * Kiểm tra độ dài mã danh bộ bằng CODE (deterministic) — không để model tự đếm bằng tai.
+ * Trả về { ok, normalized, length, error } để handler chặn gọi API khi sai độ dài
+ * và phản hồi cho model con số chính xác.
+ */
+function checkDanhBo(raw) {
+  const normalized = normalizeDanhBo(raw);
+  const length = normalized.length;
+  if (length !== DANH_BO_LENGTH) {
+    return {
+      ok: false,
+      normalized,
+      length,
+      error: JSON.stringify({
+        success: false,
+        invalid_danh_bo: true,
+        do_dai_hien_tai: length,
+        do_dai_yeu_cau: DANH_BO_LENGTH,
+        message:
+          `Mã danh bộ vừa nhận có ${length} chữ số, cần đúng ${DANH_BO_LENGTH} chữ số. ` +
+          `KHÔNG tra cứu. Hãy báo Quý Khách số chữ số đang nhận được và nhờ đọc lại chậm, ` +
+          `từng chữ số một, cho đủ ${DANH_BO_LENGTH} số. Không tự đoán hay tự thêm/bớt số.`,
+      }),
+    };
+  }
+  return { ok: true, normalized, length };
+}
 // function normalizeDanhBo(raw) {
 //   console.log("==========[normalizeDanhBo]==================")
 //   console.log("raw", raw)
@@ -46,7 +76,9 @@ function normalizeDanhBo(raw) {
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 async function handleGetBill({ ma_danh_bo, ky, nam }) {
-  const r = await getTienNuoc(normalizeDanhBo(ma_danh_bo), ky, nam);
+  const chk = checkDanhBo(ma_danh_bo);
+  if (!chk.ok) return chk.error;
+  const r = await getTienNuoc(chk.normalized, ky, nam);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tìm thấy hóa đơn." });
   }
@@ -58,7 +90,9 @@ async function handleGetBill({ ma_danh_bo, ky, nam }) {
 }
 
 async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
-  const r = await getSanLuong(normalizeDanhBo(ma_danh_bo), ky, nam);
+  const chk = checkDanhBo(ma_danh_bo);
+  if (!chk.ok) return chk.error;
+  const r = await getSanLuong(chk.normalized, ky, nam);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tìm thấy dữ liệu sản lượng." });
   }
@@ -74,7 +108,9 @@ async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
 }
 
 async function handleCompareUsage({ ma_danh_bo, ky, nam }) {
-  const r = await getSoSanhTangGiam(normalizeDanhBo(ma_danh_bo), ky, nam);
+  const chk = checkDanhBo(ma_danh_bo);
+  if (!chk.ok) return chk.error;
+  const r = await getSoSanhTangGiam(chk.normalized, ky, nam);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không có dữ liệu so sánh." });
   }
@@ -86,7 +122,9 @@ async function handleCompareUsage({ ma_danh_bo, ky, nam }) {
 }
 
 async function handleGetOutages({ ma_danh_bo }) {
-  const r = await getThongBaoCupNuoc(normalizeDanhBo(ma_danh_bo));
+  const chk = checkDanhBo(ma_danh_bo);
+  if (!chk.ok) return chk.error;
+  const r = await getThongBaoCupNuoc(chk.normalized);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tra cứu được thông tin cúp nước." });
   }
@@ -107,9 +145,11 @@ async function handleGetOutages({ ma_danh_bo }) {
 }
 
 async function handleCreateTicket({ ma_danh_bo, loai, mo_ta }) {
+  const chk = checkDanhBo(ma_danh_bo);
+  if (!chk.ok) return chk.error;
   // Gộp loại + mô tả thành nội dung gửi lên endpoint bao-su-co.
   const noiDung = loai ? `[${loai}] ${mo_ta}` : mo_ta;
-  const r = await baoSuCo(normalizeDanhBo(ma_danh_bo), noiDung);
+  const r = await baoSuCo(chk.normalized, noiDung);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tạo được phiếu sự cố." });
   }

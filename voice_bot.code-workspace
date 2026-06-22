@@ -10,6 +10,13 @@
 		{
 			"name": "SSH FS - gcall.com.vn",
 			"uri": "ssh://gcall.com.vn/"
+		},
+		{
+			"name": "SSH FS - vd_gconnect",
+			"uri": "ssh://vd_gconnect/"
+		},
+		{
+			"path": "../../../../study/claudecode/speech_to_text/speech to text"
 		}
 	],
 	"settings": {}

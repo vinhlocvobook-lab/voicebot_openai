@@ -23,13 +23,15 @@ const PORT = process.env.PORT || 8000;
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || "/webhook";
 
 function extractAsteriskHeaders(payload) {
+  // console.log("[extractAsteriskHeaders]:Payload", payload);
+
   try {
     // 1. Parse chuỗi JSON thành Object
     // const payload = JSON.parse(jsonString);
 
     // 2. Lấy mảng sip_headers
     const headers = payload?.data?.sip_headers || [];
-
+    // console.log("[extractAsteriskHeaders]:headers", JSON.stringify(headers));
     // 3. Chuyển mảng thành một object dạng key-value
     const headerMap = headers.reduce((acc, current) => {
       acc[current.name] = current.value;
@@ -44,11 +46,14 @@ function extractAsteriskHeaders(payload) {
     }
 
     // 5. Trả về đầy đủ các trường dữ liệu
-    return {
-      uniqueid: headerMap['Uniqueid'] || null,
-      recordPath: headerMap['RecordPath'] || null,
-      phoneNumber: phoneNumber // <-- Đã bổ sung số điện thoại
+    const kq = {
+      uniqueid: headerMap['Uniqueid'] || headerMap['X-Uniqueid'] || null,
+      recordPath: headerMap['RecordPath'] || headerMap['X-RecordPath'] || null,
+      phoneNumber: '0979504699',// tel for test
+      phoneNumber_real: phoneNumber // <-- Đã bổ sung số điện thoại
     };
+    console.log("KQ extractAsteriskHeaders", kq);
+    return kq;
 
   } catch (error) {
     console.error("Lỗi khi parse chuỗi JSON:", error.message);

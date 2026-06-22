@@ -10,6 +10,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { calcRealtimeCost, calcChatCost, calcTranscribeCost } from "./pricing.js";
+import { finalizeCallLog } from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Lưu trong thư mục gốc của project, cùng cấp với server.js
@@ -371,6 +372,11 @@ export class ConversationLogger {
 
     fs.writeFileSync(filePath, JSON.stringify(document, null, 2), "utf-8");
     log.info(`[Logger] Đã lưu: ${filePath}`);
+
+    // Pha 2 — upsert đầy đủ vào DB (single writer = bot). File JSON vẫn là nguồn đầy đủ.
+    // Lỗi DB không làm hỏng việc lưu file (hàm tự nuốt lỗi).
+    await finalizeCallLog(document, filePath);
+
     return filePath;
   }
 }
