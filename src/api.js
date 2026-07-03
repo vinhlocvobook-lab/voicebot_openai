@@ -20,10 +20,33 @@
  */
 
 import { log as logger } from "./logger.js";
+import { recordApiCall } from "./api-trace.js";
 
 // Base URL của api.php. Đặt trong .env: TONGDAI_API_BASE
 const API_BASE = (process.env.TONGDAI_API_BASE || "http://127.0.0.1:7700/api.php").replace(/\/$/, "");
 const API_TIMEOUT_MS = parseInt(process.env.TONGDAI_API_TIMEOUT_MS || "15000", 10);
+
+// ─── Trace helpers ───────────────────────────────────────────────────────────
+
+const API_TRACE_CLIP = 8000; // số ký tự tối đa của response_outer trong trace
+
+/** Thời gian GMT+7 dạng ISO có offset (khớp format của conversation-logger). */
+function _traceNow() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().replace("Z", "+07:00");
+}
+
+/** Giữ nguyên object nếu nhỏ; quá lớn thì lưu chuỗi cắt ngắn (tránh log phình to). */
+function _clipResponse(outer, rawText) {
+  try {
+    const v = outer ?? rawText ?? null;
+    if (v == null) return null;
+    const s = typeof v === "string" ? v : JSON.stringify(v);
+    if (s.length <= API_TRACE_CLIP) return v;
+    return s.slice(0, API_TRACE_CLIP) + `…[đã cắt bớt, tổng ${s.length} ký tự]`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Gọi 1 endpoint và trả về payload nghiệp vụ (lớp trong).
@@ -44,6 +67,21 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
+  // Trace request/response — ghi vào context của tool call hiện tại (api-trace.js).
+  // KHÔNG ghi headers (đề phòng sau này có Authorization).
+  const _t0 = Date.now();
+  const _trace = {
+    time:           _traceNow(),
+    method,
+    url,                       // đã gồm query string
+    query:          query ?? null,
+    body:           body  ?? null,
+    http_status:    null,
+    duration_ms:    null,
+    response_outer: null,      // response GỐC 2 lớp từ api.php (đã clip)
+    error_code:     null,
+  };
+
   try {
     const opts = { method, signal: controller.signal, headers: { Accept: "application/json" } };
     if (body) {
@@ -51,16 +89,25 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
       opts.body = JSON.stringify(body);
     }
 
-    logger?.debug?.(`[API] ${method} ${url}`);
+    logger?.debug?.(`[API] → ${method} ${url}`);
     const res = await fetch(url, opts);
     const text = await res.text();
+    _trace.http_status = res.status;
+    _trace.duration_ms = Date.now() - _t0;
 
     let outer;
     try {
       outer = JSON.parse(text);
     } catch {
+      _trace.error_code = "INVALID_RESPONSE";
+      _trace.response_outer = _clipResponse(null, text);
+      logger?.warn?.(`[API] ${method} ${path} → ${res.status} (${_trace.duration_ms}ms) INVALID_RESPONSE`);
       return { success: false, error_code: "INVALID_RESPONSE", message: "Phản hồi không hợp lệ từ máy chủ.", data: null };
     }
+
+    _trace.response_outer = _clipResponse(outer, text);
+    logger?.info?.(`[API] ${method} ${path} → ${res.status} (${_trace.duration_ms}ms)`);
+    logger?.debug?.(`[API] response: ${text}`);
 
     // Lấy lớp trong nếu có, nếu không thì trả nguyên outer.
     const inner = outer && typeof outer.data === "object" && outer.data !== null && "success" in outer.data
@@ -73,7 +120,9 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
     return inner;
   } catch (err) {
     const aborted = err.name === "AbortError";
-    logger?.error?.(`[API] Lỗi gọi ${url}: ${err.message}`);
+    _trace.duration_ms = Date.now() - _t0;
+    _trace.error_code = aborted ? "TIMEOUT" : "CONNECTION_ERROR";
+    logger?.error?.(`[API] Lỗi gọi ${url}: ${err.message} (${_trace.duration_ms}ms)`);
     return {
       success: false,
       error_code: aborted ? "TIMEOUT" : "CONNECTION_ERROR",
@@ -82,6 +131,7 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
     };
   } finally {
     clearTimeout(timer);
+    recordApiCall(_trace); // ghi 1 lần cho MỌI nhánh (thành công / lỗi / timeout)
   }
 }
 
@@ -149,4 +199,7 @@ export async function getThongBaoCupNuoc(maDanhBo) {
  */
 export async function baoSuCo(maDanhBo, noiDung) {
   return callApi("/bao-su-co", { method: "POST", body: { danhba: maDanhBo, noidung: noiDung } });
+}
+export async function getTrangThaiTT(maDanhBo, ky, nam) {
+  return callApi("/trang-thai-thanh-toan", { query: { danhba: maDanhBo, ky, nam } });
 }

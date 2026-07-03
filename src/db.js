@@ -307,6 +307,102 @@ export async function finalizeCallLog(document, jsonFilePath = null) {
   } catch (err) {
     log.warn(`[DB] finalizeCallLog(${document?.meta?.callId}) lỗi: ${err.message}`);
   }
+
+  // Ghi chi tiết từng tool call (bảng voicebot_toolcall) — tự nuốt lỗi riêng,
+  // không ảnh hưởng việc đã ghi voicebot_calllog ở trên.
+  await insertToolCalls(document);
+}
+
+// ─── API: voicebot_toolcall ───────────────────────────────────────────────────
+
+/** Giới hạn kích thước JSON ghi vào từng cột (tránh "Data too long"). */
+const TOOLCALL_CLIP = { args: 4000, output: 16000, api_calls: 64000 };
+
+/**
+ * JSON.stringify + cắt bớt nếu quá dài. Chuỗi bị cắt được bọc lại thành
+ * JSON hợp lệ ({_clipped: true, preview}) để không vi phạm CHECK json_valid.
+ */
+function _jsonClip(value, max) {
+  if (value == null) return null;
+  let s;
+  try { s = JSON.stringify(value); } catch { s = JSON.stringify(String(value)); }
+  if (s.length <= max) return s;
+  return JSON.stringify({
+    _clipped: true,
+    _original_length: s.length,
+    preview: s.slice(0, max - 200),
+  });
+}
+
+/**
+ * Pha 2 — ghi từng function call của LLM vào voicebot_toolcall.
+ * Nguồn: document.toolCalls (từ ConversationLogger, đã gồm seq + apiCalls).
+ * Idempotent nhờ UNIQUE(voicebot_callid, seq) + ON DUPLICATE KEY UPDATE.
+ *
+ * @param {object} document - object log đầy đủ mà ConversationLogger dựng ra
+ */
+export async function insertToolCalls(document) {
+  const pool = getPool();
+  const callId = document?.meta?.callId;
+  const toolCalls = document?.toolCalls;
+  if (!pool || !callId || !Array.isArray(toolCalls) || toolCalls.length === 0) return;
+
+  let ok = 0;
+  for (const [i, tc] of toolCalls.entries()) {
+    try {
+      const args = tc.args ?? null;
+      const out  = tc.output ?? null;
+      // output có thể là object (đã parse) hoặc string (parse fail) → success NULL nếu không rõ
+      const outObj = out && typeof out === "object" ? out : null;
+      const success = outObj ? (outObj.success ? 1 : 0) : null;
+      const invalidDanhBo = outObj?.invalid_danh_bo ? 1 : 0;
+      const maDanhBo = args?.ma_danh_bo != null
+        ? String(args.ma_danh_bo).replace(/\D/g, "") || null
+        : null;
+      const apiCalls = Array.isArray(tc.apiCalls) ? tc.apiCalls : [];
+
+      await pool.query(
+        `INSERT INTO voicebot_toolcall
+           (voicebot_calllog_id, voicebot_callid, seq, tool_name, ma_danh_bo,
+            args, output, success, invalid_danh_bo, duration_ms,
+            api_call_count, api_calls, called_at)
+         VALUES
+           ((SELECT id FROM voicebot_calllog WHERE voicebot_callid = ? LIMIT 1),
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           voicebot_calllog_id = VALUES(voicebot_calllog_id),
+           tool_name       = VALUES(tool_name),
+           ma_danh_bo      = VALUES(ma_danh_bo),
+           args            = VALUES(args),
+           output          = VALUES(output),
+           success         = VALUES(success),
+           invalid_danh_bo = VALUES(invalid_danh_bo),
+           duration_ms     = VALUES(duration_ms),
+           api_call_count  = VALUES(api_call_count),
+           api_calls       = VALUES(api_calls),
+           called_at       = VALUES(called_at)`,
+        [
+          clip(callId, 128),
+          clip(callId, 128),
+          tc.seq ?? i + 1,
+          clip(tc.name, 64),
+          clip(maDanhBo, 20),
+          _jsonClip(args, TOOLCALL_CLIP.args),
+          _jsonClip(out, TOOLCALL_CLIP.output),
+          success,
+          invalidDanhBo,
+          tc.durationMs ?? null,
+          apiCalls.length,
+          _jsonClip(apiCalls, TOOLCALL_CLIP.api_calls),
+          toMysqlDatetime(tc.time),
+        ]
+      );
+      ok++;
+    } catch (err) {
+      log.warn(`[DB] insertToolCalls(${callId}) seq=${tc.seq ?? i + 1} lỗi: ${err.message}`);
+    }
+  }
+  if (ok > 0) log.info(`[DB] Đã ghi ${ok}/${toolCalls.length} tool call vào voicebot_toolcall (${callId})`);
 }
 
 // ─── API: ticket ──────────────────────────────────────────────────────────────

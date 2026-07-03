@@ -10,6 +10,7 @@
 
 import WebSocket from "ws";
 import { dispatchTool } from "./tools.js";
+import { runWithApiTrace } from "./api-trace.js";
 import { log } from "./logger.js";
 import { ConversationLogger } from "./conversation-logger.js";
 import { insertCallStub, insertTicket } from "./db.js";
@@ -179,15 +180,17 @@ export function openSessionWebSocket(callId, callOps) {
           let args = {};
           try { args = JSON.parse(argsStr); } catch { /* ignore */ }
 
-          // Gọi handler và gửi kết quả tool về cho OpenAI (đo thời gian xử lý)
+          // Gọi handler trong context trace API (gom request/response backend
+          // phát sinh trong tool call này) và gửi kết quả tool về cho OpenAI.
           const _t0 = Date.now();
-          const toolOutput = await dispatchTool(name, args);
+          const { result: toolOutput, trace: apiCalls } =
+            await runWithApiTrace(() => dispatchTool(name, args));
           const _durationMs = Date.now() - _t0;
           log.debug(`[WS][${callId}] Tool output (${_durationMs}ms): ${toolOutput}`);
 
-          // Ghi đầu vào / đầu ra của function tool vào log
+          // Ghi đầu vào / đầu ra của function tool + trace API vào log
           try {
-            logger.addToolCall(name, args, _tryParseJson(toolOutput), _durationMs);
+            logger.addToolCall(name, args, _tryParseJson(toolOutput), _durationMs, apiCalls);
           } catch { /* ignore */ }
 
           let result = {};

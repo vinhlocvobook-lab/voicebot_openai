@@ -10,6 +10,7 @@ import {
   getSoSanhTangGiam,
   getThongBaoCupNuoc,
   baoSuCo,
+  getTrangThaiTT,
 } from "./api.js";
 import { PROCEDURES } from "./huongdanthutuc-data.js";
 
@@ -78,7 +79,8 @@ function checkDanhBo(raw) {
 async function handleGetBill({ ma_danh_bo, ky, nam }) {
   const chk = checkDanhBo(ma_danh_bo);
   if (!chk.ok) return chk.error;
-  const r = await getTienNuoc(chk.normalized, ky, nam);
+  // const r = await getTienNuoc(chk.normalized, ky, nam);
+  const r = await getTrangThaiTT(chk.normalized);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tìm thấy hóa đơn." });
   }

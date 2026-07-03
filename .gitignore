@@ -32,3 +32,6 @@ build/
 *.docx
 plan.md
 huongdanthutuc.md
+*.pcap
+conversation_summary/
+

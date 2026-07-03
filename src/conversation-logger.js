@@ -33,7 +33,7 @@ export class ConversationLogger {
     this.transcript = []; // { time, speaker: "AI" | "KH", text }
 
     // Tool calls trong cuộc gọi
-    this.toolCalls  = []; // { time, name, args, output, durationMs }
+    this.toolCalls  = []; // { time, seq, name, args, output, durationMs, apiCalls }
 
     // Timeline sự kiện kỹ thuật (diễn tiến cuộc gọi) để debug
     this.events     = []; // { time, stage, detail }
@@ -112,9 +112,18 @@ export class ConversationLogger {
 
   // ── Tool calls ──────────────────────────────────────────────────────────────
 
-  /** Ghi nhận một tool call + kết quả (đầu vào / đầu ra của function tool) */
-  addToolCall(name, args, output, durationMs = null) {
-    const entry = { time: _now(), name, args, output, durationMs };
+  /**
+   * Ghi nhận một tool call + kết quả (đầu vào / đầu ra của function tool).
+   * @param {Array} [apiCalls] - trace request/response backend API phát sinh
+   *                             trong tool call này (từ api-trace.js)
+   */
+  addToolCall(name, args, output, durationMs = null, apiCalls = []) {
+    const entry = {
+      time: _now(),
+      seq:  this.toolCalls.length + 1, // thứ tự trong cuộc gọi — khớp voicebot_toolcall.seq
+      name, args, output, durationMs,
+      apiCalls: Array.isArray(apiCalls) ? apiCalls : [],
+    };
     this.toolCalls.push(entry);
     this.addEvent("tool_call", `${name}(${_safeJson(args)})`);
     return entry;
@@ -445,6 +454,7 @@ function _tryParse(s) {
  *   [10:08:05] 🧑 Khách: Cho tôi hỏi tiền nước tháng này
  *   [10:08:06] 🤖 AI: Quý khách cho em xin mã danh bộ ạ
  *   [10:08:55] 🔧 AI gọi tool: get_bill({"ma_danh_bo":"15122890724"})
+ *   [10:08:55] 🌐 API: GET .../tien-nuoc?danhba=15122890724 → 200 (412ms)
  *   [10:08:56] 📋 Kết quả tool get_bill: {"success":true,...}
  *   [10:08:57] 🤖 AI: Số tiền của Quý khách là ...
  */
@@ -462,9 +472,17 @@ function _buildConversation(transcript, toolCalls) {
       time: tc.time, order: 2,
       line: `[${_hms(tc.time)}] 🔧 AI gọi tool: ${tc.name}(${argsStr})`,
     });
+    // Request backend API phát sinh trong tool call (nếu có)
+    for (const ac of tc.apiCalls ?? []) {
+      const status = ac.error_code ?? ac.http_status ?? "?";
+      items.push({
+        time: tc.time, order: 3,
+        line: `[${_hms(ac.time || tc.time)}] 🌐 API: ${ac.method} ${ac.url} → ${status} (${ac.duration_ms}ms)`,
+      });
+    }
     const out = typeof tc.output === "string" ? tc.output : _safeJson(tc.output);
     items.push({
-      time: tc.time, order: 3,
+      time: tc.time, order: 4,
       line: `[${_hms(tc.time)}] 📋 Kết quả tool ${tc.name}: ${out}`,
     });
   }
