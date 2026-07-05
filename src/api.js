@@ -200,6 +200,12 @@ export async function getThongBaoCupNuoc(maDanhBo) {
 export async function baoSuCo(maDanhBo, noiDung) {
   return callApi("/bao-su-co", { method: "POST", body: { danhba: maDanhBo, noidung: noiDung } });
 }
-export async function getTrangThaiTT(maDanhBo, ky, nam) {
+/**
+ * Tra cứu trạng thái thanh toán (superset: TongTien + SanLuong + TrangThaiThanhToan).
+ * GET /trang-thai-thanh-toan?danhba=...&ky=...&nam=...
+ * data: [{ Nam, Ky, TongTien, SanLuong, TrangThaiThanhToan, NgayThanhToan, DonViThanhToan }]
+ * Chưa thanh toán: TrangThaiThanhToan = "Chưa thanh toán", NgayThanhToan/DonViThanhToan = "".
+ */
+export async function getTrangThaiTT(maDanhBo, ky = null, nam = null) {
   return callApi("/trang-thai-thanh-toan", { query: { danhba: maDanhBo, ky, nam } });
 }

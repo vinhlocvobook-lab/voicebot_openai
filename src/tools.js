@@ -5,8 +5,6 @@
  */
 
 import {
-  getTienNuoc,
-  getSanLuong,
   getSoSanhTangGiam,
   getThongBaoCupNuoc,
   baoSuCo,
@@ -74,38 +72,123 @@ function checkDanhBo(raw) {
 //   return normalized;
 // }
 
+/** Format "2026-06-30 15:14:54" → "30/06/2026" (đọc tự nhiên qua thoại). */
+function fmtNgay(s) {
+  const m = String(s ?? "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
+}
+
+/**
+ * Rút gọn 1 dòng hóa đơn thành object "sạch" cho model đọc:
+ * - ngày đã format DD/MM/YYYY (model mini khó tự parse "2026-06-30 15:14:54"),
+ * - bỏ DonViThanhToan (mã nội bộ như "GDGV", gây nhiễu),
+ * - tiền đã format kèm đơn vị.
+ * Giúp model trả lời được các câu hỏi tiếp theo (vd "đóng ngày nào?") từ chính data này.
+ */
+function simplifyRow(d) {
+  const paid = d.TrangThaiThanhToan === "Đã thanh toán";
+  return {
+    ky: `${d.Ky}/${d.Nam}`,
+    san_luong_m3: d.SanLuong,
+    tong_tien: `${fmtTien(d.TongTien)} đồng`,
+    trang_thai_thanh_toan: d.TrangThaiThanhToan || null,
+    ngay_thanh_toan: paid ? fmtNgay(d.NgayThanhToan) : null,
+  };
+}
+
+/** Kỳ liền trước theo giờ GMT+7 (kỳ = tháng). */
+function prevPeriod() {
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  let ky = now.getUTCMonth() + 1;
+  let nam = now.getUTCFullYear();
+  ky -= 1;
+  if (ky === 0) { ky = 12; nam -= 1; }
+  return { ky, nam };
+}
+
+/**
+ * Fetch chung cho nhóm tra cứu hóa đơn: gọi trang-thai-thanh-toan (superset:
+ * TongTien + SanLuong + TrangThaiThanhToan) — 1 lần gọi đủ dữ liệu cho
+ * get_bill / get_water_usage / get_payment_status, khách hỏi tiếp không cần gọi API lần 2.
+ *
+ * Backend KHÔNG tự lấy "kỳ gần nhất" khi thiếu ky/nam (mặc định kỳ hiện tại →
+ * thường chưa có dữ liệu đầu tháng). Nên: không truyền ky/nam mà bị *_NOT_FOUND
+ * → tự lùi 1 kỳ và gọi lại (fallback deterministic, không để model tự đoán kỳ).
+ *
+ * Trả về { ok, rows?, error? } — error là JSON string sẵn cho AI, giữ error_code
+ * để model phân biệt CUSTOMER_NOT_FOUND (đọc lại danh bộ) vs INVOICE/PRODUCTION_NOT_FOUND (kỳ chưa có).
+ */
+async function fetchBilling(ma_danh_bo, ky, nam) {
+  const chk = checkDanhBo(ma_danh_bo);
+  if (!chk.ok) return { ok: false, error: chk.error };
+
+  let r = await getTrangThaiTT(chk.normalized, ky, nam);
+
+  const noPeriodGiven = (ky === null || ky === undefined) && (nam === null || nam === undefined);
+  const notFound = ["INVOICE_NOT_FOUND", "PRODUCTION_NOT_FOUND"].includes(r?.error_code);
+  if (!r.success && noPeriodGiven && notFound) {
+    const p = prevPeriod();
+    r = await getTrangThaiTT(chk.normalized, p.ky, p.nam);
+  }
+
+  if (!r.success) {
+    return {
+      ok: false,
+      error: JSON.stringify({
+        success: false,
+        error_code: r.error_code || null,
+        message: r.message || "Không tra cứu được thông tin.",
+      }),
+    };
+  }
+  return { ok: true, rows: Array.isArray(r.data) ? r.data : [] };
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 async function handleGetBill({ ma_danh_bo, ky, nam }) {
-  const chk = checkDanhBo(ma_danh_bo);
-  if (!chk.ok) return chk.error;
-  // const r = await getTienNuoc(chk.normalized, ky, nam);
-  const r = await getTrangThaiTT(chk.normalized);
-  if (!r.success) {
-    return JSON.stringify({ success: false, message: r.message || "Không tìm thấy hóa đơn." });
-  }
+  const f = await fetchBilling(ma_danh_bo, ky, nam);
+  if (!f.ok) return f.error;
+  const parts = f.rows.map((d) => {
+    const tt = d.TrangThaiThanhToan === "Đã thanh toán"
+      ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
+      : `, chưa thanh toán`;
+    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${fmtTien(d.TongTien)} đồng${tt}`;
+  });
   return JSON.stringify({
     success: true,
-    message: r.message || "Lấy thông tin tiền nước thành công.",
-    data: r.data,
+    message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu hóa đơn.",
+    data: f.rows.map(simplifyRow),
   });
 }
 
 async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
-  const chk = checkDanhBo(ma_danh_bo);
-  if (!chk.ok) return chk.error;
-  const r = await getSanLuong(chk.normalized, ky, nam);
-  if (!r.success) {
-    return JSON.stringify({ success: false, message: r.message || "Không tìm thấy dữ liệu sản lượng." });
-  }
-  const arr = Array.isArray(r.data) ? r.data : [];
-  const parts = arr.map(
+  const f = await fetchBilling(ma_danh_bo, ky, nam);
+  if (!f.ok) return f.error;
+  const parts = f.rows.map(
     (d) => `Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${fmtTien(d.TongTien)} đồng`
   );
   return JSON.stringify({
     success: true,
-    message: parts.length ? parts.join("; ") + "." : r.message,
-    data: r.data,
+    message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu sản lượng.",
+    data: f.rows.map(simplifyRow),
+  });
+}
+
+async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }) {
+  const f = await fetchBilling(ma_danh_bo, ky, nam);
+  if (!f.ok) return f.error;
+  // KHÔNG đọc DonViThanhToan cho khách (mã nội bộ như "GDGV", chưa có bảng map).
+  const parts = f.rows.map((d) => {
+    if (d.TrangThaiThanhToan === "Đã thanh toán") {
+      return `Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`;
+    }
+    return `Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${fmtTien(d.TongTien)} đồng`;
+  });
+  return JSON.stringify({
+    success: true,
+    message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu thanh toán.",
+    data: f.rows.map(simplifyRow),
   });
 }
 
@@ -230,6 +313,7 @@ export async function dispatchTool(name, args) {
     switch (name) {
       case "get_bill": return await handleGetBill(args);
       case "get_water_usage": return await handleGetWaterUsage(args);
+      case "get_payment_status": return await handleGetPaymentStatus(args);
       case "compare_usage": return await handleCompareUsage(args);
       case "get_outages": return await handleGetOutages(args);
       case "create_ticket": return await handleCreateTicket(args);
