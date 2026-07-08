@@ -304,6 +304,12 @@ export class ConversationLogger {
         customerTurns: this.transcript.filter((t) => t.speaker === "KH").length,
         toolCallCount: this.toolCalls.length,
         errorCount:    this.errors.length,
+        // [debug 08/07/2026] Chỉ số chẩn đoán VAD/lặp lời — đếm từ events.
+        // Cuộc gọi "khỏe": vadTurnCount ≈ customerTurns, emptyTranscriptCount ≈ 0.
+        // Lệch lớn = VAD bắt nhầm noise/echo (phantom turn) → xem lại threshold.
+        vadTurnCount:           this.events.filter((e) => e.stage === "vad_speech_started").length,
+        emptyTranscriptCount:   this.events.filter((e) => e.stage === "empty_transcript").length,
+        cancelledResponseCount: this.events.filter((e) => /^response_(cancelled|failed|incomplete)$/.test(e.stage)).length,
       },
 
       // ── 3. Token usage & chi phí cuộc gọi ─────────────────────────────────

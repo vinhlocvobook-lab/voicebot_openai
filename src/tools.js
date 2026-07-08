@@ -17,6 +17,47 @@ import { PROCEDURES } from "./huongdanthutuc-data.js";
 const fmtTien = (n) => (typeof n === "number" ? n.toLocaleString("vi-VN") : n);
 
 /**
+ * Đọc số tiền thành CHỮ tiếng Việt để model đọc nguyên văn qua thoại.
+ * Lý do: TTS đọc sai chuỗi "1.180.266 đồng" thành "một nghìn..." (dấu chấm
+ * ngăn cách nghìn bị hiểu nhầm) — log cuộc gọi 05/07 11:08.
+ * Vd: 1180266 → "một triệu một trăm tám mươi nghìn hai trăm sáu mươi sáu đồng".
+ */
+function docTienVN(n) {
+  const num = Math.round(Number(n));
+  if (!isFinite(num)) return String(n);
+  if (num === 0) return "không đồng";
+  const ones = ["", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"];
+  const units = ["", " nghìn", " triệu", " tỷ", " nghìn tỷ"];
+  let v = Math.abs(num);
+  const groups = [];
+  while (v > 0) { groups.unshift(v % 1000); v = Math.floor(v / 1000); }
+  const parts = [];
+  groups.forEach((g, i) => {
+    if (g === 0) return;
+    const isFirst = parts.length === 0;
+    const tr = Math.floor(g / 100), ch = Math.floor((g % 100) / 10), dv = g % 10;
+    const w = [];
+    if (tr > 0) w.push(ones[tr] + " trăm");
+    else if (!isFirst) w.push("không trăm");
+    if (ch > 1) {
+      w.push(ones[ch] + " mươi");
+      if (dv === 1) w.push("mốt");
+      else if (dv === 5) w.push("lăm");
+      else if (dv > 0) w.push(ones[dv]);
+    } else if (ch === 1) {
+      w.push("mười");
+      if (dv === 5) w.push("lăm");
+      else if (dv > 0) w.push(ones[dv]);
+    } else if (dv > 0) {
+      if (tr > 0 || !isFirst) w.push("lẻ");
+      w.push(ones[dv]);
+    }
+    parts.push(w.join(" ") + units[groups.length - 1 - i]);
+  });
+  return (num < 0 ? "âm " : "") + parts.join(" ") + " đồng";
+}
+
+/**
  * Chuẩn hoá mã danh bộ trước khi gọi API:
  * AI thường đọc số kèm dấu gạch ngang / khoảng trắng (vd "1-5-1-2-...").
  * Bỏ mọi ký tự không phải chữ số.
@@ -90,7 +131,8 @@ function simplifyRow(d) {
   return {
     ky: `${d.Ky}/${d.Nam}`,
     san_luong_m3: d.SanLuong,
-    tong_tien: `${fmtTien(d.TongTien)} đồng`,
+    tong_tien: docTienVN(d.TongTien), // dạng CHỮ — model đọc nguyên văn
+    tong_tien_so: d.TongTien,         // số raw để tham chiếu/log
     trang_thai_thanh_toan: d.TrangThaiThanhToan || null,
     ngay_thanh_toan: paid ? fmtNgay(d.NgayThanhToan) : null,
   };
@@ -153,7 +195,7 @@ async function handleGetBill({ ma_danh_bo, ky, nam }) {
     const tt = d.TrangThaiThanhToan === "Đã thanh toán"
       ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
       : `, chưa thanh toán`;
-    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${fmtTien(d.TongTien)} đồng${tt}`;
+    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
   });
   return JSON.stringify({
     success: true,
@@ -166,7 +208,7 @@ async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
   const f = await fetchBilling(ma_danh_bo, ky, nam);
   if (!f.ok) return f.error;
   const parts = f.rows.map(
-    (d) => `Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${fmtTien(d.TongTien)} đồng`
+    (d) => `Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
   );
   return JSON.stringify({
     success: true,
@@ -183,7 +225,7 @@ async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }) {
     if (d.TrangThaiThanhToan === "Đã thanh toán") {
       return `Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`;
     }
-    return `Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${fmtTien(d.TongTien)} đồng`;
+    return `Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${docTienVN(d.TongTien)}`;
   });
   return JSON.stringify({
     success: true,
@@ -259,14 +301,22 @@ function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
     if (matched.length > 0) relevantCases = matched;
   }
 
-  // Tổng hợp giấy tờ cần thiết
+  // Tổng hợp giấy tờ cần thiết.
+  // [fix 08/07/2026] Giữ ngữ nghĩa AND/OR của data: `required` = cần đầy đủ,
+  // `options` = chỉ cần một trong. Trước đây gộp phẳng 2 danh sách và bỏ rơi
+  // `note` → AI không biết khách cần nộp hết hay chỉ 1 loại, trả lời mâu thuẫn.
   const docsText = relevantCases
     .map((c) => {
       const docs = c.requiredDocs;
-      const items = [...(docs.required || []), ...(docs.options || [])];
-      return items.length > 0
-        ? `${c.label}: ${items.join("; ")}`
-        : `${c.label}: ${docs.note}`;
+      const parts = [];
+      if (docs.required?.length) {
+        parts.push(`CẦN ĐẦY ĐỦ các giấy tờ sau: ${docs.required.join("; ")}`);
+      }
+      if (docs.options?.length) {
+        parts.push(`CHỈ CẦN MỘT trong các giấy tờ sau: ${docs.options.join("; ")}`);
+      }
+      if (parts.length === 0) parts.push(docs.note || "Không có yêu cầu giấy tờ cụ thể.");
+      return `${c.label}: ${parts.join(". ")}`;
     })
     .join(" || ");
 

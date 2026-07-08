@@ -47,35 +47,46 @@ export const PROCEDURES = {
         requiredDocs: {
           note: "Cung cấp một trong các giấy tờ sau",
           options: [
-            "Giấy chứng nhận quyền sở hữu nhà ở hoặc quyền sử dụng đất ở",
-            "Giấy phép xây dựng nhà",
-            "Giấy cấp số nhà của cơ quan thẩm quyền quận/huyện",
-            "Giấy xác nhận tạm trú của Công an phường/xã hoặc Tổ trưởng khu phố",
-            "Hợp đồng chuyển quyền sở hữu nhà có công chứng và đã nộp lệ phí trước bạ",
+            "Giấy chứng nhận quyền sở hữu nhà ở, quyền sử dụng đất ở.",
+            "Hợp đồng chuyển quyền sở hữu nhà lập tại cơ quan công chứng Nhà nước, hoặc Uỷ Ban Nhân Dân quận, huyện nơi có căn nhà tọa lạc, đã nộp lệ phí trước bạ và đăng ký.",
+            "Giấy cấp nhà trong nội bộ cơ quan, hoặc quyết định cấp nhà của cơ quan có thẩm quyền.",
+            "Hợp đồng của cá nhân, tổ chức thuê nhà của Nhà nước dài hạn.",
+            "Giấy phép xây dựng nhà.",
+            "Giấy cấp số nhà của cơ quan có thẩm quyền cấp quận, huyện.",
+            "Quyết định của cơ quan có thẩm quyền, hoặc bản án có hiệu lực thi hành của Tòa án công nhận quyền sở hữu, sử dụng, thừa kế tài sản nhà.",
+            "Giấy xác nhận tạm trú của công an phường, xã.",
+            "Giấy xác nhận tạm trú của Tổ trưởng khu phố về tình trạng nhà ở ổn định, không tranh chấp.",
+            "Quyết định giao đất của cơ quan chức năng cho chủ đầu tư xây dựng công trình (trong trường hợp chủ đầu tư đang xây dựng công trình, chưa chuyển nhượng cho người sử dụng)."
           ],
         },
       },
       {
         id: "doanh_nghiep_so_huu",
-        label: "Doanh nghiệp - địa chỉ thuộc sở hữu",
+        label: "Doanh nghiệp, công ty - địa chỉ thuộc sở hữu",
         requiredDocs: {
           note: "Cần đầy đủ các giấy tờ",
           required: [
-            "Bản sao chứng thực giấy chứng nhận quyền sử dụng đất/sở hữu nhà",
-            "Bản sao chứng thực giấy phép kinh doanh và mã số thuế",
+            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất, quyền sở hữu nhà ở và tài sản khác gắn liền với đất.",
+            "Bản sao có chứng thực giấy phép kinh doanh và mã số thuế."
           ],
         },
       },
       {
         id: "doanh_nghiep_thue",
-        label: "Doanh nghiệp - địa chỉ đi thuê",
+        label: "Doanh nghiệp, công ty - địa chỉ đi thuê",
         requiredDocs: {
           note: "Cần đầy đủ các giấy tờ",
           required: [
-            "Bản sao chứng thực giấy chứng nhận quyền sử dụng đất/sở hữu nhà",
-            "Bản sao chứng thực giấy phép kinh doanh và mã số thuế",
-            "Bản sao chứng thực hợp đồng thuê mặt bằng",
-            "Giấy cam kết của bên cho thuê (hoặc ký quỹ 20 triệu đồng thay thế)",
+            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất, quyền sở hữu nhà ở và tài sản khác gắn liền với đất",
+            "Bản sao có chứng thực giấy phép kinh doanh và mã số thuế",
+            "Bản sao có chứng thực hợp đồng thuê mặt bằng, nhà đất",
+            `Giấy cam kết của bên cho thuê với nội dung: 
+            - Bên cho thuê đồng ý để bên thuê được đứng tên gắn đồng hồ nước tại địa chỉ lắp đặt Đồng Hồ Nước.
+            - Bên cho thuê cam kết thanh toán chi phí phát sinh, thanh toán hóa đơn tiền nước còn nợ  cho Công ty Cổ phần Cấp nước Trung An nếu bên thuê ngưng hợp đồng thuê, di dời nơi khác mà chưa thanh toán hết tiền nước.
+            - Giấy cam kết này phải được xác nhận của Uỷ Ban Nhân Dân phường, xã nơi thuê mặt bằng nếu chủ cho thuê là hộ cá nhân hoặc có chữ ký của đại diện pháp luật và con dấu nếu chủ cho thuê là công ty/ tổ chức
+            Lưu ý:
+            - Trường hợp bên thuê không đính kèm được giấy cam kết có thể thay thế bằng hình thức đóng tiền ký quỹ Hai mươi triệu đồng.`
+
           ],
         },
       },
@@ -92,8 +103,10 @@ export const PROCEDURES = {
         label: "Hộ gia đình",
         requiredDocs: {
           required: [
-            "Hóa đơn tiền nước kỳ mới nhất",
-            "Bản sao chứng thực giấy chứng nhận quyền sử dụng đất/sở hữu nhà",
+            "Hóa đơn tiền nước kỳ mới nhất tại nơi đăng ký.",
+            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất / quyền sở hữu nhà ở và tài sản khác gắn liền với đất.",
+            // "Bản sao có chứng thực giấy chứng nhận số nhà (nếu địa chỉ có thay đổi so với địa chỉ trên hóa đơn tiền nước).",
+            // "Hồ sơ đăng ký định mức nếu có nhu cầu. Theo link hướng dẫn trên website https://capnuoctrungan.vn, mục  'Thủ tục đăng ký định mức nước'",
           ],
           options: [
             "Bản sao chứng thực giấy chứng nhận số nhà (nếu địa chỉ thay đổi)",
@@ -109,6 +122,13 @@ export const PROCEDURES = {
             "Hóa đơn tiền nước kỳ mới nhất",
             "Bản sao chứng thực giấy chứng nhận quyền sử dụng đất/sở hữu nhà",
             "Bản sao chứng thực giấy chứng nhận đăng ký kinh doanh",
+
+            "Hóa đơn tiền nước kỳ mới nhất tại nơi đăng ký",
+            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất / quyền sở hữu nhà ở và tài sản khác gắn liền với đất",
+            "Bản sao có chứng thực hợp đồng thuê nhà, giấy cam kết của chủ nhà cho Công ty thuê (trường hợp thuê nhà)",
+            "Bản sao có chứng thực giấy chứng nhận đăng ký kinh doanh",
+            "Công văn yêu cầu nội dung xuất hóa đơn (nếu có yêu cầu)"
+
           ],
           options: [
             "Hợp đồng thuê nhà và giấy cam kết của chủ nhà (nếu đang thuê)",

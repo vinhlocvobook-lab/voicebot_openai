@@ -111,7 +111,11 @@ export function openSessionWebSocket(callId, callOps) {
           input: {
             turn_detection: {
               type: "server_vad",
-              threshold: 0.5,          // tránh noise/echo kích hoạt VAD giả
+              // [fix 08/07/2026] 0.5 → 0.6: cuộc gọi 0967777637_DzAjQz4pTwd1aorzn7nHb
+              // có phantom turn (VAD bắt noise/echo → AI tự nói 4 lượt liên tiếp).
+              // Theo dõi vadTurnCount/emptyTranscriptCount trong stats; còn phantom
+              // thì lên 0.7, khách phàn nàn "bot không nghe thấy" thì hạ về 0.5.
+              threshold: 0.6,
               prefix_padding_ms: 500,  // giữ ~0.5s audio trước khi VAD kích hoạt → không mất số đầu
               silence_duration_ms: 1200
             }
@@ -154,6 +158,13 @@ export function openSessionWebSocket(callId, callOps) {
       // response.done → response.output[], lọc item.type === "function_call".
 
       case "response.done": {
+        // [debug 08/07/2026] Response không hoàn tất (bị khách ngắt lời / hủy / lỗi)
+        // → ghi lại để phân tích các câu AI nói dở (vd "Dạ, cảm ơn Qu...")
+        const _respStatus = event?.response?.status;
+        if (_respStatus && _respStatus !== "completed") {
+          logger.addEvent(`response_${_respStatus}`, _safeJson(event.response?.status_details ?? null));
+        }
+
         const usage = event?.response?.usage;
         if (usage) {
           // Tích lũy token để tính cost cuối cuộc gọi
@@ -244,6 +255,9 @@ export function openSessionWebSocket(callId, callOps) {
             }
           } else {
             // Tool dữ liệu thông thường → yêu cầu AI đọc kết quả cho khách
+            // [debug 08/07/2026] ghi event để phân biệt response do code chủ động
+            // tạo (tool_result/greeting) với response do VAD kích hoạt
+            logger.addEvent("response_create_sent", `tool_result: ${name}`);
             ws.send(JSON.stringify({
               type: "response.create",
               response: { instructions: "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được." },
@@ -270,6 +284,9 @@ export function openSessionWebSocket(callId, callOps) {
           logger.addCustomerTurn(khText);
         } else {
           log.info(`[WS][${callId}] [KH nói]: `, { khText });
+          // [debug 08/07/2026] VAD kích hoạt nhưng transcript rỗng = phantom turn
+          // (noise/echo SIP). Ghi vào timeline để đối chiếu transcription_count.
+          logger.addEvent("empty_transcript", "VAD kích hoạt nhưng transcript rỗng (noise/echo?)");
         }
         break;
       }
@@ -296,6 +313,29 @@ export function openSessionWebSocket(callId, callOps) {
       }
 
 
+
+      // ── [debug 08/07/2026] VAD & response lifecycle ───────────────────────
+      // Phục vụ chẩn đoán phantom turn (VAD bắt nhầm noise/echo) và AI lặp lời.
+      // Cuộc gọi "khỏe": số vad_speech_started ≈ số lượt khách nói thật.
+
+      case "input_audio_buffer.speech_started":
+        logger.addEvent("vad_speech_started", null);
+        break;
+
+      case "input_audio_buffer.speech_stopped":
+        logger.addEvent("vad_speech_stopped", null);
+        break;
+
+      // Mỗi response được tạo (do VAD hoặc do code) — đối chiếu với
+      // response_create_sent/greeting_sent để biết nguồn gốc từng response
+      case "response.created":
+        logger.addEvent("response_created", event.response?.id ?? null);
+        break;
+
+      // Transcription thất bại (trước đây rơi vào default, mất dấu vết)
+      case "conversation.item.input_audio_transcription.failed":
+        logger.addError("transcription_failed", event.error?.message || _safeJson(event.error));
+        break;
 
       // ── Lỗi từ OpenAI ─────────────────────────────────────────────────────
       case "error":
