@@ -148,7 +148,7 @@ export const PROCEDURES = {
         id: "default",
         label: "Mọi trường hợp",
         requiredDocs: {
-          note: "Không cần chuẩn bị giấy tờ trước. Đăng ký qua app 'SA QUA CÔ' 'Cê ét ka hát', website www chấm capnuoctrungan chấm 'vi en', hoặc đến văn phòng giao dịch.",
+          note: "Không cần chuẩn bị giấy tờ trước. Đăng ký qua app 'SA QUA CÔ' 'Cê ét ka hát', website www chấm cấp nước Trung An chấm 'vi en', hoặc đến văn phòng giao dịch.",
           required: [],
           options: [],
         },
