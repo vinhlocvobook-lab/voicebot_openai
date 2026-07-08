@@ -103,3 +103,46 @@ Log: `conversation_summary/2026/07/08/0967777637_DzBXPftfWBElUbKx0LT9h.json`
 4. "bye bye" bị transcribe thành "拜拜" dù đã set language "vi".
 5. cached_text_tokens = 0 ở cả 3 cuộc gọi → chưa tận dụng prompt caching,
    chi phí text input tăng theo độ dài cuộc gọi.
+
+---
+
+# Đợt 2 — triển khai chiều 08/07/2026
+
+Theo [plan_fix_callquality_v2_20260708.md](plan_fix_callquality_v2_20260708.md).
+`node --check` pass.
+
+**Nguyên tắc ghi nhớ** (từ chủ dự án): input transcript của khách có thể
+KHÔNG chính xác — chỉ dùng để log/debug, KHÔNG dùng làm căn cứ xử lý nghiệp
+vụ. Model realtime nghe audio trực tiếp, không phụ thuộc transcript.
+
+### Mục 1a — `src/system-prompt.js` (Phong cách, 2 dòng mới)
+- Sau câu chào đầu tiên, chỉ nghe tạp âm → im lặng chờ, không chào lần hai.
+- Âm thanh không phải lời nói rõ ràng (tạp âm/thở/echo) → không phản hồi.
+
+### Mục 2 — `src/system-prompt.js` (Hướng dẫn thủ tục, 1 dòng mới)
+- Chỉ nêu giấy tờ đúng nguyên văn kết quả tool, không diễn giải rộng
+  ("thuê nhà của Nhà nước" ≠ "thuê của tư nhân"). Không khớp danh sách →
+  nhận là chưa chắc chắn, mời chuyển máy/tạo phiếu.
+
+### Mục 3 — `src/system-prompt.js`
+- Section mới "# Kết thúc cuộc gọi": khách chào tạm biệt → chào ngắn gọn rồi
+  GỌI end_call trong cùng lượt, không chờ khách cúp.
+- Description tool `end_call`: "GỌI NGAY khi khách chào tạm biệt hoặc hết
+  nhu cầu, sau khi đã nói lời chào tạm biệt."
+
+### Mục 4 — `src/call-manager.js` (accept body)
+- Thêm `prompt` cho `audio.input.transcription`: ngữ cảnh tổng đài cấp nước
+  TP.HCM, tiếng Việt, mã danh bộ 11 số, tên thủ tục → giảm transcribe sai
+  ngôn ngữ. Transcript vẫn chỉ phục vụ log/debug.
+
+### Chưa làm (chờ dữ liệu)
+- Mục 1b: threshold 0.6 → 0.7 nếu sau 3–5 cuộc `emptyTranscriptCount` vẫn ≥ 3.
+- Mục 1c: semantic_vad (phương án cuối).
+- Mục 5: điều tra prompt caching = 0.
+
+### Kiểm chứng cuộc gọi tiếp theo
+1. Nghe chào xong im lặng 5–10s → AI không chào lần 2.
+2. "Tôi thuê nhà của tư nhân" → AI không bịa, đề nghị chuyển máy/tạo phiếu.
+3. Kết thúc "cảm ơn em, bye" → outcome = "completed" (AI tự end_call).
+4. Transcript không còn chữ Hán.
+5. So sánh stats: emptyTranscriptCount, vadTurnCount vs customerTurns.

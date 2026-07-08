@@ -1,6 +1,10 @@
 # Plan cải thiện chất lượng cuộc gọi — đợt 2 (08/07/2026)
 
-Trạng thái: **CHỜ DUYỆT**
+Trạng thái: **ĐÃ TRIỂN KHAI Mục 1a, 2, 3, 4 (08/07/2026)** — Mục 1b/1c/5 chờ
+dữ liệu thêm. Chi tiết: [changelog](changelog_fix_callquality_20260708.md).
+
+Lưu ý chung: input transcript có thể không chính xác — chỉ có giá trị tham
+khảo debug, KHÔNG dùng làm căn cứ xử lý nghiệp vụ.
 
 Tiếp nối [plan đợt 1](plan_fix_callquality_20260708.md) (đã triển khai, kiểm
 chứng OK — xem [changelog](changelog_fix_callquality_20260708.md)). Đợt 2 xử lý

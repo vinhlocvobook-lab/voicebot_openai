@@ -34,7 +34,20 @@ export async function acceptCall(callId, customerContext = "") {
     model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2",
     instructions,
     tools: TOOLS,
-    audio: { input: { transcription: { model: "gpt-4o-mini-transcribe", language: "vi" } } }
+    audio: {
+      input: {
+        transcription: {
+          model: "gpt-4o-mini-transcribe",
+          language: "vi",
+          // [fix 08/07/2026] Gợi ý ngữ cảnh để giảm transcribe sai ngôn ngữ
+          // (vd "bye bye" → "拜拜"). LƯU Ý: transcript chỉ dùng để log/debug,
+          // KHÔNG dùng làm căn cứ xử lý nghiệp vụ (model nghe audio trực tiếp).
+          prompt: "Cuộc gọi tổng đài chăm sóc khách hàng công ty cấp nước tại TP.HCM, "
+                + "toàn bộ bằng tiếng Việt. Có thể chứa mã danh bộ 11 chữ số, số tiền, "
+                + "tên thủ tục: định mức nước, lắp đặt đồng hồ, sang tên, nâng dời đồng hồ.",
+        },
+      },
+    },
   };
 
   log.info(`[CallMgr] Accepting call ${callId}`);

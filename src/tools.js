@@ -321,7 +321,7 @@ function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
     .join(" || ");
 
   const channels =
-    "Nộp hồ sơ qua: app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc trực tiếp tại văn phòng 873A Quang Trung hoặc 540 Hà Huy Giáp, TP.HCM.";
+    "Nộp hồ sơ qua: app SAWACO CSKH, website www chấm cấp nước Trung An chấm Vi En , hoặc trực tiếp tại văn phòng 873A Quang Trung hoặc 540 Hà Huy Giáp, TP.HCM.";
 
   return JSON.stringify({
     success: true,
