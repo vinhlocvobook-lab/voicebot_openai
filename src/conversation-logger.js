@@ -310,6 +310,7 @@ export class ConversationLogger {
         vadTurnCount:           this.events.filter((e) => e.stage === "vad_speech_started").length,
         emptyTranscriptCount:   this.events.filter((e) => e.stage === "empty_transcript").length,
         cancelledResponseCount: this.events.filter((e) => /^response_(cancelled|failed|incomplete)$/.test(e.stage)).length,
+        promptEchoCount:        this.events.filter((e) => e.stage === "transcript_prompt_echo").length,
       },
 
       // ── 3. Token usage & chi phí cuộc gọi ─────────────────────────────────

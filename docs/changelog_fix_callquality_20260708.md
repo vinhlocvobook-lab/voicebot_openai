@@ -146,3 +146,260 @@ vụ. Model realtime nghe audio trực tiếp, không phụ thuộc transcript.
 3. Kết thúc "cảm ơn em, bye" → outcome = "completed" (AI tự end_call).
 4. Transcript không còn chữ Hán.
 5. So sánh stats: emptyTranscriptCount, vadTurnCount vs customerTurns.
+
+---
+
+## Kết quả kiểm chứng đợt 2 — cuộc gọi test 08/07/2026 10:51
+
+Log: `conversation_summary/2026/07/08/0967777637_DzDbH1Hqkye3aPZefQmlz.json`
+(172s, thủ tục nâng/dời đồng hồ, outcome disconnected).
+
+| Fix đợt 1+2 | Kết quả |
+|---|---|
+| Phantom turn / chào đúp | ✅ emptyTranscriptCount = 0; vadTurnCount = customerTurns = 12; không chào đúp |
+| Chọn thủ tục qua enum mới | ✅ "muốn DỊCH cái đồng hồ nước" → chọn đúng nang_doi_dong_ho |
+| Transcribe sai ngôn ngữ | ✅ "bye bye" ra đúng, không còn chữ Hán |
+| end_call khi khách chào | ❌ khách "cảm ơn anh, bye bye" → AI vẫn đáp "nếu cần thêm..." không gọi end_call |
+
+**Vấn đề mới phát hiện:**
+1. **Prompt echo**: transcription prompt (Mục 4 đợt 2) bị "dội" nguyên văn vào
+   transcript làm 2 lượt khách giả khi audio im lặng/nhiễu — hành vi đã biết
+   của gpt-4o-mini-transcribe. Chỉ ảnh hưởng log/stats/summary, không ảnh
+   hưởng hội thoại (model nghe audio trực tiếp).
+2. **Bịa TRƯỚC khi gọi tool**: AI tự đoán "cần khoảng ba đến bốn loại giấy tờ,
+   ví dụ sổ đỏ..." rồi 20s sau mới gọi tool (data thật: không cần giấy tờ).
+   Quy tắc "nguyên văn theo tool" đợt 2 chỉ chặn diễn giải SAU khi có kết quả.
+3. Data `nang_doi_dong_ho` chứa chữ phiên âm TTS ("SA QUA CÔ", "Cê ét ka hát")
+   lẫn trong message, trùng lặp phần kênh nộp hồ sơ — chưa sửa, chờ quyết định.
+
+---
+
+# Đợt 3 — triển khai trưa 08/07/2026
+
+`node --check` pass. Files: `src/session-ws.js`, `src/conversation-logger.js`,
+`src/system-prompt.js`.
+
+### Mục 1 — Lọc prompt echo (`src/session-ws.js` + `src/conversation-logger.js`)
+- Trong case `input_audio_transcription.completed`: transcript trùng (hoặc là
+  đoạn con ≥ 20 ký tự của) transcription prompt → ghi event
+  `transcript_prompt_echo`, KHÔNG gọi `addCustomerTurn` → không còn lượt khách
+  giả trong transcript/summary.
+- Giữ nguyên transcription prompt (đã sửa được lỗi chữ Hán).
+- Stats mới: `promptEchoCount`.
+
+### Mục 2 — Siết end_call (`src/system-prompt.js`, section "# Kết thúc cuộc gọi")
+- Thêm: áp dụng CẢ KHI khách chào xen vào lúc AI đang nói.
+- Thêm: khách đã chào tạm biệt → KHÔNG đáp "nếu cần thêm thông tin em sẵn
+  sàng", phải kết thúc.
+
+### Mục 3 — Cấm bịa trước khi gọi tool (`src/system-prompt.js`, "# Hướng dẫn thủ tục")
+- Dòng đầu tiên mới: khách hỏi thủ tục → gọi tool TRƯỚC, có kết quả mới trả
+  lời; tuyệt đối không đoán giấy tờ/bước thủ tục (kể cả "thường sẽ cần...").
+
+### Kiểm chứng cuộc gọi tiếp theo
+1. Hỏi thủ tục bất kỳ → AI gọi tool ngay, KHÔNG đoán giấy tờ trước.
+2. Kết thúc "cảm ơn em, bye" (thử cả khi AI đang nói dở) → outcome "completed".
+3. stats: `promptEchoCount` thay vì lượt khách giả; customerTurns = số lượt nói thật.
+4. Theo dõi tiếp: emptyTranscriptCount (quyết định threshold 0.7 — Mục 1b plan v2),
+   prompt caching = 0 (Mục 5 plan v2), dọn data nang_doi_dong_ho.
+
+---
+
+## Kết quả kiểm chứng đợt 3 — cuộc gọi test 08/07/2026 11:12
+
+Log: `conversation_summary/2026/07/08/0967777637_DzDwV14fdUUdpAlAA2pRI.json`
+(173s, hỏi định mức nước, outcome disconnected — khách cảm ơn rồi cúp ngay 2s
+sau nên chưa kiểm chứng được end_call).
+
+| Fix đợt 3 | Kết quả |
+|---|---|
+| Cấm bịa trước khi gọi tool | ✅ Khách hỏi → AI chỉ nói "em sẽ tra cứu", gọi tool sau 1s |
+| Lọc prompt echo | ✅ promptEchoCount = 0, không còn lượt khách giả |
+| VAD (duy trì) | ✅ vadTurnCount = customerTurns = 8, emptyTranscriptCount = 0 |
+| end_call | ⏳ Chưa kiểm chứng được (khách cúp 2s sau lời cảm ơn) |
+
+**Vấn đề mới:** AI tư vấn nghiệp vụ VƯỢT data — khách hỏi "8 người, 4 có hộ
+khẩu 4 không, đăng ký được mấy người?" → AI khẳng định "đăng ký được tất cả"
+trong khi data thủ tục không nói gì về số người được đăng ký. Rủi ro tư vấn
+sai quy định.
+
+---
+
+# Đợt 4 — triển khai trưa 08/07/2026
+
+`node --check` pass. File: `src/system-prompt.js`.
+
+### Chặn tư vấn quy định/định lượng ngoài data ("# Hướng dẫn thủ tục", 1 dòng mới)
+Câu hỏi về quy định/định lượng mà kết quả tool không trả lời trực tiếp
+("đăng ký được mấy người?", "định mức bao nhiêu khối?", "chưa có tạm trú có
+được tính không?") → không suy diễn/khẳng định; nói thật không có thông tin,
+mời chuyển tổng đài viên hoặc tạo phiếu. (Cùng tinh thần quy tắc "cách tính
+tiền nước" có sẵn trong section Phạm vi.)
+
+### Kiểm chứng cuộc gọi tiếp theo
+1. Hỏi "đăng ký định mức được mấy người?" → AI không khẳng định, đề nghị
+   chuyển máy/tạo phiếu.
+2. end_call: kết thúc bằng "cảm ơn em, bye" và CHỜ 5–10s không cúp máy →
+   outcome phải là "completed".
+3. Còn treo: threshold 0.7 (nếu phantom quay lại), prompt caching = 0,
+   dọn chữ phiên âm TTS trong data nang_doi_dong_ho.
+
+---
+
+## Kết quả kiểm chứng đợt 4 — cuộc gọi test 08/07/2026 11:30
+
+Log: `conversation_summary/2026/07/08/0967777637_DzEDGgHciPqxMjpQua61J.json`
+(314s, hỏi định mức, **outcome = completed lần đầu tiên**).
+
+| Fix | Kết quả |
+|---|---|
+| end_call | ✅ Khách chào lần 2 → AI chào + gọi end_call, outcome "completed" |
+| Chặn suy diễn quy định (đợt 4) | ✅ Khách hỏi "8 người đăng ký được mấy?" 4 lần → AI kiên định không suy diễn, đề nghị chuyển máy |
+| Lọc prompt echo | ✅ promptEchoCount = 4, không lượt khách giả nào lọt vào transcript |
+
+**Tồn đọng:** phantom turn quay lại 4 lần/cuộc (giờ hiện dạng prompt echo thay
+vì empty transcript) → 3 câu mở đầu liên tiếp đầu cuộc gọi + 1 đoạn AI nhắc
+lại 2 lần. Đủ điều kiện Mục 1b plan v2 (threshold 0.7) — CHỜ DUYỆT.
+Lỗi nhỏ: AI xưng "bạn" 1 câu; đọc "VNeID" thành "VnID".
+
+---
+
+# Đợt 5 — Cải thiện trả lời thủ tục định mức nước (08/07/2026)
+
+Theo [plan_dinhmuc_nuoc_20260708.md](plan_dinhmuc_nuoc_20260708.md), dựa trên
+tài liệu hướng dẫn chính thức + quy tắc nghiệp vụ do chủ dự án xác nhận.
+`node --check` pass; test `dispatchTool` pass 6/6 điểm.
+
+### Mục 1 — `src/huongdanthutuc-data.js`
+- `dinh_muc_nuoc` thêm field `quyDinh`: thường trú HOẶC tạm trú (có giấy tờ
+  chứng minh) đều được đăng ký; không tạm trú → không được; số người đăng ký
+  = số người chứng minh được; kèm ví dụ 8 người → 6 người (4 hộ khẩu + 2 tạm
+  trú), 2 người không tạm trú cần đăng ký tạm trú trước rồi bổ sung.
+- Cập nhật giấy tờ 2 case theo tài liệu chính thức (CCCD, 'Thông báo số định
+  danh cá nhân và thông tin trong CSDL quốc gia về dân cư', VNeID).
+- Chuẩn hóa tên riêng trong data: "Vi eN i ai Đi" → "VNeID"; note của
+  `nang_doi_dong_ho` bỏ phiên âm "SA QUA CÔ"/"Cê ét ka hát" → "SAWACO CSKH",
+  "www.capnuoctrungan.vn".
+
+### Mục 2 — `src/tools.js` (`handleGetProcedureInfo`)
+- Kết quả trả thêm field `quy_dinh` (khi thủ tục có), và nhúng vào `message`
+  ("Quy định đối tượng: ...").
+- `channels` viết chữ chuẩn + tên phường: "873A Quang Trung, phường An Hội
+  Tây" / "540 Hà Huy Giáp, phường An Phú Đông".
+
+### Mục 3 — `src/system-prompt.js`
+- "# Hướng dẫn thủ tục": cho phép trả lời đối tượng/số người theo trường
+  "quy_dinh" (được đếm/cộng: 4 + 2 = 6); quy tắc không-suy-diễn giữ nguyên
+  cho những gì ngoài quy định (vd "định mức bao nhiêu khối?").
+- Thêm nhắc khách 1 lần sau mỗi thủ tục: có thể gặp tổng đài viên bất cứ lúc nào.
+- Section mới "# Cách đọc tên riêng": VNeID, SAWACO CSKH, website, CCCD
+  (phương án A — data viết chuẩn, phát âm dạy trong prompt).
+
+### Kiểm chứng cuộc gọi tiếp theo
+1. "Nhà 8 người, 4 hộ khẩu, 2 tạm trú, 2 không có gì — đăng ký được mấy
+   người?" → AI trả lời **6 người**, khuyên 2 người còn lại đăng ký tạm trú
+   trước rồi bổ sung.
+2. "Định mức mỗi người bao nhiêu khối?" → AI vẫn từ chối suy diễn (ngoài
+   quy_dinh), mời chuyển máy.
+3. Nghe AI đọc "VNeID" ("Vi-en-e-ai-đi"), "SAWACO", website — có tự nhiên không.
+4. Sau khi hướng dẫn thủ tục, AI nhắc quyền gặp tổng đài viên đúng 1 lần.
+5. Còn treo: threshold 0.7 (chờ duyệt), prompt caching = 0, data
+   sang_ten_dong_ho/doanh_nghiep có mục giấy tờ trùng lặp (phát hiện khi rà
+   data, chưa sửa — cần chủ dự án xác nhận nội dung đúng).
+
+---
+
+## Kết quả kiểm chứng đợt 5 — cuộc gọi test 08/07/2026 16:16
+
+Log: `conversation_summary/2026/07/08/0967777637_DzIgZD3y0UHaN6YmCxBns.json`.
+
+| Fix | Kết quả |
+|---|---|
+| quy_dinh trong kết quả tool | ✅ Về đầy đủ, AI tóm tắt đúng điều kiện thường trú/tạm trú |
+| Chọn tool khi khách nói đứt quãng | ✅ Đúng 2/2 lần |
+| Quy tắc đọc tên riêng trong SYSTEM_PROMPT | ❌ AI vẫn nói "VNeID", "CCCD", "www.capnuoctrungan.vn" nguyên dạng — model mini KHÔNG áp dụng được quy tắc phát âm đặt xa trong prompt |
+
+**Bug mới:** AI đọc nguyên văn instruction câu chào ra loa: "Đợi 1 giây rồi
+nói: ... Alo ..." — do greetingInstruction chứa chỉ dẫn "đợi 1 giây rồi nói"
+(thừa, code đã setTimeout 1s).
+
+---
+
+# Đợt 6 — Dạng đọc trong tool message + fix greeting (08/07/2026)
+
+`node --check` pass; test `dispatchTool` pass 6/6.
+
+### Mục 1 — `src/tools.js`: hàm `toSpoken()` (phương án C, thay phương án A đợt 5)
+Bài học: với gpt-realtime-mini, cách duy nhất tin cậy để kiểm soát phát âm là
+viết sẵn DẠNG ĐỌC vào text mà AI phải đọc. Giải pháp lai:
+- Data + field cấu trúc (`thuTuc`, `quy_dinh`) giữ CHỮ CHUẨN (log/summary sạch).
+- Riêng field `message` (phần AI đọc cho khách) đi qua `toSpoken()`:
+  - "(CCCD)" → bỏ (tránh lặp "Căn cước công dân (Căn cước công dân)")
+  - "CCCD" → "Căn cước công dân"
+  - "VNeID" → "Vi-en-e-ai-đi"
+  - "SAWACO CSKH" → "Sa-oa-cô Xê-ét-ka-hát"
+  - "www.capnuoctrungan.vn" → "vê kép vê kép vê kép chấm cấp nước trung an chấm vi-en"
+- Section "# Cách đọc tên riêng" trong SYSTEM_PROMPT giữ lại làm lớp phụ trợ.
+
+### Mục 2 — `src/session-ws.js`: fix greeting instruction
+`greetingInstruction` đổi từ 'đợi 1 giây rồi nói "..."' → 'Nói nguyên văn: "..."'
+(delay 1s đã có sẵn bằng setTimeout trong code).
+
+### Kiểm chứng cuộc gọi tiếp theo
+1. Câu chào KHÔNG còn "Đợi 1 giây rồi nói".
+2. Nghe AI đọc: "Vi-en-e-ai-đi", "Sa-oa-cô", "vê kép... chấm vi-en" tự nhiên.
+3. Transcript AI sẽ chứa dạng đọc (chấp nhận — đó là điều AI thực sự nói);
+   field quy_dinh/thuTuc trong toolCalls vẫn chữ chuẩn.
+
+### Bổ sung cùng đợt: định mức nước CHỈ áp dụng hộ gia đình
+(Xác nhận từ chủ dự án — không áp dụng doanh nghiệp/công ty.)
+- `huongdanthutuc-data.js`: `dinh_muc_nuoc` thêm `apDung: "ho_gia_dinh"`;
+  `quyDinh` mở đầu bằng câu "CHỈ áp dụng cho hộ gia đình, KHÔNG áp dụng cho
+  doanh nghiệp hay công ty".
+- `tools.js`: guard chung — thủ tục có `apDung` mà `doi_tuong` khác →
+  trả message báo rõ chỉ dành cho hộ gia đình, gợi ý chuyển máy/tạo phiếu,
+  KHÔNG trả nhầm nội dung hộ gia đình cho doanh nghiệp.
+- Enum description trong system-prompt.js đã có sẵn "(chỉ áp dụng hộ gia
+  đình)" từ đợt 0.
+- Test 5/5: DN bị chặn ✓, hộ gia đình bình thường ✓, không truyền doi_tuong
+  vẫn OK ✓, lap_dat_dong_ho doanh nghiệp không ảnh hưởng ✓.
+
+---
+
+## Kết quả kiểm chứng đợt 6 — cuộc gọi test 08/07/2026 19:07
+
+Log: `conversation_summary/2026/07/08/0967777637_DzLM04hXvNf30hZayYeus.json`
+(21s, khách hỏi dời đồng hồ rồi cúp). Đã xác minh qua call_params: cuộc gọi
+chạy đúng prompt/tools mới nhất — lỗi là hành vi model, không phải thiếu deploy.
+
+**2 lỗi:**
+1. Khách hỏi "dời đồng hồ nước" → AI đòi mã danh bộ thay vì gọi
+   get_procedure_info (thủ tục này không cần danh bộ, tool cũng không có
+   tham số đó). Nguyên nhân: section "# Mã danh bộ" chiếm tỷ trọng lớn trong
+   prompt + "# Quy trình" dặn "thu thập thông tin cần thiết" → model mini gán
+   nhầm thủ tục vào nhóm tra cứu (vốn cần danh bộ).
+2. Câu chào bị model diễn giải lại: "Chào anh/chị, cảm ơn anh/chị..." — sai
+   câu chuẩn, sai persona (anh/chị thay vì Quý Khách) dù instruction đợt 6 là
+   'Nói nguyên văn: "..."'.
+
+---
+
+# Đợt 7 — Thủ tục không cần danh bộ + siết câu chào (08/07/2026)
+
+`node --check` pass. Files: `src/system-prompt.js`, `src/session-ws.js`.
+
+### Mục 1 — `src/system-prompt.js` ("# Hướng dẫn thủ tục", 1 dòng mới)
+Hỏi thủ tục hành chính KHÔNG cần mã danh bộ — tuyệt đối không hỏi danh bộ,
+gọi get_procedure_info ngay. Danh bộ chỉ cần cho tra cứu hóa đơn/thanh toán/
+sản lượng/cúp nước/tạo phiếu.
+
+### Mục 2 — Câu chào (2 lớp)
+- `src/system-prompt.js` ("# Phong cách"): thêm "KHÔNG BAO GIỜ gọi khách là
+  anh/chị" + câu chào chuẩn nguyên văn vào prompt làm lớp dự phòng.
+- `src/session-ws.js`: greetingInstruction siết thành "Đọc CHÍNH XÁC từng từ
+  câu sau, không thêm bớt, không diễn giải lại: ...".
+
+### Kiểm chứng cuộc gọi tiếp theo
+1. Hỏi "dời đồng hồ nước" → AI gọi get_procedure_info ngay, KHÔNG hỏi danh bộ.
+2. Câu chào đúng nguyên văn "... Alo ... Xin chào Quý Khách..."; không còn
+   "anh/chị" trong cả cuộc gọi.

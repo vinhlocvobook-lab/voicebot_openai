@@ -287,11 +287,35 @@ async function handleCreateTicket({ ma_danh_bo, loai, mo_ta }) {
   });
 }
 
+// [fix 08/07/2026 đợt 6] Chuyển tên riêng sang DẠNG ĐỌC trong text mà AI phải
+// đọc cho khách. Lý do: gpt-realtime-mini không áp dụng được quy tắc phát âm
+// đặt trong system prompt (cuộc gọi DzIgZD3y AI vẫn nói "VNeID" nguyên dạng)
+// — cách tin cậy duy nhất là viết sẵn dạng đọc vào text. Data gốc + các field
+// cấu trúc (thuTuc, quy_dinh) vẫn giữ CHỮ CHUẨN cho log/summary sạch.
+function toSpoken(text) {
+  return text
+    .replace(/ ?\(CCCD\)/g, "")                 // "Căn cước công dân (CCCD)" → bỏ ngoặc, tránh lặp
+    .replace(/CCCD/g, "Căn cước công dân")
+    .replace(/VNeID/g, "Vi-en-e-ai-đi")
+    .replace(/SAWACO CSKH/g, "Sa-oa-cô Xê-ét-ka-hát")
+    .replace(/www\.capnuoctrungan\.vn/g, "vê kép vê kép vê kép chấm cấp nước trung an chấm vi-en");
+}
+
 function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
   console.log("==========[handleGetProcedureInfo]==================")
   const procedure = PROCEDURES[loai_thu_tuc];
   if (!procedure) {
     return JSON.stringify({ success: false, message: "Không tìm thấy thủ tục này." });
+  }
+
+  // [08/07/2026] Thủ tục giới hạn đối tượng (vd định mức nước chỉ cho hộ gia
+  // đình) → khách hỏi cho đối tượng khác thì báo rõ, không trả nhầm nội dung.
+  if (procedure.apDung && doi_tuong && doi_tuong !== procedure.apDung) {
+    return JSON.stringify({
+      success: true,
+      thuTuc: procedure.title,
+      message: `Thủ tục ${procedure.title} CHỈ áp dụng cho hộ gia đình, KHÔNG áp dụng cho doanh nghiệp hay công ty. Nếu khách là doanh nghiệp cần hỗ trợ khác, mời chuyển tổng đài viên hoặc tạo phiếu ghi nhận.`,
+    });
   }
 
   // Lọc case phù hợp đối tượng (nếu có)
@@ -320,13 +344,24 @@ function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
     })
     .join(" || ");
 
+  // [08/07/2026] Viết CHỮ CHUẨN (SAWACO CSKH, www.capnuoctrungan.vn) — cách
+  // phát âm dạy trong SYSTEM_PROMPT (section "Cách đọc tên riêng"), không
+  // nhúng phiên âm vào data để log/summary sạch.
   const channels =
-    "Nộp hồ sơ qua: app SAWACO CSKH, website www chấm cấp nước Trung An chấm Vi En , hoặc trực tiếp tại văn phòng 873A Quang Trung hoặc 540 Hà Huy Giáp, TP.HCM.";
+    "Nộp hồ sơ qua: app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc trực tiếp tại " +
+    "văn phòng 873A Quang Trung, phường An Hội Tây, TP.HCM hoặc 540 Hà Huy Giáp, phường An Phú Đông, TP.HCM.";
+
+  // [08/07/2026] quy_dinh: quy định đối tượng (ai được đăng ký, được mấy người)
+  // — AI dùng để trả lời câu hỏi định lượng trong phạm vi quy định.
+  const quyDinhPart = procedure.quyDinh ? ` Quy định đối tượng: ${procedure.quyDinh}` : "";
 
   return JSON.stringify({
     success: true,
     thuTuc: procedure.title,
-    message: `${procedure.purpose} Giấy tờ cần thiết: ${docsText}. ${channels}`,
+    ...(procedure.quyDinh ? { quy_dinh: procedure.quyDinh } : {}),
+    // message = phần AI đọc cho khách → dùng dạng đọc (toSpoken);
+    // quy_dinh/thuTuc giữ chữ chuẩn để log/summary sạch.
+    message: toSpoken(`${procedure.purpose}${quyDinhPart} Giấy tờ cần thiết: ${docsText}. ${channels}`),
   });
 }
 

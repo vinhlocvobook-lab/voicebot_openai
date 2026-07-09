@@ -9,6 +9,23 @@ export const PROCEDURES = {
     id: "dinh_muc_nuoc",
     title: "Đăng ký định mức nước",
     purpose: "Đăng ký số nhân khẩu để được tính định mức nước sinh hoạt theo quy định.",
+    // [08/07/2026] Quy định đối tượng — theo hướng dẫn chính thức + xác nhận
+    // của chủ dự án. Trả về cho AI qua field "quy_dinh" trong tools.js để
+    // trả lời các câu "ai được đăng ký / được mấy người".
+    // Thủ tục CHỈ dành cho hộ gia đình — tools.js dùng field này để chặn khi
+    // khách hỏi cho doanh nghiệp/công ty.
+    apDung: "ho_gia_dinh",
+    quyDinh:
+      "Thủ tục đăng ký định mức nước CHỈ áp dụng cho hộ gia đình, KHÔNG áp dụng " +
+      "cho doanh nghiệp hay công ty. " +
+      "Người có hộ khẩu thường trú TẠI ĐỊA CHỈ đăng ký, hoặc có đăng ký tạm trú " +
+      "tại địa chỉ đó (chứng minh bằng giấy đăng ký tạm trú, hoặc ứng dụng VNeID " +
+      "hiển thị nơi ở hiện tại đúng địa chỉ đăng ký) ĐỀU được đăng ký định mức nước. " +
+      "Người KHÔNG chứng minh được thường trú/tạm trú tại địa chỉ thì KHÔNG được " +
+      "tính định mức. Số người đăng ký được = số người có giấy tờ chứng minh. " +
+      "Ví dụ: nhà 8 người, 4 có hộ khẩu, 2 có tạm trú đầy đủ giấy tờ, 2 không có " +
+      "tạm trú → đăng ký được 6 người (4 hộ khẩu + 2 tạm trú); 2 người không có " +
+      "tạm trú không được đăng ký, nên đi đăng ký tạm trú trước rồi bổ sung sau.",
     cases: [
       {
         id: "thuong_tru_hcm",
@@ -16,20 +33,20 @@ export const PROCEDURES = {
         requiredDocs: {
           note: "Cung cấp một trong các giấy tờ sau",
           options: [
-            "Photo Căn cước công dân hoặc giấy khai sinh (có số định danh cá nhân) của tất cả nhân khẩu",
-            "Ứng dụng 'Vi eN i ai Đi'  hiển thị thông tin nơi thường trú của tất cả thành viên",
-            "Nếu chưa có Căn cước công dân: 'Thông báo số định danh cá nhân' từ Công an phường/xã",
+            "Photo Căn cước công dân (CCCD) hoặc giấy khai sinh có số định danh cá nhân của tất cả nhân khẩu cần đăng ký định mức",
+            "Ứng dụng VNeID thể hiện thông tin nơi thường trú, nơi ở hiện tại của khách hàng và các thành viên trong hộ",
+            "Nếu chưa được cấp CCCD: liên hệ Công an phường/xã để được cấp 'Thông báo số định danh cá nhân và thông tin trong cơ sở dữ liệu quốc gia về dân cư'",
           ],
         },
       },
       {
         id: "khong_thuong_tru_hcm",
-        label: "Không có hộ khẩu thường trú tại TP.HCM",
+        label: "Không có thường trú tại TP.HCM",
         requiredDocs: {
           note: "Cung cấp một trong các giấy tờ sau",
           options: [
-            "Xác nhận tạm trú có đóng dấu cơ quan thẩm quyền và photo Căn cước công dân hoặc giấy khai sinh (có số định danh cá nhân) của tất cả nhân khẩu",
-            "Ứng dụng 'Vi eN i ai Đi' hiển thị nơi ở hiện tại của các nhân khẩu tại địa chỉ đăng ký",
+            "Xác nhận tạm trú tại địa chỉ đăng ký định mức của tất cả nhân khẩu (có đóng dấu xác nhận của cơ quan có thẩm quyền) kèm photo CCCD của tất cả nhân khẩu",
+            "Ứng dụng VNeID thể hiện nơi ở hiện tại của các nhân khẩu đúng địa chỉ đăng ký định mức",
           ],
         },
       },
@@ -148,7 +165,7 @@ export const PROCEDURES = {
         id: "default",
         label: "Mọi trường hợp",
         requiredDocs: {
-          note: "Không cần chuẩn bị giấy tờ trước. Đăng ký qua app 'SA QUA CÔ' 'Cê ét ka hát', website www chấm cấp nước Trung An chấm 'vi en', hoặc đến văn phòng giao dịch.",
+          note: "Không cần chuẩn bị giấy tờ trước. Đăng ký qua app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc đến văn phòng giao dịch.",
           required: [],
           options: [],
         },

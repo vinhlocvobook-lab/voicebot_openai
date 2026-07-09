@@ -129,7 +129,13 @@ export function openSessionWebSocket(callId, callOps) {
     //   ? "Chào khách hàng ngắn gọn rồi đọc danh bộ tìm thấy để xác nhận, theo đúng hướng dẫn trong system instructions."
     //   : 'nói "Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
 
-    const greetingInstruction = 'đợi 1 giây rồi nói "... Alo ... Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
+    // [fix 08/07/2026 đợt 6] Bỏ "đợi 1 giây rồi nói" — code đã setTimeout 1s
+    // sẵn, và model mini từng đọc nguyên văn cả phần chỉ dẫn ra loa
+    // (cuộc gọi DzIgZD3y: "Đợi 1 giây rồi nói: ... Alo ...").
+    // [fix 08/07/2026 đợt 7] Siết chặt hơn — cuộc gọi DzLM04 model diễn giải
+    // lại thành "Chào anh/chị..." (sai persona). Câu chào chuẩn cũng đã được
+    // thêm vào SYSTEM_PROMPT (section Phong cách) làm lớp dự phòng.
+    const greetingInstruction = 'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: "... Alo ... Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
 
     setTimeout(() => {
       ws.send(JSON.stringify({
@@ -278,10 +284,21 @@ export function openSessionWebSocket(callId, callOps) {
           const textOut = event.usage.output_token_details?.text_tokens  ?? event.usage.output_tokens ?? 0;
           log.debug(`[WS][${callId}] transcription usage: audio_in=${audioIn} text_out=${textOut}`);
         }
+        // [fix 08/07/2026 đợt 3] gpt-4o-mini-transcribe gặp audio im lặng/nhiễu
+        // có thể "dội" lại chính transcription prompt làm lượt khách giả
+        // (thấy 2 lần trong cuộc gọi 0967777637_DzDbH1Hqkye3aPZefQmlz).
+        // Transcript trùng prompt → ghi event riêng, KHÔNG tính là lượt khách.
+        const _txPrompt = callOps.acceptParams?.audio?.input?.transcription?.prompt?.trim();
+        const _isPromptEcho = !!(khText && _txPrompt &&
+          (khText === _txPrompt || (khText.length >= 20 && _txPrompt.includes(khText))));
+
         // Chỉ log + ghi khi khách thực sự nói (bỏ qua transcript rỗng do im lặng/nhiễu)
-        if (khText) {
+        if (khText && !_isPromptEcho) {
           log.info(`[WS][${callId}] [KH nói]: ${khText}`);
           logger.addCustomerTurn(khText);
+        } else if (_isPromptEcho) {
+          log.info(`[WS][${callId}] [KH nói - prompt echo, bỏ qua]`);
+          logger.addEvent("transcript_prompt_echo", "transcript trùng transcription prompt (audio im lặng/nhiễu) — không tính lượt khách");
         } else {
           log.info(`[WS][${callId}] [KH nói]: `, { khText });
           // [debug 08/07/2026] VAD kích hoạt nhưng transcript rỗng = phantom turn
