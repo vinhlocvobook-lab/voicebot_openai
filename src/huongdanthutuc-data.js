@@ -1,7 +1,19 @@
 /**
  * huongdanthutuc-data.js
- * Re-export PROCEDURES từ huongdanthutuc.js để dùng trong CommonJS/ESM context.
- * (Tách riêng để tools.js import được mà không phụ thuộc vào file gốc)
+ * Dữ liệu thủ tục hành chính cho tool get_procedure_info.
+ * [11/07/2026] Cập nhật theo docs/huongdanthutuc_20260711.md (kịch bản chính thức):
+ * - Định mức nước: phân theo CCCD TP.HCM / CCCD tỉnh khác (CT07/CT08/VNeID).
+ * - Gắn đồng hồ hộ gia đình: CCCD chính chủ + 1 trong 3 giấy tờ (rút gọn từ 10).
+ * - Gắn đồng hồ & sang tên cho DOANH NGHIỆP: chuyển tổng đài viên (transferToAgent).
+ * - Website www.capnuoctrungan.vn chỉ là kênh đăng ký của thủ tục nâng/dời.
+ * - Thủ tục NGOÀI danh sách này: chuyển tổng đài viên hoặc tạo phiếu (xử lý ở tools.js).
+ *
+ * Quy ước requiredDocs:
+ * - required: cần ĐẦY ĐỦ tất cả.
+ * - options:  chỉ cần MỘT trong số đó.
+ * - optional: giấy tờ bổ sung TÙY TRƯỜNG HỢP (không bắt buộc).
+ * - note:     chỉ đọc khi không có 3 danh sách trên.
+ * Case có transferToAgent: true → không hướng dẫn giấy tờ, mời chuyển tổng đài viên/tạo phiếu.
  */
 
 export const PROCEDURES = {
@@ -9,44 +21,38 @@ export const PROCEDURES = {
     id: "dinh_muc_nuoc",
     title: "Đăng ký định mức nước",
     purpose: "Đăng ký số nhân khẩu để được tính định mức nước sinh hoạt theo quy định.",
-    // [08/07/2026] Quy định đối tượng — theo hướng dẫn chính thức + xác nhận
-    // của chủ dự án. Trả về cho AI qua field "quy_dinh" trong tools.js để
-    // trả lời các câu "ai được đăng ký / được mấy người".
     // Thủ tục CHỈ dành cho hộ gia đình — tools.js dùng field này để chặn khi
     // khách hỏi cho doanh nghiệp/công ty.
     apDung: "ho_gia_dinh",
+    // [11/07/2026] Quy định đối tượng — đồng bộ với huongdanthutuc_20260711.md.
+    // Trả về cho AI qua field "quy_dinh" để trả lời "ai được đăng ký / được mấy người".
     quyDinh:
       "Thủ tục đăng ký định mức nước CHỈ áp dụng cho hộ gia đình, KHÔNG áp dụng " +
       "cho doanh nghiệp hay công ty. " +
-      "Người có hộ khẩu thường trú TẠI ĐỊA CHỈ đăng ký, hoặc có đăng ký tạm trú " +
-      "tại địa chỉ đó (chứng minh bằng giấy đăng ký tạm trú, hoặc ứng dụng VNeID " +
-      "hiển thị nơi ở hiện tại đúng địa chỉ đăng ký) ĐỀU được đăng ký định mức nước. " +
-      "Người KHÔNG chứng minh được thường trú/tạm trú tại địa chỉ thì KHÔNG được " +
-      "tính định mức. Số người đăng ký được = số người có giấy tờ chứng minh. " +
-      "Ví dụ: nhà 8 người, 4 có hộ khẩu, 2 có tạm trú đầy đủ giấy tờ, 2 không có " +
-      "tạm trú → đăng ký được 6 người (4 hộ khẩu + 2 tạm trú); 2 người không có " +
-      "tạm trú không được đăng ký, nên đi đăng ký tạm trú trước rồi bổ sung sau.",
+      "Người có CCCD tại TP.HCM (không tính khu vực Bình Dương và Vũng Tàu cũ) chỉ cần " +
+      "bản photo CCCD. Người có CCCD ở tỉnh khác cần Xác nhận cư trú CT07 hoặc CT08, " +
+      "hoặc thông tin cư trú trên VNeID tại địa chỉ muốn đăng ký. " +
+      "Người KHÔNG chứng minh được cư trú tại địa chỉ thì KHÔNG được tính định mức. " +
+      "Số người đăng ký được = số người có giấy tờ chứng minh. " +
+      "Ví dụ: nhà 8 người, 4 có CCCD TP.HCM, 2 có xác nhận cư trú CT07/CT08 đầy đủ, " +
+      "2 không có giấy tờ cư trú → đăng ký được 6 người; 2 người còn lại nên đăng ký " +
+      "cư trú trước rồi bổ sung sau.",
     cases: [
       {
-        id: "thuong_tru_hcm",
-        label: "Có hộ khẩu thường trú tại TP.HCM",
+        id: "cccd_tphcm",
+        label: "Có CCCD tại TP.HCM (không tính khu vực Bình Dương và Vũng Tàu cũ)",
         requiredDocs: {
-          note: "Cung cấp một trong các giấy tờ sau",
-          options: [
-            "Photo Căn cước công dân (CCCD) hoặc giấy khai sinh có số định danh cá nhân của tất cả nhân khẩu cần đăng ký định mức",
-            "Ứng dụng VNeID thể hiện thông tin nơi thường trú, nơi ở hiện tại của khách hàng và các thành viên trong hộ",
-            "Nếu chưa được cấp CCCD: liên hệ Công an phường/xã để được cấp 'Thông báo số định danh cá nhân và thông tin trong cơ sở dữ liệu quốc gia về dân cư'",
-          ],
+          required: ["Bản photo Căn cước công dân (CCCD)"],
         },
       },
       {
-        id: "khong_thuong_tru_hcm",
-        label: "Không có thường trú tại TP.HCM",
+        id: "cccd_tinh_khac",
+        label: "Có CCCD ở tỉnh khác",
         requiredDocs: {
-          note: "Cung cấp một trong các giấy tờ sau",
+          note: "Cung cấp một trong các giấy tờ sau, tại địa chỉ muốn đăng ký",
           options: [
-            "Xác nhận tạm trú tại địa chỉ đăng ký định mức của tất cả nhân khẩu (có đóng dấu xác nhận của cơ quan có thẩm quyền) kèm photo CCCD của tất cả nhân khẩu",
-            "Ứng dụng VNeID thể hiện nơi ở hiện tại của các nhân khẩu đúng địa chỉ đăng ký định mức",
+            "Xác nhận cư trú CT07 hoặc CT08 tại địa chỉ muốn đăng ký",
+            "Thông tin cư trú trên ứng dụng VNeID tại địa chỉ muốn đăng ký",
           ],
         },
       },
@@ -56,56 +62,27 @@ export const PROCEDURES = {
   lap_dat_dong_ho: {
     id: "lap_dat_dong_ho",
     title: "Đăng ký lắp đặt đồng hồ nước",
-    purpose: "Đăng ký gắn đồng hồ nước mới tại địa chỉ sử dụng nước. Giấy tờ cần sao y còn hiệu lực trong 6 tháng hoặc có bản chính đối chiếu.",
+    purpose:
+      "Đăng ký gắn đồng hồ nước mới tại địa chỉ sử dụng nước. " +
+      "Giấy tờ cần sao y còn hiệu lực trong vòng 6 tháng hoặc có bản chính để đối chiếu.",
     cases: [
       {
         id: "ho_gia_dinh",
         label: "Hộ gia đình",
         requiredDocs: {
-          note: "Cung cấp một trong các giấy tờ sau",
+          required: ["Căn cước công dân (CCCD) chính chủ"],
           options: [
-            "Giấy chứng nhận quyền sở hữu nhà ở, quyền sử dụng đất ở.",
-            "Hợp đồng chuyển quyền sở hữu nhà lập tại cơ quan công chứng Nhà nước, hoặc Uỷ Ban Nhân Dân quận, huyện nơi có căn nhà tọa lạc, đã nộp lệ phí trước bạ và đăng ký.",
-            "Giấy cấp nhà trong nội bộ cơ quan, hoặc quyết định cấp nhà của cơ quan có thẩm quyền.",
-            "Hợp đồng của cá nhân, tổ chức thuê nhà của Nhà nước dài hạn.",
-            "Giấy phép xây dựng nhà.",
-            "Giấy cấp số nhà của cơ quan có thẩm quyền cấp quận, huyện.",
-            "Quyết định của cơ quan có thẩm quyền, hoặc bản án có hiệu lực thi hành của Tòa án công nhận quyền sở hữu, sử dụng, thừa kế tài sản nhà.",
-            "Giấy xác nhận tạm trú của công an phường, xã.",
-            "Giấy xác nhận tạm trú của Tổ trưởng khu phố về tình trạng nhà ở ổn định, không tranh chấp.",
-            "Quyết định giao đất của cơ quan chức năng cho chủ đầu tư xây dựng công trình (trong trường hợp chủ đầu tư đang xây dựng công trình, chưa chuyển nhượng cho người sử dụng)."
+            "Giấy chứng nhận quyền sở hữu nhà ở, quyền sử dụng đất ở",
+            "Hợp đồng chuyển quyền sở hữu nhà lập tại cơ quan Nhà nước nơi có căn nhà tọa lạc, đã nộp lệ phí trước bạ và đăng ký",
+            "Giấy phép xây dựng nhà",
           ],
         },
       },
       {
-        id: "doanh_nghiep_so_huu",
-        label: "Doanh nghiệp, công ty - địa chỉ thuộc sở hữu",
-        requiredDocs: {
-          note: "Cần đầy đủ các giấy tờ",
-          required: [
-            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất, quyền sở hữu nhà ở và tài sản khác gắn liền với đất.",
-            "Bản sao có chứng thực giấy phép kinh doanh và mã số thuế."
-          ],
-        },
-      },
-      {
-        id: "doanh_nghiep_thue",
-        label: "Doanh nghiệp, công ty - địa chỉ đi thuê",
-        requiredDocs: {
-          note: "Cần đầy đủ các giấy tờ",
-          required: [
-            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất, quyền sở hữu nhà ở và tài sản khác gắn liền với đất",
-            "Bản sao có chứng thực giấy phép kinh doanh và mã số thuế",
-            "Bản sao có chứng thực hợp đồng thuê mặt bằng, nhà đất",
-            `Giấy cam kết của bên cho thuê với nội dung: 
-            - Bên cho thuê đồng ý để bên thuê được đứng tên gắn đồng hồ nước tại địa chỉ lắp đặt Đồng Hồ Nước.
-            - Bên cho thuê cam kết thanh toán chi phí phát sinh, thanh toán hóa đơn tiền nước còn nợ  cho Công ty Cổ phần Cấp nước Trung An nếu bên thuê ngưng hợp đồng thuê, di dời nơi khác mà chưa thanh toán hết tiền nước.
-            - Giấy cam kết này phải được xác nhận của Uỷ Ban Nhân Dân phường, xã nơi thuê mặt bằng nếu chủ cho thuê là hộ cá nhân hoặc có chữ ký của đại diện pháp luật và con dấu nếu chủ cho thuê là công ty/ tổ chức
-            Lưu ý:
-            - Trường hợp bên thuê không đính kèm được giấy cam kết có thể thay thế bằng hình thức đóng tiền ký quỹ Hai mươi triệu đồng.`
-
-          ],
-        },
+        // [11/07/2026] Doanh nghiệp đăng ký gắn đồng hồ → chuyển tổng đài viên.
+        id: "doanh_nghiep",
+        label: "Doanh nghiệp, công ty",
+        transferToAgent: true,
       },
     ],
   },
@@ -120,38 +97,20 @@ export const PROCEDURES = {
         label: "Hộ gia đình",
         requiredDocs: {
           required: [
-            "Hóa đơn tiền nước kỳ mới nhất tại nơi đăng ký.",
-            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất / quyền sở hữu nhà ở và tài sản khác gắn liền với đất.",
-            // "Bản sao có chứng thực giấy chứng nhận số nhà (nếu địa chỉ có thay đổi so với địa chỉ trên hóa đơn tiền nước).",
-            // "Hồ sơ đăng ký định mức nếu có nhu cầu. Theo link hướng dẫn trên website https://capnuoctrungan.vn, mục  'Thủ tục đăng ký định mức nước'",
+            "Số danh bạ đồng hồ nước tại nơi đăng ký",
+            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất / quyền sở hữu nhà ở và tài sản khác gắn liền với đất",
           ],
-          options: [
-            "Bản sao chứng thực giấy chứng nhận số nhà (nếu địa chỉ thay đổi)",
+          optional: [
+            "Bản sao có chứng thực giấy chứng nhận số nhà (nếu địa chỉ có thay đổi so với địa chỉ trên hóa đơn tiền nước)",
             "Hồ sơ đăng ký định mức nước (nếu có nhu cầu)",
           ],
         },
       },
       {
+        // [11/07/2026] Doanh nghiệp sang tên → chuyển tổng đài viên.
         id: "doanh_nghiep",
-        label: "Doanh nghiệp",
-        requiredDocs: {
-          required: [
-            "Hóa đơn tiền nước kỳ mới nhất",
-            "Bản sao chứng thực giấy chứng nhận quyền sử dụng đất/sở hữu nhà",
-            "Bản sao chứng thực giấy chứng nhận đăng ký kinh doanh",
-
-            "Hóa đơn tiền nước kỳ mới nhất tại nơi đăng ký",
-            "Bản sao có chứng thực giấy chứng nhận quyền sử dụng đất / quyền sở hữu nhà ở và tài sản khác gắn liền với đất",
-            "Bản sao có chứng thực hợp đồng thuê nhà, giấy cam kết của chủ nhà cho Công ty thuê (trường hợp thuê nhà)",
-            "Bản sao có chứng thực giấy chứng nhận đăng ký kinh doanh",
-            "Công văn yêu cầu nội dung xuất hóa đơn (nếu có yêu cầu)"
-
-          ],
-          options: [
-            "Hợp đồng thuê nhà và giấy cam kết của chủ nhà (nếu đang thuê)",
-            "Công văn yêu cầu xuất hóa đơn (nếu có)",
-          ],
-        },
+        label: "Doanh nghiệp, công ty",
+        transferToAgent: true,
       },
     ],
   },
@@ -159,15 +118,19 @@ export const PROCEDURES = {
   nang_doi_dong_ho: {
     id: "nang_doi_dong_ho",
     title: "Nâng/Dời đồng hồ nước",
-    purpose: "Thay đổi vị trí hoặc nâng cấp đồng hồ nước hiện có. Không cần giấy tờ trước - đăng ký qua các kênh, nhân viên sẽ liên hệ hướng dẫn.",
+    purpose:
+      "Thay đổi vị trí hoặc nâng cấp đồng hồ nước hiện có. " +
+      "Không cần chuẩn bị giấy tờ trước — đăng ký qua các kênh, nhân viên sẽ liên hệ hướng dẫn.",
+    // [11/07/2026] Kênh website chỉ áp dụng cho thủ tục này (theo tài liệu mới).
+    channels:
+      "Đăng ký qua: app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc trực tiếp tại " +
+      "văn phòng 873A Quang Trung, phường An Hội Tây, TP.HCM hoặc 540 Hà Huy Giáp, phường An Phú Đông, TP.HCM.",
     cases: [
       {
         id: "default",
         label: "Mọi trường hợp",
         requiredDocs: {
-          note: "Không cần chuẩn bị giấy tờ trước. Đăng ký qua app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc đến văn phòng giao dịch.",
-          required: [],
-          options: [],
+          note: "Không cần chuẩn bị giấy tờ trước",
         },
       },
     ],

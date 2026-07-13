@@ -288,9 +288,24 @@ export function openSessionWebSocket(callId, callOps) {
         // có thể "dội" lại chính transcription prompt làm lượt khách giả
         // (thấy 2 lần trong cuộc gọi 0967777637_DzDbH1Hqkye3aPZefQmlz).
         // Transcript trùng prompt → ghi event riêng, KHÔNG tính là lượt khách.
+        // [fix 13/07/2026] So khớp SAU KHI chuẩn hoá (bỏ dấu câu, thường hoá,
+        // gộp khoảng trắng): cuộc gọi E16o8RrrNDst0VHNClIwO echo bị lệch vài
+        // dấu chấm/phẩy so với prompt gốc → exact match trượt, echo lọt vào
+        // lượt khách. Thêm so khớp "chữ ký" 40 ký tự đầu của prompt.
         const _txPrompt = callOps.acceptParams?.audio?.input?.transcription?.prompt?.trim();
-        const _isPromptEcho = !!(khText && _txPrompt &&
-          (khText === _txPrompt || (khText.length >= 20 && _txPrompt.includes(khText))));
+        const _norm = (s) => String(s ?? "")
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}\s]/gu, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const _nk = _norm(khText);
+        const _np = _norm(_txPrompt);
+        const _sig = _np.slice(0, 40); // "chữ ký" mở đầu prompt
+        const _isPromptEcho = !!(_nk && _np && (
+          _nk === _np ||
+          (_nk.length >= 20 && _np.includes(_nk)) ||   // transcript là 1 đoạn của prompt
+          (_sig.length >= 20 && _nk.includes(_sig))    // transcript chứa phần mở đầu prompt
+        ));
 
         // Chỉ log + ghi khi khách thực sự nói (bỏ qua transcript rỗng do im lặng/nhiễu)
         if (khText && !_isPromptEcho) {

@@ -297,15 +297,99 @@ function toSpoken(text) {
     .replace(/ ?\(CCCD\)/g, "")                 // "Căn cước công dân (CCCD)" → bỏ ngoặc, tránh lặp
     .replace(/CCCD/g, "Căn cước công dân")
     .replace(/VNeID/g, "Vi-en-e-ai-đi")
-    .replace(/SAWACO CSKH/g, "Sa-oa-cô Xê-ét-ka-hát")
-    .replace(/www\.capnuoctrungan\.vn/g, "vê kép vê kép vê kép chấm cấp nước trung an chấm vi-en");
+    .replace(/CT07/g, "Xê-Tê-không-bảy")
+    .replace(/CT08/g, "Xê-Tê-không-tám")
+    .replace(/SAWACO CSKH/g, "Sa-qua-cô Xê-ét-ka-hát")
+    .replace(/www\.capnuoctrungan\.vn/g, "vê kép vê kép vê kép chấm cấp nước trung an chấm vi-en")
+    .replace(/873A Quang Trung/g, "Tám bảy ba A Quang Trung")
+    .replace(/540 Hà Huy Giáp/g, "Năm trăm bốn mươi Hà Huy Giáp")
+    .replace(/TP.HCM/g, "Thành Phố Hồ Chí Minh");
 }
 
-function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
+// [11/07/2026] gpt-realtime-mini đôi khi sinh SAI TÊN THAM SỐ tool: cuộc gọi
+// E0UYAPzruSwXtEvyqt0sx gửi "loại_thu_tuc" (có dấu tiếng Việt) thay vì
+// "loai_thu_tuc", kèm key rác → args.loai_thu_tuc = undefined → báo nhầm
+// "ngoài phạm vi" dù khách hỏi đúng thủ tục hỗ trợ. Chuẩn hoá bằng CODE
+// (deterministic, cùng triết lý normalizeDanhBo): bỏ dấu + so khớp key/value.
+const stripDiacritics = (s) =>
+  String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D");
+// Chuẩn hoá value về dạng id: bỏ dấu, thường hoá, khoảng trắng/gạch → "_"
+// (vd "lắp đặt đồng hồ" → "lap_dat_dong_ho").
+const canonValue = (v) => stripDiacritics(v).toLowerCase().trim().replace(/[\s-]+/g, "_");
+
+const DOI_TUONG_IDS = ["ho_gia_dinh", "doanh_nghiep"];
+
+function normalizeProcedureArgs(args = {}) {
+  let loai = PROCEDURES[args.loai_thu_tuc] ? args.loai_thu_tuc : undefined;
+  let doiTuong = DOI_TUONG_IDS.includes(args.doi_tuong) ? args.doi_tuong : undefined;
+
+  // 1) Key viết sai (có dấu/hoa thường) nhưng bỏ dấu thì khớp đúng tên tham số.
+  if (!loai || !doiTuong) {
+    for (const [k, v] of Object.entries(args)) {
+      const key = canonValue(k);
+      const val = canonValue(v);
+      if (!loai && key === "loai_thu_tuc" && PROCEDURES[val]) loai = val;
+      if (!doiTuong && key === "doi_tuong" && DOI_TUONG_IDS.includes(val)) doiTuong = val;
+    }
+  }
+  // 2) Fallback: quét value — chỉ nhận khi có ĐÚNG MỘT id thủ tục (tránh đoán bừa).
+  if (!loai) {
+    const ids = [...new Set(
+      Object.values(args).map(canonValue).filter((v) => PROCEDURES[v])
+    )];
+    if (ids.length === 1) loai = ids[0];
+  }
+  if (!doiTuong) {
+    const dts = [...new Set(
+      Object.values(args).map(canonValue).filter((v) => DOI_TUONG_IDS.includes(v))
+    )];
+    if (dts.length === 1) doiTuong = dts[0];
+  }
+  // 3) [13/07/2026] Model mã hoá dạng CỜ BOOLEAN — cuộc gọi E11HysUBZhNRGG2XKE6AD
+  // gửi { lap_dat_dong_ho: true, sang_ten_dong_ho: false, ... } KHÔNG có
+  // loai_thu_tuc → key chính là id, value truthy đánh dấu lựa chọn.
+  const truthy = (v) => v === true || v === 1 || v === "true" || v === "1";
+  if (!loai) {
+    const flagged = [...new Set(
+      Object.entries(args)
+        .filter(([k, v]) => PROCEDURES[canonValue(k)] && truthy(v))
+        .map(([k]) => canonValue(k))
+    )];
+    if (flagged.length === 1) loai = flagged[0];
+  }
+  if (!doiTuong) {
+    const flagged = [...new Set(
+      Object.entries(args)
+        .filter(([k, v]) => DOI_TUONG_IDS.includes(canonValue(k)) && truthy(v))
+        .map(([k]) => canonValue(k))
+    )];
+    if (flagged.length === 1) doiTuong = flagged[0];
+  }
+
+  if (loai !== args.loai_thu_tuc || doiTuong !== args.doi_tuong) {
+    console.warn("[get_procedure_info] Args chuẩn hoá lại:", JSON.stringify(args),
+      "→", JSON.stringify({ loai_thu_tuc: loai, doi_tuong: doiTuong }));
+  }
+  return { loai_thu_tuc: loai, doi_tuong: doiTuong };
+}
+
+function handleGetProcedureInfo(rawArgs = {}) {
   console.log("==========[handleGetProcedureInfo]==================")
+  const { loai_thu_tuc, doi_tuong } = normalizeProcedureArgs(rawArgs);
   const procedure = PROCEDURES[loai_thu_tuc];
   if (!procedure) {
-    return JSON.stringify({ success: false, message: "Không tìm thấy thủ tục này." });
+    // [11/07/2026] Thủ tục ngoài phạm vi 4 thủ tục hỗ trợ → không tự hướng dẫn,
+    // mời chuyển tổng đài viên hoặc tạo phiếu ghi nhận.
+    return JSON.stringify({
+      success: false,
+      ngoai_pham_vi: true,
+      message:
+        "Loại thủ tục không thuộc 4 thủ tục hỗ trợ (dinh_muc_nuoc, lap_dat_dong_ho, " +
+        "sang_ten_dong_ho, nang_doi_dong_ho). Nếu khách đang hỏi MỘT trong 4 thủ tục này " +
+        "→ GỌI LẠI tool với đúng tham số loai_thu_tuc. Nếu là thủ tục khác → ngoài phạm vi: " +
+        "KHÔNG tự hướng dẫn, mời khách chọn chuyển tổng đài viên (transfer_to_agent) " +
+        "hoặc tạo phiếu ghi nhận (create_ticket) để nhân viên liên hệ lại sau.",
+    });
   }
 
   // [08/07/2026] Thủ tục giới hạn đối tượng (vd định mức nước chỉ cho hộ gia
@@ -318,6 +402,24 @@ function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
     });
   }
 
+  // [12/07/2026] Thủ tục có hướng dẫn KHÁC NHAU theo đối tượng (lắp đặt, sang
+  // tên): thiếu doi_tuong thì KHÔNG trả gộp cả hai trường hợp — cuộc gọi
+  // E0VkaW1IIC4xom9HGSneG model nhận cả 2 case rồi tự tóm tắt làm rơi mất địa
+  // chỉ văn phòng. Trả yêu cầu hỏi khách rồi gọi lại (deterministic).
+  const coPhanBietDoiTuong = procedure.cases.some((c) => c.id === "doanh_nghiep");
+  if (!doi_tuong && coPhanBietDoiTuong) {
+    return JSON.stringify({
+      success: true,
+      thuTuc: procedure.title,
+      can_hoi_doi_tuong: true,
+      message:
+        `Thủ tục ${procedure.title} có hướng dẫn KHÁC NHAU cho hộ gia đình và doanh nghiệp. ` +
+        `HỎI khách một câu ngắn: "Quý Khách đăng ký cho hộ gia đình hay doanh nghiệp ạ?" ` +
+        `rồi GỌI LẠI get_procedure_info với doi_tuong tương ứng. KHÔNG tự đoán, ` +
+        `KHÔNG hướng dẫn giấy tờ khi chưa gọi lại tool.`,
+    });
+  }
+
   // Lọc case phù hợp đối tượng (nếu có)
   let relevantCases = procedure.cases;
   if (doi_tuong) {
@@ -325,43 +427,223 @@ function handleGetProcedureInfo({ loai_thu_tuc, doi_tuong }) {
     if (matched.length > 0) relevantCases = matched;
   }
 
-  // Tổng hợp giấy tờ cần thiết.
+  // [11/07/2026] Case đánh dấu transferToAgent (vd doanh nghiệp gắn/sang tên
+  // đồng hồ) → không hướng dẫn giấy tờ, mời chuyển tổng đài viên hoặc tạo phiếu.
+  if (relevantCases.length > 0 && relevantCases.every((c) => c.transferToAgent)) {
+    return JSON.stringify({
+      success: true,
+      thuTuc: procedure.title,
+      can_chuyen_tong_dai: true,
+      message:
+        `Thủ tục ${procedure.title} đối với doanh nghiệp/công ty do tổng đài viên hỗ trợ trực tiếp, ` +
+        `trợ lý KHÔNG tự hướng dẫn giấy tờ. Mời khách chọn: chuyển tổng đài viên (transfer_to_agent), ` +
+        `hoặc tạo phiếu ghi nhận (create_ticket) để nhân viên liên hệ lại sau.`,
+    });
+  }
+
+  // Tổng hợp giấy tờ thành CÁC Ý ĐÁNH SỐ.
   // [fix 08/07/2026] Giữ ngữ nghĩa AND/OR của data: `required` = cần đầy đủ,
-  // `options` = chỉ cần một trong. Trước đây gộp phẳng 2 danh sách và bỏ rơi
-  // `note` → AI không biết khách cần nộp hết hay chỉ 1 loại, trả lời mâu thuẫn.
-  const docsText = relevantCases
-    .map((c) => {
-      const docs = c.requiredDocs;
-      const parts = [];
-      if (docs.required?.length) {
-        parts.push(`CẦN ĐẦY ĐỦ các giấy tờ sau: ${docs.required.join("; ")}`);
-      }
-      if (docs.options?.length) {
-        parts.push(`CHỈ CẦN MỘT trong các giấy tờ sau: ${docs.options.join("; ")}`);
-      }
-      if (parts.length === 0) parts.push(docs.note || "Không có yêu cầu giấy tờ cụ thể.");
-      return `${c.label}: ${parts.join(". ")}`;
-    })
-    .join(" || ");
+  // `options` = chỉ cần một trong, `optional` = bổ sung tùy trường hợp.
+  // [fix 12/07/2026] Đánh số ý + chỉ thị "đọc đủ N ý" — cuộc gọi
+  // E0Vu0A3D9QbGpHC9l3ng8 model mini tự tóm tắt chuỗi dài, làm rơi giấy tờ
+  // bắt buộc (CCCD) và địa chỉ văn phòng dù prompt đã cấm.
+  const spokenItems = [];
+  const nhieuCase = relevantCases.length > 1;
+  relevantCases.forEach((c) => {
+    const prefix = nhieuCase ? `Trường hợp ${c.label} — ` : "";
+    if (c.transferToAgent) {
+      spokenItems.push(`${prefix}tổng đài viên hỗ trợ trực tiếp: mời chuyển tổng đài viên hoặc tạo phiếu ghi nhận`);
+      return;
+    }
+    const docs = c.requiredDocs;
+    let coY = false;
+    if (docs.required?.length) {
+      spokenItems.push(`${prefix}giấy tờ BẮT BUỘC: ${docs.required.join("; ")}`);
+      coY = true;
+    }
+    if (docs.options?.length) {
+      spokenItems.push(`${prefix}kèm CHỈ CẦN MỘT trong các giấy tờ sau: ${docs.options.join("; ")}`);
+      coY = true;
+    }
+    if (docs.optional?.length) {
+      spokenItems.push(`${prefix}giấy tờ bổ sung TÙY TRƯỜNG HỢP: ${docs.optional.join("; ")}`);
+      coY = true;
+    }
+    if (!coY) spokenItems.push(`${prefix}${docs.note || "không có yêu cầu giấy tờ cụ thể"}`);
+  });
 
   // [08/07/2026] Viết CHỮ CHUẨN (SAWACO CSKH, www.capnuoctrungan.vn) — cách
   // phát âm dạy trong SYSTEM_PROMPT (section "Cách đọc tên riêng"), không
   // nhúng phiên âm vào data để log/summary sạch.
+  // [11/07/2026] Theo tài liệu mới, website chỉ là kênh của thủ tục nâng/dời
+  // → procedure.channels (data) ghi đè kênh mặc định.
   const channels =
-    "Nộp hồ sơ qua: app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc trực tiếp tại " +
+    procedure.channels ||
+    "Nộp hồ sơ qua: app SAWACO CSKH, hoặc trực tiếp tại " +
     "văn phòng 873A Quang Trung, phường An Hội Tây, TP.HCM hoặc 540 Hà Huy Giáp, phường An Phú Đông, TP.HCM.";
+
+  // Kênh nộp hồ sơ luôn là ý cuối — bắt buộc đọc (kèm đầy đủ 2 địa chỉ).
+  spokenItems.push(channels);
 
   // [08/07/2026] quy_dinh: quy định đối tượng (ai được đăng ký, được mấy người)
   // — AI dùng để trả lời câu hỏi định lượng trong phạm vi quy định.
   const quyDinhPart = procedure.quyDinh ? ` Quy định đối tượng: ${procedure.quyDinh}` : "";
 
+  // [13/07/2026] Dùng "Thứ nhất/Thứ hai..." thay "Ý 1/Ý 2" — model đọc nguyên
+  // văn nhãn đánh số cho khách (cuộc E1030jdrzgL8nTwnryZET nói "cần có 3 ý
+  // quan trọng, Ý một..." nghe máy móc, khách rối). Số thứ tự chữ nghe tự nhiên.
+  const THU_TU = ["Thứ nhất", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy"];
+  const bodyDanhSo = spokenItems
+    .map((s, i) => `${THU_TU[i] || `Thứ ${i + 1}`}, ${s.replace(/\.\s*$/, "")}.`)
+    .join(" ");
+
   return JSON.stringify({
     success: true,
     thuTuc: procedure.title,
+    so_y_phai_doc: spokenItems.length,
     ...(procedure.quyDinh ? { quy_dinh: procedure.quyDinh } : {}),
     // message = phần AI đọc cho khách → dùng dạng đọc (toSpoken);
     // quy_dinh/thuTuc giữ chữ chuẩn để log/summary sạch.
-    message: toSpoken(`${procedure.purpose}${quyDinhPart} Giấy tờ cần thiết: ${docsText}. ${channels}`),
+    message: toSpoken(
+      `${procedure.purpose}${quyDinhPart} ` +
+      `PHẢI ĐỌC ĐẦY ĐỦ CẢ ${spokenItems.length} PHẦN SAU CHO KHÁCH theo đúng thứ tự, ` +
+      `không bỏ phần nào, không thay địa chỉ bằng "địa chỉ đã nêu". ` +
+      `KHÔNG nói với khách "có N ý/N phần" — chỉ đọc nội dung một cách tự nhiên: ${bodyDanhSo}`
+    ),
+  });
+}
+
+// ─── check_missing_docs ──────────────────────────────────────────────────────
+// [13/07/2026] Đối chiếu giấy tờ khách ĐÃ CÓ bằng CODE. Cuộc gọi
+// E11zOBRGO46YlRelgoR0x: rule prompt yêu cầu model tự đối chiếu nhưng mini trả
+// lời SAI (nói giấy phép xây dựng đáp ứng "nhóm bắt buộc" và quên CCCD).
+
+// Chuẩn hoá text để so khớp: bỏ dấu, thường hoá, bỏ ký tự lạ, gộp khoảng trắng.
+const canonText = (v) =>
+  stripDiacritics(v).toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+// Tên dân dã khách hay dùng → cụm đặc trưng trong tên giấy tờ chuẩn.
+const DOC_ALIASES = [
+  { keys: ["so hong", "so do", "giay to nha dat"], target: "giay chung nhan quyen" },
+  { keys: ["hop dong mua ban"], target: "hop dong chuyen quyen so huu" },
+];
+
+function docMatches(customerRaw, docRaw) {
+  const cus = canonText(customerRaw);
+  const doc = canonText(docRaw);
+  if (!cus || !doc) return false;
+  if (doc.includes(cus)) return true;
+  for (const a of DOC_ALIASES) {
+    if (a.keys.some((k) => cus.includes(k)) && doc.includes(a.target)) return true;
+  }
+  // Khách nói dài dòng hơn tên giấy chuẩn: khớp khi có cụm 2 từ liên tiếp trùng.
+  const words = cus.split(" ");
+  for (let i = 0; i + 1 < words.length; i++) {
+    const bigram = `${words[i]} ${words[i + 1]}`;
+    if (bigram.length >= 7 && doc.includes(bigram)) return true;
+  }
+  return false;
+}
+
+function handleCheckMissingDocs(rawArgs = {}) {
+  console.log("==========[handleCheckMissingDocs]==================");
+  const { loai_thu_tuc, doi_tuong } = normalizeProcedureArgs(rawArgs);
+  const procedure = PROCEDURES[loai_thu_tuc];
+  if (!procedure) {
+    return JSON.stringify({
+      success: false,
+      ngoai_pham_vi: true,
+      message:
+        "Loại thủ tục không thuộc 4 thủ tục hỗ trợ. Nếu khách hỏi 1 trong 4 thủ tục → gọi lại " +
+        "với đúng loai_thu_tuc; nếu không → mời chuyển tổng đài viên (transfer_to_agent) " +
+        "hoặc tạo phiếu (create_ticket).",
+    });
+  }
+  const coPhanBietDoiTuong = procedure.cases.some((c) => c.id === "doanh_nghiep");
+  if (!doi_tuong && coPhanBietDoiTuong) {
+    return JSON.stringify({
+      success: true,
+      thuTuc: procedure.title,
+      can_hoi_doi_tuong: true,
+      message:
+        `Cần biết đối tượng trước. HỎI khách: "Quý Khách đăng ký cho hộ gia đình hay ` +
+        `doanh nghiệp ạ?" rồi gọi lại tool với doi_tuong tương ứng.`,
+    });
+  }
+  let relevantCases = procedure.cases;
+  if (doi_tuong) {
+    const matched = procedure.cases.filter((c) => c.id.includes(doi_tuong) || c.id === "default");
+    if (matched.length > 0) relevantCases = matched;
+  }
+  if (relevantCases.length > 0 && relevantCases.every((c) => c.transferToAgent)) {
+    return JSON.stringify({
+      success: true,
+      thuTuc: procedure.title,
+      can_chuyen_tong_dai: true,
+      message:
+        `Thủ tục ${procedure.title} cho doanh nghiệp/công ty do tổng đài viên hỗ trợ trực tiếp ` +
+        `— mời khách chuyển tổng đài viên (transfer_to_agent) hoặc tạo phiếu (create_ticket).`,
+    });
+  }
+  const cs = relevantCases.find((c) => !c.transferToAgent);
+  const docsReq = cs?.requiredDocs || {};
+  const required = docsReq.required || [];
+  const options = docsReq.options || [];
+
+  let daCo = rawArgs.giay_to_da_co;
+  if (typeof daCo === "string") daCo = [daCo];
+  if (!Array.isArray(daCo)) daCo = [];
+  daCo = daCo.filter((x) => typeof x === "string" && x.trim());
+  if (daCo.length === 0) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Thiếu danh sách giấy tờ khách đã có. Gọi lại tool với giay_to_da_co là mảng " +
+        'các giấy tờ khách nói đã có (vd ["giấy phép xây dựng"]).',
+    });
+  }
+
+  const matchedRequired = new Set();
+  let optionHit = null;
+  const unrecognized = [];
+  for (const item of daCo) {
+    let hit = false;
+    for (const r of required) {
+      if (docMatches(item, r)) { matchedRequired.add(r); hit = true; }
+    }
+    for (const o of options) {
+      if (docMatches(item, o)) { if (!optionHit) optionHit = o; hit = true; }
+    }
+    if (!hit) unrecognized.push(item);
+  }
+  const missingRequired = required.filter((r) => !matchedRequired.has(r));
+  const needOption = options.length > 0 && !optionHit;
+  const hoSoDu = missingRequired.length === 0 && !needOption;
+
+  const daDuParts = [];
+  if (optionHit) daDuParts.push(`nhóm "chỉ cần một trong" ĐÃ ĐỦ (khách có: ${optionHit})`);
+  if (matchedRequired.size) daDuParts.push(`giấy bắt buộc đã có: ${[...matchedRequired].join("; ")}`);
+  const thieu = [];
+  if (missingRequired.length) thieu.push(`giấy tờ BẮT BUỘC: ${missingRequired.join("; ")}`);
+  if (needOption) thieu.push(`MỘT trong các giấy tờ sau: ${options.join("; ")}`);
+  const canhBao = unrecognized.length
+    ? ` LƯU Ý: chưa nhận diện được "${unrecognized.join('", "')}" trong danh mục — nói thật với ` +
+    `khách là chưa chắc giấy này dùng được, mời tổng đài viên xác nhận nếu cần.`
+    : "";
+
+  return JSON.stringify({
+    success: true,
+    thuTuc: procedure.title,
+    ho_so_du: hoSoDu,
+    con_thieu: hoSoDu ? [] : thieu,
+    message: toSpoken(
+      hoSoDu
+        ? `Đối chiếu xong: ${daDuParts.join("; ")}. Hồ sơ giấy tờ ĐÃ ĐỦ cho thủ tục ` +
+        `${procedure.title} — báo khách hồ sơ đã đủ, chỉ cần nộp.${canhBao}`
+        : `Đối chiếu xong: ${daDuParts.length ? daDuParts.join("; ") + ". " : ""}` +
+        `CHỈ ĐỌC PHẦN CÒN THIẾU cho khách, KHÔNG đọc lại giấy đã có: ` +
+        `Quý Khách còn cần ${thieu.join(", và ")}.${canhBao}`
+    ),
   });
 }
 
@@ -403,6 +685,7 @@ export async function dispatchTool(name, args) {
       case "get_outages": return await handleGetOutages(args);
       case "create_ticket": return await handleCreateTicket(args);
       case "get_procedure_info": return handleGetProcedureInfo(args);
+      case "check_missing_docs": return handleCheckMissingDocs(args);
       case "transfer_to_agent": return handleTransferToAgent(args);
       case "end_call": return handleEndCall(args);
       default:
