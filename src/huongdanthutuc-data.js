@@ -29,7 +29,7 @@ export const PROCEDURES = {
     quyDinh:
       "Thủ tục đăng ký định mức nước CHỈ áp dụng cho hộ gia đình, KHÔNG áp dụng " +
       "cho doanh nghiệp hay công ty. " +
-      "Người có CCCD tại TP.HCM (không tính khu vực Bình Dương và Vũng Tàu cũ) chỉ cần " +
+      "Người có CCCD tại TP.HCM, không tính khu vực Bình Dương và Vũng Tàu cũ, chỉ cần " +
       "bản photo CCCD. Người có CCCD ở tỉnh khác cần Xác nhận cư trú CT07 hoặc CT08, " +
       "hoặc thông tin cư trú trên VNeID tại địa chỉ muốn đăng ký. " +
       "Người KHÔNG chứng minh được cư trú tại địa chỉ thì KHÔNG được tính định mức. " +
@@ -37,6 +37,19 @@ export const PROCEDURES = {
       "Ví dụ: nhà 8 người, 4 có CCCD TP.HCM, 2 có xác nhận cư trú CT07/CT08 đầy đủ, " +
       "2 không có giấy tờ cư trú → đăng ký được 6 người; 2 người còn lại nên đăng ký " +
       "cư trú trước rồi bổ sung sau.",
+    // [13/07/2026] Giải thích thuật ngữ CT07/CT08 — dùng khi khách hỏi/thắc mắc
+    // "CT07 là gì", "xác nhận cư trú là gì", "xin ở đâu". Nguồn: Thông tư
+    // 66/2023/TT-BCA (tổng hợp từ luatvietnam.vn, thuvienphapluat.vn 13/07/2026).
+    thuatNgu:
+      "CT07 là Giấy xác nhận thông tin về cư trú, do Công an cấp xã/phường cấp theo " +
+      "mẫu của Bộ Công an, dùng để chứng minh nơi thường trú hoặc tạm trú của mình. " +
+      "CT08 là Thông báo kết quả giải quyết đăng ký cư trú (thường trú/tạm trú), cũng " +
+      "do công an cấp. " +
+      "Cách xin: đến trực tiếp Công an xã/phường bất kỳ (không phụ thuộc nơi cư trú), " +
+      "hoặc nộp online qua Cổng dịch vụ công Bộ Công an hay ứng dụng VNeID — hoàn toàn " +
+      "miễn phí. Kết quả có trong khoảng nửa ngày đến 3 ngày làm việc. " +
+      "Giấy có giá trị 1 năm kể từ ngày cấp (riêng người chưa có nơi thường trú/tạm trú " +
+      "là 6 tháng); nếu thông tin cư trú thay đổi thì giấy hết giá trị từ lúc thay đổi.",
     cases: [
       {
         id: "cccd_tphcm",

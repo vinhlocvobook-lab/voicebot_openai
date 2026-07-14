@@ -485,10 +485,6 @@ function handleGetProcedureInfo(rawArgs = {}) {
   // Kênh nộp hồ sơ luôn là ý cuối — bắt buộc đọc (kèm đầy đủ 2 địa chỉ).
   spokenItems.push(channels);
 
-  // [08/07/2026] quy_dinh: quy định đối tượng (ai được đăng ký, được mấy người)
-  // — AI dùng để trả lời câu hỏi định lượng trong phạm vi quy định.
-  const quyDinhPart = procedure.quyDinh ? ` Quy định đối tượng: ${procedure.quyDinh}` : "";
-
   // [13/07/2026] Dùng "Thứ nhất/Thứ hai..." thay "Ý 1/Ý 2" — model đọc nguyên
   // văn nhãn đánh số cho khách (cuộc E1030jdrzgL8nTwnryZET nói "cần có 3 ý
   // quan trọng, Ý một..." nghe máy móc, khách rối). Số thứ tự chữ nghe tự nhiên.
@@ -497,19 +493,45 @@ function handleGetProcedureInfo(rawArgs = {}) {
     .map((s, i) => `${THU_TU[i] || `Thứ ${i + 1}`}, ${s.replace(/\.\s*$/, "")}.`)
     .join(" ");
 
+  // [13/07/2026 đợt 2] TÁCH chỉ thị khỏi nội dung đọc — cuộc gọi
+  // E17jLdcYX5ACzRQ7IuGh0 model đọc NGUYÊN VĂN cả chỉ thị điều khiển lẫn đoạn
+  // quy_dinh dài trong "message" cho khách nghe (khách: "nó bị khùng khùng ha").
+  // → "doc_cho_khach" = nội dung sạch, đọc nguyên văn; "luu_y_cho_tro_ly" =
+  // chỉ thị nội bộ, cấm đọc. quy_dinh KHÔNG nằm trong phần đọc mặc định —
+  // chỉ dùng trả lời câu hỏi tiếp theo.
+  // [13/07/2026 đợt 3] doc_cho_khach đặt TRƯỚC quy_dinh trong JSON + cảnh báo
+  // ngay trong giá trị quy_dinh — cuộc E18GPiH9S0EO3dkWUSzUk model bị hút vào
+  // field quy_dinh dài (đứng trước), trộn nó vào bài đọc và làm rơi phần địa chỉ.
   return JSON.stringify({
     success: true,
     thuTuc: procedure.title,
-    so_y_phai_doc: spokenItems.length,
-    ...(procedure.quyDinh ? { quy_dinh: procedure.quyDinh } : {}),
-    // message = phần AI đọc cho khách → dùng dạng đọc (toSpoken);
-    // quy_dinh/thuTuc giữ chữ chuẩn để log/summary sạch.
-    message: toSpoken(
-      `${procedure.purpose}${quyDinhPart} ` +
-      `PHẢI ĐỌC ĐẦY ĐỦ CẢ ${spokenItems.length} PHẦN SAU CHO KHÁCH theo đúng thứ tự, ` +
-      `không bỏ phần nào, không thay địa chỉ bằng "địa chỉ đã nêu". ` +
-      `KHÔNG nói với khách "có N ý/N phần" — chỉ đọc nội dung một cách tự nhiên: ${bodyDanhSo}`
-    ),
+    so_phan_phai_doc: spokenItems.length,
+    luu_y_cho_tro_ly:
+      `Ghi chú nội bộ, TUYỆT ĐỐI KHÔNG đọc cho khách: "doc_cho_khach" là KỊCH BẢN — ` +
+      `đọc NGUYÊN VĂN toàn bộ, TỪNG CÂU, ngay từ lượt trả lời ĐẦU TIÊN. ` +
+      `CẤM tóm tắt, CẤM diễn đạt lại, CẤM rút gọn (đủ ${spokenItems.length} phần, không bỏ phần nào, ` +
+      `không đổi địa chỉ, không nói "có ${spokenItems.length} phần"). ` +
+      `KHÔNG trộn nội dung "quy_dinh" vào bài đọc.`,
+    // doc_cho_khach dùng dạng đọc (toSpoken); quy_dinh/thuTuc giữ chữ chuẩn
+    // để log/summary sạch.
+    doc_cho_khach: toSpoken(`${procedure.purpose} ${bodyDanhSo}`),
+    ...(procedure.quyDinh
+      ? {
+          quy_dinh:
+            "(GHI CHÚ NỘI BỘ — KHÔNG đọc khi hướng dẫn giấy tờ; chỉ dùng khi khách " +
+            "hỏi thêm về đối tượng hoặc số người được đăng ký) " + procedure.quyDinh,
+        }
+      : {}),
+    // [13/07/2026] Giải thích thuật ngữ (CT07/CT08...) — khách hỏi "CT07 là gì"
+    // thì đọc phần liên quan, không để model tự bịa.
+    ...(procedure.thuatNgu
+      ? {
+          giai_thich_thuat_ngu: toSpoken(
+            "(GHI CHÚ NỘI BỘ — KHÔNG đọc khi hướng dẫn giấy tờ; chỉ dùng khi khách " +
+            "hỏi hoặc thắc mắc thuật ngữ, đọc NGẮN GỌN phần liên quan) " + procedure.thuatNgu
+          ),
+        }
+      : {}),
   });
 }
 
@@ -626,23 +648,30 @@ function handleCheckMissingDocs(rawArgs = {}) {
   const thieu = [];
   if (missingRequired.length) thieu.push(`giấy tờ BẮT BUỘC: ${missingRequired.join("; ")}`);
   if (needOption) thieu.push(`MỘT trong các giấy tờ sau: ${options.join("; ")}`);
-  const canhBao = unrecognized.length
-    ? ` LƯU Ý: chưa nhận diện được "${unrecognized.join('", "')}" trong danh mục — nói thật với ` +
-    `khách là chưa chắc giấy này dùng được, mời tổng đài viên xác nhận nếu cần.`
+  // Câu cho KHÁCH về giấy chưa nhận diện được (đọc được); chỉ thị nội bộ để ở luu_y.
+  const canhBaoKhach = unrecognized.length
+    ? ` Riêng "${unrecognized.join('", "')}" thì em chưa chắc chắn dùng thay được, ` +
+    `Quý Khách có thể yêu cầu gặp tổng đài viên để xác nhận ạ.`
     : "";
 
+  // [13/07/2026 đợt 2] Tách chỉ thị (luu_y_cho_tro_ly) khỏi nội dung đọc
+  // (doc_cho_khach) — cuộc E17jLdcYX5ACzRQ7IuGh0 model đọc nguyên văn chỉ thị
+  // nằm chung trong "message" cho khách nghe.
   return JSON.stringify({
     success: true,
     thuTuc: procedure.title,
     ho_so_du: hoSoDu,
     con_thieu: hoSoDu ? [] : thieu,
-    message: toSpoken(
+    luu_y_cho_tro_ly:
+      `Ghi chú nội bộ, TUYỆT ĐỐI KHÔNG đọc cho khách: đã đối chiếu xong` +
+      `${daDuParts.length ? ` (${daDuParts.join("; ")})` : ""}. ` +
+      `Đọc NGUYÊN VĂN "doc_cho_khach", KHÔNG đọc lại giấy tờ khách đã có, ` +
+      `KHÔNG đọc lại toàn bộ danh sách.`,
+    doc_cho_khach: toSpoken(
       hoSoDu
-        ? `Đối chiếu xong: ${daDuParts.join("; ")}. Hồ sơ giấy tờ ĐÃ ĐỦ cho thủ tục ` +
-        `${procedure.title} — báo khách hồ sơ đã đủ, chỉ cần nộp.${canhBao}`
-        : `Đối chiếu xong: ${daDuParts.length ? daDuParts.join("; ") + ". " : ""}` +
-        `CHỈ ĐỌC PHẦN CÒN THIẾU cho khách, KHÔNG đọc lại giấy đã có: ` +
-        `Quý Khách còn cần ${thieu.join(", và ")}.${canhBao}`
+        ? `Dạ, hồ sơ giấy tờ của Quý Khách như vậy là đã đủ cho thủ tục ` +
+        `${procedure.title}, Quý Khách chỉ cần nộp hồ sơ thôi ạ.${canhBaoKhach}`
+        : `Dạ, Quý Khách còn cần ${thieu.join(", và ")}.${canhBaoKhach}`
     ),
   });
 }

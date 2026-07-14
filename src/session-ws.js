@@ -50,6 +50,11 @@ export function openSessionWebSocket(callId, callOps) {
   let _hungUp = false;      // đã lên lịch cúp máy chưa
   let _transferred = false; // đã chuyển máy chưa
 
+  // [14/07/2026] Theo dõi response đang chạy — để hủy response do NHIỄU kích
+  // hoạt (prompt echo): cuộc E1NSYW1IIC4xom9HGSneG model tự nói "Dạ, em nghe
+  // rõ rồi ạ..." khi khách im lặng vì VAD bắt nhiễu tạo response.
+  let _responseActive = false;
+
   // Tránh save() 2 lần (close + error retry)
   let _saved = false;
   const _saveOnce = async (reason) => {
@@ -164,6 +169,7 @@ export function openSessionWebSocket(callId, callOps) {
       // response.done → response.output[], lọc item.type === "function_call".
 
       case "response.done": {
+        _responseActive = false;
         // [debug 08/07/2026] Response không hoàn tất (bị khách ngắt lời / hủy / lỗi)
         // → ghi lại để phân tích các câu AI nói dở (vd "Dạ, cảm ơn Qu...")
         const _respStatus = event?.response?.status;
@@ -263,10 +269,18 @@ export function openSessionWebSocket(callId, callOps) {
             // Tool dữ liệu thông thường → yêu cầu AI đọc kết quả cho khách
             // [debug 08/07/2026] ghi event để phân biệt response do code chủ động
             // tạo (tool_result/greeting) với response do VAD kích hoạt
+            // [14/07/2026] Kết quả có "doc_cho_khach" → ép đọc NGUYÊN VĂN bằng
+            // instructions của response (cùng cơ chế với câu chào — cách duy nhất
+            // mini tuân thủ 100%). Cuộc E1Nof3VRCX1u0hVwBoueJ: dù luu_y ghi "CẤM
+            // tóm tắt", model vẫn tự tóm tắt làm sai logic + rơi 2 địa chỉ.
+            const _instructions = result?.doc_cho_khach
+              ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
+                "không tóm tắt, không diễn giải lại: \"" + result.doc_cho_khach + "\""
+              : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
             logger.addEvent("response_create_sent", `tool_result: ${name}`);
             ws.send(JSON.stringify({
               type: "response.create",
-              response: { instructions: "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được." },
+              response: { instructions: _instructions },
             }));
           }
         }
@@ -314,6 +328,18 @@ export function openSessionWebSocket(callId, callOps) {
         } else if (_isPromptEcho) {
           log.info(`[WS][${callId}] [KH nói - prompt echo, bỏ qua]`);
           logger.addEvent("transcript_prompt_echo", "transcript trùng transcription prompt (audio im lặng/nhiễu) — không tính lượt khách");
+          // [14/07/2026] Nhiễu cũng kích hoạt VAD → OpenAI đã tự tạo response
+          // cho "lượt khách" giả này → model tự nói câu thừa ("Dạ, em nghe rõ
+          // rồi ạ..." — cuộc E1NSYW1IIC4xom9HGSneG). HỦY response đang chạy
+          // bằng code, không trông chờ rule prompt.
+          if (_responseActive && !_hungUp && !_transferred) {
+            try {
+              ws.send(JSON.stringify({ type: "response.cancel" }));
+              logger.addEvent("response_cancel_sent", "hủy response do prompt echo (nhiễu) kích hoạt");
+            } catch (e) {
+              log.warn(`[WS][${callId}] không gửi được response.cancel:`, e.message);
+            }
+          }
         } else {
           log.info(`[WS][${callId}] [KH nói]: `, { khText });
           // [debug 08/07/2026] VAD kích hoạt nhưng transcript rỗng = phantom turn
@@ -361,6 +387,7 @@ export function openSessionWebSocket(callId, callOps) {
       // Mỗi response được tạo (do VAD hoặc do code) — đối chiếu với
       // response_create_sent/greeting_sent để biết nguồn gốc từng response
       case "response.created":
+        _responseActive = true;
         logger.addEvent("response_created", event.response?.id ?? null);
         break;
 
