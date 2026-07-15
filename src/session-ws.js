@@ -41,9 +41,9 @@ export function openSessionWebSocket(callId, callOps) {
   insertCallStub({
     callId,
     customerTel: callOps.asteriskData?.phoneNumber ?? callOps.tel,
-    uniqueid:    callOps.asteriskData?.uniqueid,
-    recordPath:  callOps.asteriskData?.recordPath,
-    voiceModel:  logger.model,
+    uniqueid: callOps.asteriskData?.uniqueid,
+    recordPath: callOps.asteriskData?.recordPath,
+    voiceModel: logger.model,
   });
 
   // Guard riêng cho từng hành động để tránh thực thi trùng (không chặn chéo nhau)
@@ -114,15 +114,21 @@ export function openSessionWebSocket(callId, callOps) {
         //  cắt mất các chữ số đầu khi khách đọc danh bộ).
         audio: {
           input: {
-            turn_detection: {
-              type: "server_vad",
-              // [fix 08/07/2026] 0.5 → 0.6: cuộc gọi 0967777637_DzAjQz4pTwd1aorzn7nHb
-              // có phantom turn (VAD bắt noise/echo → AI tự nói 4 lượt liên tiếp).
-              // Theo dõi vadTurnCount/emptyTranscriptCount trong stats; còn phantom
-              // thì lên 0.7, khách phàn nàn "bot không nghe thấy" thì hạ về 0.5.
-              threshold: 0.6,
-              prefix_padding_ms: 500,  // giữ ~0.5s audio trước khi VAD kích hoạt → không mất số đầu
-              silence_duration_ms: 1200
+            // turn_detection: {
+            //   type: "server_vad",
+            //   // [fix 08/07/2026] 0.5 → 0.6: cuộc gọi 0967777637_DzAjQz4pTwd1aorzn7nHb
+            //   // có phantom turn (VAD bắt noise/echo → AI tự nói 4 lượt liên tiếp).
+            //   // Theo dõi vadTurnCount/emptyTranscriptCount trong stats; còn phantom
+            //   // thì lên 0.7, khách phàn nàn "bot không nghe thấy" thì hạ về 0.5.
+            //   threshold: 0.6,
+            //   prefix_padding_ms: 500,  // giữ ~0.5s audio trước khi VAD kích hoạt → không mất số đầu
+            //   silence_duration_ms: 1200
+            // }
+            "turn_detection": {
+              "type": "semantic_vad",
+              "eagerness": "low",//"auto",
+              "create_response": true,
+              "interrupt_response": true
             }
           }
         }
@@ -182,9 +188,9 @@ export function openSessionWebSocket(callId, callOps) {
           // Tích lũy token để tính cost cuối cuộc gọi
           logger.addUsage(usage);
           // Log tóm tắt nhanh để debug
-          const totalIn  = usage.input_tokens  ?? 0;
+          const totalIn = usage.input_tokens ?? 0;
           const totalOut = usage.output_tokens ?? 0;
-          const audioIn  = usage.input_token_details?.audio_tokens  ?? 0;
+          const audioIn = usage.input_token_details?.audio_tokens ?? 0;
           const audioOut = usage.output_token_details?.audio_tokens ?? 0;
           log.debug(`[WS][${callId}] response.done usage: in=${totalIn}(audio=${audioIn}) out=${totalOut}(audio=${audioOut})`);
         }
@@ -231,6 +237,7 @@ export function openSessionWebSocket(callId, callOps) {
             });
           }
 
+          console.log({ name, toolOutput, callId });
           // Luôn gửi function_call_output về OpenAI (mỗi call_id cần đúng 1 output)
           ws.send(
             JSON.stringify({
@@ -275,9 +282,10 @@ export function openSessionWebSocket(callId, callOps) {
             // tóm tắt", model vẫn tự tóm tắt làm sai logic + rơi 2 địa chỉ.
             const _instructions = result?.doc_cho_khach
               ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
-                "không tóm tắt, không diễn giải lại: \"" + result.doc_cho_khach + "\""
+              "không tóm tắt, không diễn giải lại: \"" + result.doc_cho_khach + "\""
               : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
             logger.addEvent("response_create_sent", `tool_result: ${name}`);
+            console.log({ _instructions });
             ws.send(JSON.stringify({
               type: "response.create",
               response: { instructions: _instructions },
@@ -294,8 +302,8 @@ export function openSessionWebSocket(callId, callOps) {
         if (event.usage) {
           const txModel = callOps.acceptParams?.audio?.input?.transcription?.model ?? "gpt-4o-mini-transcribe";
           logger.addTranscriptionUsage(event.usage, txModel);
-          const audioIn = event.usage.input_token_details?.audio_tokens  ?? event.usage.input_tokens  ?? 0;
-          const textOut = event.usage.output_token_details?.text_tokens  ?? event.usage.output_tokens ?? 0;
+          const audioIn = event.usage.input_token_details?.audio_tokens ?? event.usage.input_tokens ?? 0;
+          const textOut = event.usage.output_token_details?.text_tokens ?? event.usage.output_tokens ?? 0;
           log.debug(`[WS][${callId}] transcription usage: audio_in=${audioIn} text_out=${textOut}`);
         }
         // [fix 08/07/2026 đợt 3] gpt-4o-mini-transcribe gặp audio im lặng/nhiễu
@@ -336,12 +344,14 @@ export function openSessionWebSocket(callId, callOps) {
             try {
               ws.send(JSON.stringify({ type: "response.cancel" }));
               logger.addEvent("response_cancel_sent", "hủy response do prompt echo (nhiễu) kích hoạt");
+              console.log(`[${callId}]:`, "response_cancel_sent", "hủy response do prompt echo (nhiễu) kích hoạt");
             } catch (e) {
-              log.warn(`[WS][${callId}] không gửi được response.cancel:`, e.message);
+              log.warn(`[WS][${callId}]không gửi được response.cancel: `, e.message);
+              console.log(`[WS][${callId}]không gửi được response.cancel: `, e.message);
             }
           }
         } else {
-          log.info(`[WS][${callId}] [KH nói]: `, { khText });
+          log.info(`[WS][${callId}][KH nói]: `, { khText });
           // [debug 08/07/2026] VAD kích hoạt nhưng transcript rỗng = phantom turn
           // (noise/echo SIP). Ghi vào timeline để đối chiếu transcription_count.
           logger.addEvent("empty_transcript", "VAD kích hoạt nhưng transcript rỗng (noise/echo?)");
@@ -356,7 +366,7 @@ export function openSessionWebSocket(callId, callOps) {
           const aiPart = content.find((c) => c?.type === "output_audio" && c?.transcript);
           if (aiPart?.transcript?.trim()) {
             const txt = aiPart.transcript.trim();
-            log.info(`[WS][${callId}] [AI nói]: ${txt}`);
+            log.info(`[WS][${callId}][AI nói]: ${txt}`);
             logger.flushAI(txt);
           }
         }
@@ -365,7 +375,7 @@ export function openSessionWebSocket(callId, callOps) {
 
       case "response.audio_transcript.done": {
         const aiText = event.transcript?.trim();
-        log.info(`[WS][${callId}] [AI nói]: ${aiText}`);
+        log.info(`[WS][${callId}][AI nói]: ${aiText}`);
         if (aiText) logger.flushAI(aiText);
         break;
       }
@@ -398,18 +408,18 @@ export function openSessionWebSocket(callId, callOps) {
 
       // ── Lỗi từ OpenAI ─────────────────────────────────────────────────────
       case "error":
-        log.error(`[WS][${callId}] OpenAI error:`, event.error);
+        log.error(`[WS][${callId}]OpenAI error: `, event.error);
         logger.addError("openai_event", event.error?.message || _safeJson(event.error));
         break;
 
       case "session.created":
-        log.info(`[WS][${callId}] session.created: ${event.session?.id}`);
+        log.info(`[WS][${callId}]session.created: ${event.session?.id}`);
         logger.setSessionCreatedData(event.session ?? {});
         logger.addEvent("session_created", event.session?.id || null);
         break;
 
       case "session.updated":
-        log.info(`[WS][${callId}] session.updated OK`);
+        log.info(`[WS][${callId}]session.updated OK`);
         logger.addEvent("session_updated", null);
         break;
 
@@ -419,13 +429,13 @@ export function openSessionWebSocket(callId, callOps) {
   });
 
   ws.on("close", async (code, reason) => {
-    log.info(`[WS][${callId}] WebSocket đóng: ${code} ${reason?.toString()}`);
+    log.info(`[WS][${callId}]WebSocket đóng: ${code} ${reason?.toString()}`);
     logger.addEvent("ws_close", `${code} ${reason?.toString() || ""}`.trim());
-    await _saveOnce(`ws_close ${code}`);
+    await _saveOnce(`ws_close ${code} `);
   });
 
   ws.on("error", (err) => {
-    log.error(`[WS][${callId}] WebSocket lỗi: ${err.message}`);
+    log.error(`[WS][${callId}] WebSocket lỗi: ${err.message} `);
     logger.addError("ws_error", err.message);
     // Nếu 404 → session chưa sẵn sàng → retry sau 2s (tối đa 3 lần)
     if (err.message.includes("404") && (callOps._wsRetry ?? 0) < 3) {
@@ -456,11 +466,11 @@ function _tryParseJson(s) {
 async function _handleTransfer(callId, callOps, lyDo) {
   const agentUri = process.env.AGENT_QUEUE_URI;
   if (!agentUri) {
-    log.warn(`[WS][${callId}] AGENT_QUEUE_URI chưa cấu hình, không thể chuyển máy`);
+    log.warn(`[WS][${callId}]AGENT_QUEUE_URI chưa cấu hình, không thể chuyển máy`);
     return;
   }
 
-  log.info(`[WS][${callId}] Chuyển máy → ${agentUri} (lý do: ${lyDo})`);
+  log.info(`[WS][${callId}]Chuyển máy → ${agentUri}(lý do: ${lyDo})`);
 
   // Delay nhỏ để AI nói xong câu thông báo chuyển máy
   await new Promise((r) => setTimeout(r, 2000));
@@ -469,6 +479,6 @@ async function _handleTransfer(callId, callOps, lyDo) {
     await callOps.refer(callId, agentUri);
     log.info(`[WS][${callId}] Refer thành công`);
   } catch (err) {
-    log.error(`[WS][${callId}] Refer thất bại:`, err.message);
+    log.error(`[WS][${callId}] Refer thất bại: `, err.message);
   }
 }
