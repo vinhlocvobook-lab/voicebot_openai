@@ -20,7 +20,7 @@ Cần `.env` (xem `.env.example`); thiếu `OPENAI_API_KEY` server không chạy
 |------|---------|
 | `call-manager.js` | Wrapper REST OpenAI Realtime Calls: `acceptCall`, `rejectCall`, `referCall` (REFER/chuyển máy), `hangupCall`. |
 | `session-ws.js` | **Trái tim runtime.** Mở WebSocket, gửi `session.update` (VAD) + `response.create` (chào), bắt function call từ `response.done`, route kết quả, ghi transcript, xử lý `end_call`/`transfer_to_agent`, lưu log khi đóng. |
-| `tools.js` | Handler từng function call + `dispatchTool(name, args)`. `normalizeDanhBo()` bỏ mọi ký tự không phải số. |
+| `tools.js` | Handler từng function call + `dispatchTool(name, args, callState)` — `callState` là state theo cuộc gọi do session-ws truyền (vd guard "đã hỏi đối tượng"). `normalizeDanhBo()` bỏ mọi ký tự không phải số. |
 | `api.js` | Client REST gọi `docs/api.php`. Bóc response 2 lớp (gateway + nghiệp vụ), có timeout. **Nguồn dữ liệu hiện hành.** |
 | `system-prompt.js` | `SYSTEM_PROMPT` (persona "Em"/"Quý Khách") + mảng `TOOLS` (JSON schema gửi OpenAI). |
 | `conversation-logger.js` | `ConversationLogger`: transcript 2 chiều, tool call, token usage, chi phí → `conversation_summary/yyyy/mm/dd/{tel}_{callId}.json`. |

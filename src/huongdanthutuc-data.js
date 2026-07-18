@@ -53,7 +53,7 @@ export const PROCEDURES = {
     cases: [
       {
         id: "cccd_tphcm",
-        label: "Có CCCD tại TP.HCM (không tính khu vực Bình Dương và Vũng Tàu cũ)",
+        label: "Có CCCD tại TP.HCM, không tính khu vực Bình Dương và Vũng Tàu cũ",
         requiredDocs: {
           required: ["Bản photo Căn cước công dân (CCCD)"],
         },
@@ -132,8 +132,8 @@ export const PROCEDURES = {
     id: "nang_doi_dong_ho",
     title: "Nâng/Dời đồng hồ nước",
     purpose:
-      "Thay đổi vị trí hoặc nâng cấp đồng hồ nước hiện có. " +
-      "Không cần chuẩn bị giấy tờ trước — đăng ký qua các kênh, nhân viên sẽ liên hệ hướng dẫn.",
+      "Thay đổi vị trí hoặc nâng cấp đồng hồ nước hiện có. ",//+
+    // "Không cần chuẩn bị giấy tờ trước — đăng ký qua các kênh, nhân viên sẽ liên hệ hướng dẫn.",
     // [11/07/2026] Kênh website chỉ áp dụng cho thủ tục này (theo tài liệu mới).
     channels:
       "Đăng ký qua: app SAWACO CSKH, website www.capnuoctrungan.vn, hoặc trực tiếp tại " +

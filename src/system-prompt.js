@@ -208,7 +208,8 @@ export const TOOLS = [
           description: "Mô tả ngắn gọn vấn đề khách hàng phản ánh",
         }
       },
-      required: ["ma_danh_bo", "loai", "mo_ta"],
+      // required: ["ma_danh_bo", "loai", "mo_ta"],
+      required: ["loai", "mo_ta"],
     },
   },
   {

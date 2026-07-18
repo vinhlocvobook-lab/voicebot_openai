@@ -55,6 +55,30 @@ export function openSessionWebSocket(callId, callOps) {
   // rõ rồi ạ..." khi khách im lặng vì VAD bắt nhiễu tạo response.
   let _responseActive = false;
 
+  // [fix 18/07/2026] Cancel echo phải ĐÚNG response — cuộc E2ou4DurIiPbGRvrrggKr:
+  // khách hỏi thủ tục (lượt THẬT), 7s sau transcript echo của lượt NHIỄU trước đó
+  // mới về → code cancel nhầm response đang trả lời câu hỏi thật → bot "câm" 28s,
+  // khách phải "A lô" mới được trả lời. Fix: gắn mỗi response với item audio đã
+  // kích hoạt nó (qua input_audio_buffer.committed → response.created), chỉ cancel
+  // khi item_id của transcript echo TRÙNG item đã kích hoạt response đang chạy.
+  let _lastCommittedItemId = null;        // item audio vừa được VAD commit
+  let _activeResponseTriggerItemId = null; // item đã kích hoạt response đang chạy (null = do code tạo)
+  let _pendingCodeResponse = false;        // response.create sắp tới là do code gửi (greeting/tool result)
+
+  // [fix 18/07/2026 v2] Cuộc E2tkwslo38l9Flut5ptF4: khớp item CHƯA ĐỦ.
+  // Semantic VAD (interrupt_response: true) — nhiễu sau câu hỏi thật làm OpenAI
+  // tự ngắt response cũ và tạo response MỚI gắn với item NHIỄU, nhưng model dùng
+  // response đó để trả lời câu hỏi thật (context còn câu hỏi chưa đáp). Item
+  // khớp → cancel → giết nhầm câu trả lời, bot câm 24s.
+  // → Thêm guard: đang có lượt khách THẬT chưa được trả lời xong thì KHÔNG cancel,
+  // bất kể item nào kích hoạt response.
+  let _unansweredRealTurn = false; // true = có lượt khách thật chưa có response hoàn tất
+
+  // [fix 18/07/2026] State theo CUỘC GỌI cho các tool handler (tools.js) — vd
+  // guard "đã hỏi đối tượng chưa" của get_procedure_info (chống model tự đoán
+  // doi_tuong ngay lượt đầu, cuộc E2u70cuT94h0rwpLAKOyA).
+  const _toolCallState = {};
+
   // Tránh save() 2 lần (close + error retry)
   let _saved = false;
   const _saveOnce = async (reason) => {
@@ -149,6 +173,7 @@ export function openSessionWebSocket(callId, callOps) {
     const greetingInstruction = 'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: "... Alo ... Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
 
     setTimeout(() => {
+      _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
       ws.send(JSON.stringify({
         type: "response.create",
         response: { instructions: greetingInstruction },
@@ -176,6 +201,11 @@ export function openSessionWebSocket(callId, callOps) {
 
       case "response.done": {
         _responseActive = false;
+        _activeResponseTriggerItemId = null; // [fix 18/07/2026] response xong → hết gắn với item nào
+        // [fix 18/07/2026 v2] Response HOÀN TẤT (không bị cancel/interrupt) →
+        // lượt khách gần nhất coi như đã được trả lời. Response dở dang
+        // (cancelled/incomplete) KHÔNG tính — câu hỏi vẫn chưa được đáp.
+        if (event?.response?.status === "completed") _unansweredRealTurn = false;
         // [debug 08/07/2026] Response không hoàn tất (bị khách ngắt lời / hủy / lỗi)
         // → ghi lại để phân tích các câu AI nói dở (vd "Dạ, cảm ơn Qu...")
         const _respStatus = event?.response?.status;
@@ -213,7 +243,7 @@ export function openSessionWebSocket(callId, callOps) {
           // phát sinh trong tool call này) và gửi kết quả tool về cho OpenAI.
           const _t0 = Date.now();
           const { result: toolOutput, trace: apiCalls } =
-            await runWithApiTrace(() => dispatchTool(name, args));
+            await runWithApiTrace(() => dispatchTool(name, args, _toolCallState));
           const _durationMs = Date.now() - _t0;
           log.debug(`[WS][${callId}] Tool output (${_durationMs}ms): ${toolOutput}`);
 
@@ -237,7 +267,7 @@ export function openSessionWebSocket(callId, callOps) {
             });
           }
 
-          console.log({ name, toolOutput, callId });
+          console.log({ name, toolOutput: JSON.parse(toolOutput), callId });
           // Luôn gửi function_call_output về OpenAI (mỗi call_id cần đúng 1 output)
           ws.send(
             JSON.stringify({
@@ -251,14 +281,39 @@ export function openSessionWebSocket(callId, callOps) {
           );
 
           if (action === "end_call") {
-            // KHÔNG gửi response.create: model đã nói lời tạm biệt ngay trong response
-            // chứa end_call → gửi thêm sẽ gây lỗi conversation_already_has_active_response.
+            // KHÔNG gửi response.create khi model ĐÃ nói lời tạm biệt trong cùng
+            // response chứa end_call → gửi thêm sẽ gây lỗi
+            // conversation_already_has_active_response.
             logger.setOutcome("completed");
             logger.addEvent("end_call", result.ly_do || null);
             if (!_hungUp) {
               _hungUp = true;
+              // [fix 18/07/2026] Cuộc E2tY3rg44dIiQOsBGYFsi: model gọi end_call
+              // mà KHÔNG nói lời tạm biệt (response chỉ có function_call, không
+              // có output audio) → khách nghe 5s im lặng rồi bị cúp máy.
+              // Response.done đã về nên lúc này KHÔNG còn active response →
+              // gửi response.create câu tạm biệt cố định là an toàn (cùng cơ
+              // chế ép đọc nguyên văn như câu chào), và lùi hangup cho kịp nói.
+              const _hasGoodbyeAudio = output.some((it) =>
+                it?.type === "message" &&
+                Array.isArray(it.content) &&
+                it.content.some((c) => c?.type === "output_audio"));
+              let _hangupDelay = 5000;
+              if (!_hasGoodbyeAudio) {
+                const _goodbyeInstruction =
+                  'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: ' +
+                  '"Dạ, em cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Kính chào Quý Khách ạ."';
+                _pendingCodeResponse = true;
+                ws.send(JSON.stringify({
+                  type: "response.create",
+                  response: { instructions: _goodbyeInstruction },
+                }));
+                logger.addEvent("goodbye_forced", "end_call không kèm audio — code tự tạo câu tạm biệt");
+                console.log(`[${callId}]:`, "goodbye_forced", "end_call không kèm audio — code tự tạo câu tạm biệt");
+                _hangupDelay = 8000; // câu tạm biệt ~5-6s + latency tạo response
+              }
               // Delay để AI kịp nói lời tạm biệt trước khi cúp máy
-              setTimeout(() => callOps.hangup(callId), 5000);
+              setTimeout(() => callOps.hangup(callId), _hangupDelay);
             } else {
               logger.addEvent("end_call_duplicate_ignored", "đã lên lịch cúp máy");
             }
@@ -286,6 +341,7 @@ export function openSessionWebSocket(callId, callOps) {
               : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
             logger.addEvent("response_create_sent", `tool_result: ${name}`);
             console.log({ _instructions });
+            _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
             ws.send(JSON.stringify({
               type: "response.create",
               response: { instructions: _instructions },
@@ -333,21 +389,45 @@ export function openSessionWebSocket(callId, callOps) {
         if (khText && !_isPromptEcho) {
           log.info(`[WS][${callId}] [KH nói]: ${khText}`);
           logger.addCustomerTurn(khText);
+          _unansweredRealTurn = true; // [fix 18/07/2026 v2] khách vừa nói thật — chưa được trả lời
         } else if (_isPromptEcho) {
-          log.info(`[WS][${callId}] [KH nói - prompt echo, bỏ qua]`);
+          log.info(`[WS][${callId}] [KH nói - prompt echo, bỏ qua] || ${JSON.stringify({ khText, _isPromptEcho, _nk, _np, _sig })}`);
+
           logger.addEvent("transcript_prompt_echo", "transcript trùng transcription prompt (audio im lặng/nhiễu) — không tính lượt khách");
           // [14/07/2026] Nhiễu cũng kích hoạt VAD → OpenAI đã tự tạo response
           // cho "lượt khách" giả này → model tự nói câu thừa ("Dạ, em nghe rõ
           // rồi ạ..." — cuộc E1NSYW1IIC4xom9HGSneG). HỦY response đang chạy
           // bằng code, không trông chờ rule prompt.
+          // [fix 18/07/2026] CHỈ hủy khi response đang chạy đúng là do LƯỢT ECHO
+          // này kích hoạt (item_id trùng). Transcript echo có thể về TRỄ vài giây
+          // — lúc đó response đang chạy có thể là câu trả lời cho lượt THẬT của
+          // khách (cuộc E2ou4DurIiPbGRvrrggKr: cancel nhầm → bot câm 28s).
+          const _echoItemId = event.item_id ?? null;
           if (_responseActive && !_hungUp && !_transferred) {
-            try {
-              ws.send(JSON.stringify({ type: "response.cancel" }));
-              logger.addEvent("response_cancel_sent", "hủy response do prompt echo (nhiễu) kích hoạt");
-              console.log(`[${callId}]:`, "response_cancel_sent", "hủy response do prompt echo (nhiễu) kích hoạt");
-            } catch (e) {
-              log.warn(`[WS][${callId}]không gửi được response.cancel: `, e.message);
-              console.log(`[WS][${callId}]không gửi được response.cancel: `, e.message);
+            // [fix 18/07/2026 v2] Chỉ cancel khi ĐỦ 2 điều kiện:
+            // 1. item echo trùng item đã kích hoạt response đang chạy;
+            // 2. KHÔNG còn lượt khách thật nào chưa được trả lời — nếu còn,
+            //    response đang chạy (dù do item nhiễu kích hoạt, semantic VAD
+            //    interrupt) nhiều khả năng đang TRẢ LỜI câu hỏi thật đó
+            //    (cuộc E2tkwslo38l9Flut5ptF4: cancel nhầm → bot câm 24s).
+            const _itemMatch = !!_echoItemId && _activeResponseTriggerItemId === _echoItemId;
+            if (_itemMatch && !_unansweredRealTurn) {
+              try {
+                ws.send(JSON.stringify({ type: "response.cancel" }));
+                logger.addEvent("response_cancel_sent", `hủy response do prompt echo (nhiễu) kích hoạt (item ${_echoItemId})`);
+                console.log(`[${callId}]:`, "response_cancel_sent", `hủy response do prompt echo (item ${_echoItemId})`);
+              } catch (e) {
+                log.warn(`[WS][${callId}]không gửi được response.cancel: `, e.message);
+                console.log(`[WS][${callId}]không gửi được response.cancel: `, e.message);
+              }
+            } else {
+              // Giữ nguyên response đang chạy — đang trả lời lượt thật của
+              // khách, hoặc do code tạo, hoặc thuộc item khác.
+              const _reason = !_itemMatch
+                ? `echo item ${_echoItemId} ≠ trigger item ${_activeResponseTriggerItemId}`
+                : `item trùng nhưng còn lượt khách thật chưa được trả lời (_unansweredRealTurn)`;
+              logger.addEvent("response_cancel_skipped", `${_reason} — không hủy response đang chạy`);
+              console.log(`[${callId}]:`, "response_cancel_skipped", _reason);
             }
           }
         } else {
@@ -394,11 +474,28 @@ export function openSessionWebSocket(callId, callOps) {
         logger.addEvent("vad_speech_stopped", null);
         break;
 
+      // [fix 18/07/2026] VAD commit audio thành conversation item → nhớ item_id.
+      // Response do VAD tạo ngay sau đó sẽ được gắn với item này (response.created).
+      case "input_audio_buffer.committed":
+        _lastCommittedItemId = event.item_id ?? null;
+        logger.addEvent("audio_committed", _lastCommittedItemId);
+        break;
+
       // Mỗi response được tạo (do VAD hoặc do code) — đối chiếu với
       // response_create_sent/greeting_sent để biết nguồn gốc từng response
       case "response.created":
         _responseActive = true;
-        logger.addEvent("response_created", event.response?.id ?? null);
+        // [fix 18/07/2026] Gắn response với nguồn kích hoạt:
+        // - code vừa gửi response.create (greeting/tool result) → trigger = null
+        // - còn lại là do VAD → trigger = item audio vừa commit
+        if (_pendingCodeResponse) {
+          _activeResponseTriggerItemId = null;
+          _pendingCodeResponse = false;
+        } else {
+          _activeResponseTriggerItemId = _lastCommittedItemId;
+        }
+        logger.addEvent("response_created",
+          `${event.response?.id ?? null} (trigger: ${_activeResponseTriggerItemId ?? "code"})`);
         break;
 
       // Transcription thất bại (trước đây rơi vào default, mất dấu vết)

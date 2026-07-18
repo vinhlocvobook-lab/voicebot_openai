@@ -339,6 +339,17 @@ function normalizeProcedureArgs(args = {}) {
     )];
     if (ids.length === 1) loai = ids[0];
   }
+  // 2b) [fix 18/07/2026] Cuộc E2u0Db8u91GWMPBYS9aj4: value là TÊN thủ tục đầy đủ
+  // ("Sang tên đồng hồ nước" → canon "sang_ten_dong_ho_nuoc") — khớp exact trượt.
+  // Nhận khi canon value CHỨA đúng MỘT id thủ tục (các id không chứa lẫn nhau).
+  if (!loai) {
+    const hits = [...new Set(
+      Object.values(args)
+        .map(canonValue)
+        .flatMap((v) => Object.keys(PROCEDURES).filter((id) => v.includes(id)))
+    )];
+    if (hits.length === 1) loai = hits[0];
+  }
   if (!doiTuong) {
     const dts = [...new Set(
       Object.values(args).map(canonValue).filter((v) => DOI_TUONG_IDS.includes(v))
@@ -365,6 +376,28 @@ function normalizeProcedureArgs(args = {}) {
     )];
     if (flagged.length === 1) doiTuong = flagged[0];
   }
+  // 3b) [fix 18/07/2026] Cuộc E2u0Db8u91GWMPBYS9aj4: model đệm cả 4 key thủ tục
+  // bằng "N/A", key ĐƯỢC CHỌN mang value có nghĩa (tên thủ tục, "có", ...).
+  // → key là id thủ tục + value KHÔNG phải marker rỗng = lựa chọn của model.
+  // Chỉ nhận khi có ĐÚNG MỘT key như vậy (tránh đoán bừa).
+  const NULL_MARKERS = new Set(["", "n/a", "na", "null", "none", "khong", "khong_co", "false", "0"]);
+  const isNullish = (v) => v == null || v === false || v === 0 || NULL_MARKERS.has(canonValue(v));
+  if (!loai) {
+    const selected = [...new Set(
+      Object.entries(args)
+        .filter(([k, v]) => PROCEDURES[canonValue(k)] && !isNullish(v))
+        .map(([k]) => canonValue(k))
+    )];
+    if (selected.length === 1) loai = selected[0];
+  }
+  if (!doiTuong) {
+    const selected = [...new Set(
+      Object.entries(args)
+        .filter(([k, v]) => DOI_TUONG_IDS.includes(canonValue(k)) && !isNullish(v))
+        .map(([k]) => canonValue(k))
+    )];
+    if (selected.length === 1) doiTuong = selected[0];
+  }
 
   if (loai !== args.loai_thu_tuc || doiTuong !== args.doi_tuong) {
     console.warn("[get_procedure_info] Args chuẩn hoá lại:", JSON.stringify(args),
@@ -373,7 +406,7 @@ function normalizeProcedureArgs(args = {}) {
   return { loai_thu_tuc: loai, doi_tuong: doiTuong };
 }
 
-function handleGetProcedureInfo(rawArgs = {}) {
+function handleGetProcedureInfo(rawArgs = {}, callState = {}) {
   console.log("==========[handleGetProcedureInfo]==================")
   const { loai_thu_tuc, doi_tuong } = normalizeProcedureArgs(rawArgs);
   const procedure = PROCEDURES[loai_thu_tuc];
@@ -383,6 +416,9 @@ function handleGetProcedureInfo(rawArgs = {}) {
     return JSON.stringify({
       success: false,
       ngoai_pham_vi: true,
+      doc_cho_khach:
+        "Dạ, em không có thông tin về yêu cầu này! " +
+        "Quý khách có muốn em chuyển máy sang tổng đài viên hỗ trợ trực tiếp, hoặc ghi nhận lại yêu cầu để nhân viên liên hệ lại sau không ạ?",
       message:
         "Loại thủ tục không thuộc 4 thủ tục hỗ trợ (dinh_muc_nuoc, lap_dat_dong_ho, " +
         "sang_ten_dong_ho, nang_doi_dong_ho). Nếu khách đang hỏi MỘT trong 4 thủ tục này " +
@@ -398,7 +434,12 @@ function handleGetProcedureInfo(rawArgs = {}) {
     return JSON.stringify({
       success: true,
       thuTuc: procedure.title,
+      doc_cho_khach:
+        `Dạ, thủ tục ${procedure.title} hiện chỉ áp dụng cho hộ gia đình, ` +
+        `chưa áp dụng cho doanh nghiệp ạ. Quý Khách có muốn em chuyển máy sang tổng đài viên ` +
+        `hỗ trợ trực tiếp, hoặc ghi nhận lại yêu cầu không ạ?`,
       message: `Thủ tục ${procedure.title} CHỈ áp dụng cho hộ gia đình, KHÔNG áp dụng cho doanh nghiệp hay công ty. Nếu khách là doanh nghiệp cần hỗ trợ khác, mời chuyển tổng đài viên hoặc tạo phiếu ghi nhận.`,
+
     });
   }
 
@@ -407,7 +448,42 @@ function handleGetProcedureInfo(rawArgs = {}) {
   // E0VkaW1IIC4xom9HGSneG model nhận cả 2 case rồi tự tóm tắt làm rơi mất địa
   // chỉ văn phòng. Trả yêu cầu hỏi khách rồi gọi lại (deterministic).
   const coPhanBietDoiTuong = procedure.cases.some((c) => c.id === "doanh_nghiep");
-  if (!doi_tuong && coPhanBietDoiTuong) {
+
+  // [fix 18/07/2026] Cuộc E2u70cuT94h0rwpLAKOyA: model TỰ ĐOÁN doi_tuong ngay
+  // lượt tool đầu tiên (khách chưa hề nói hộ gia đình hay doanh nghiệp) → nguy
+  // cơ đọc nhầm hướng dẫn hộ gia đình cho doanh nghiệp (DN phải chuyển tổng đài
+  // viên). Deterministic: với thủ tục có hướng dẫn khác nhau theo đối tượng,
+  // doi_tuong CHỈ được chấp nhận SAU KHI tool đã yêu cầu hỏi khách
+  // (can_hoi_doi_tuong) cho thủ tục đó trong CÙNG cuộc gọi — trước đó thì bỏ
+  // qua giá trị model gửi và ép hỏi.
+  const _daHoiDoiTuong = (callState.daHoiDoiTuong ??= new Set());
+  const effDoiTuong = doi_tuong;
+  if (coPhanBietDoiTuong && effDoiTuong && !_daHoiDoiTuong.has(loai_thu_tuc)) {
+    // [fix 18/07/2026 v2] Cuộc E2uLXv4UbNfF0Do3JAccO: model TỰ HỎI đối tượng
+    // bằng lời của nó rồi mới gọi tool → guard hỏi mở lần nữa làm khách phải
+    // trả lời TRÙNG 2 lần. Code không phân biệt được "model đã hỏi thật" với
+    // "model đoán bừa" → thay câu hỏi mở bằng câu XÁC NHẬN giá trị model gửi:
+    // khách chỉ cần "đúng rồi" (nếu đã nói) hoặc sửa ngay (nếu model đoán sai).
+    // Vẫn an toàn 100% vì đối tượng luôn qua lời khách xác nhận.
+    _daHoiDoiTuong.add(loai_thu_tuc);
+    const _dtLabel = effDoiTuong === "doanh_nghiep" ? "doanh nghiệp" : "hộ gia đình";
+    console.warn(`[get_procedure_info] doi_tuong="${effDoiTuong}" chưa qua bước hỏi — trả câu xác nhận đối tượng`);
+    return JSON.stringify({
+      success: true,
+      thuTuc: procedure.title,
+      can_hoi_doi_tuong: true,
+      xac_nhan_doi_tuong: effDoiTuong,
+      message:
+        `Cần khách XÁC NHẬN đối tượng trước khi hướng dẫn. ĐỌC câu trong doc_cho_khach rồi DỪNG, chờ khách trả lời. ` +
+        `Khách xác nhận đúng → GỌI LẠI get_procedure_info với doi_tuong="${effDoiTuong}". ` +
+        `Khách sửa lại → GỌI LẠI với doi_tuong khách nói. ` +
+        `KHÔNG hướng dẫn giấy tờ khi chưa gọi lại tool.`,
+      doc_cho_khach: `Dạ, em xin xác nhận lại: Quý Khách đăng ký cho ${_dtLabel}, phải không ạ?`,
+    });
+  }
+
+  if (!effDoiTuong && coPhanBietDoiTuong) {
+    _daHoiDoiTuong.add(loai_thu_tuc);
     return JSON.stringify({
       success: true,
       thuTuc: procedure.title,
@@ -417,16 +493,18 @@ function handleGetProcedureInfo(rawArgs = {}) {
         `HỎI khách một câu ngắn: "Quý Khách đăng ký cho hộ gia đình hay doanh nghiệp ạ?" ` +
         `rồi GỌI LẠI get_procedure_info với doi_tuong tương ứng. KHÔNG tự đoán, ` +
         `KHÔNG hướng dẫn giấy tờ khi chưa gọi lại tool.`,
+      doc_cho_khach: `Dạ, thủ tục ${procedure.title} có hướng dẫn khác nhau cho hộ gia đình và doanh nghiệp ạ. Quý Khách đăng ký cho hộ gia đình hay doanh nghiệp ạ?`,
+
     });
   }
 
   // Lọc case phù hợp đối tượng (nếu có)
   let relevantCases = procedure.cases;
-  if (doi_tuong) {
-    const matched = procedure.cases.filter((c) => c.id.includes(doi_tuong) || c.id === "default");
+  if (effDoiTuong) {
+    const matched = procedure.cases.filter((c) => c.id.includes(effDoiTuong) || c.id === "default");
     if (matched.length > 0) relevantCases = matched;
   }
-
+  console.log("2. relevantCases_after_matching", relevantCases);
   // [11/07/2026] Case đánh dấu transferToAgent (vd doanh nghiệp gắn/sang tên
   // đồng hồ) → không hướng dẫn giấy tờ, mời chuyển tổng đài viên hoặc tạo phiếu.
   if (relevantCases.length > 0 && relevantCases.every((c) => c.transferToAgent)) {
@@ -438,6 +516,9 @@ function handleGetProcedureInfo(rawArgs = {}) {
         `Thủ tục ${procedure.title} đối với doanh nghiệp/công ty do tổng đài viên hỗ trợ trực tiếp, ` +
         `trợ lý KHÔNG tự hướng dẫn giấy tờ. Mời khách chọn: chuyển tổng đài viên (transfer_to_agent), ` +
         `hoặc tạo phiếu ghi nhận (create_ticket) để nhân viên liên hệ lại sau.`,
+      doc_cho_khach: `Dạ, thủ tục ${procedure.title} đối với doanh nghiệp/công ty do tổng đài viên hỗ trợ trực tiếp. Quý khách có muốn em chuyển máy sang tổng đài viên hỗ trợ trực tiếp, hoặc ghi nhận lại yêu cầu để nhân viên liên hệ lại sau không ạ?`,
+
+
     });
   }
 
@@ -517,20 +598,20 @@ function handleGetProcedureInfo(rawArgs = {}) {
     doc_cho_khach: toSpoken(`${procedure.purpose} ${bodyDanhSo}`),
     ...(procedure.quyDinh
       ? {
-          quy_dinh:
-            "(GHI CHÚ NỘI BỘ — KHÔNG đọc khi hướng dẫn giấy tờ; chỉ dùng khi khách " +
-            "hỏi thêm về đối tượng hoặc số người được đăng ký) " + procedure.quyDinh,
-        }
+        quy_dinh:
+          "(GHI CHÚ NỘI BỘ — KHÔNG đọc khi hướng dẫn giấy tờ; chỉ dùng khi khách " +
+          "hỏi thêm về đối tượng hoặc số người được đăng ký) " + procedure.quyDinh,
+      }
       : {}),
     // [13/07/2026] Giải thích thuật ngữ (CT07/CT08...) — khách hỏi "CT07 là gì"
     // thì đọc phần liên quan, không để model tự bịa.
     ...(procedure.thuatNgu
       ? {
-          giai_thich_thuat_ngu: toSpoken(
-            "(GHI CHÚ NỘI BỘ — KHÔNG đọc khi hướng dẫn giấy tờ; chỉ dùng khi khách " +
-            "hỏi hoặc thắc mắc thuật ngữ, đọc NGẮN GỌN phần liên quan) " + procedure.thuatNgu
-          ),
-        }
+        giai_thich_thuat_ngu: toSpoken(
+          "(GHI CHÚ NỘI BỘ — KHÔNG đọc khi hướng dẫn giấy tờ; chỉ dùng khi khách " +
+          "hỏi hoặc thắc mắc thuật ngữ, đọc NGẮN GỌN phần liên quan) " + procedure.thuatNgu
+        ),
+      }
       : {}),
   });
 }
@@ -702,9 +783,12 @@ function handleEndCall({ ly_do } = {}) {
  * Dispatch function call từ OpenAI đến handler phù hợp.
  * @param {string} name - Tên function
  * @param {object} args - Arguments đã parse từ JSON
+ * @param {object} [callState] - State theo CUỘC GỌI (session-ws truyền vào,
+ *   sống suốt cuộc gọi). Dùng cho các guard cần nhớ ngữ cảnh giữa các tool call
+ *   (vd đã hỏi đối tượng của thủ tục nào — fix 18/07/2026).
  * @returns {Promise<string>} - JSON string kết quả (gửi lại cho OpenAI)
  */
-export async function dispatchTool(name, args) {
+export async function dispatchTool(name, args, callState = {}) {
   try {
     switch (name) {
       case "get_bill": return await handleGetBill(args);
@@ -713,7 +797,7 @@ export async function dispatchTool(name, args) {
       case "compare_usage": return await handleCompareUsage(args);
       case "get_outages": return await handleGetOutages(args);
       case "create_ticket": return await handleCreateTicket(args);
-      case "get_procedure_info": return handleGetProcedureInfo(args);
+      case "get_procedure_info": return handleGetProcedureInfo(args, callState);
       case "check_missing_docs": return handleCheckMissingDocs(args);
       case "transfer_to_agent": return handleTransferToAgent(args);
       case "end_call": return handleEndCall(args);
