@@ -176,6 +176,10 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
 
   // Lookup thông tin khách hàng theo SĐT (timeout 3s, fallback nếu chậm/lỗi)
   let customerContext = "";
+  // [fix 18/07/2026] Danh sách danh bộ hệ thống tìm được theo SĐT — truyền vào
+  // callState để tools.js (resolveDanhBo) tin ngay các số này, không ép vòng
+  // xác nhận confirm_danh_bo (số không đi qua "tai" model nên không sợ nghe sai).
+  let knownDanhBo = [];
   if (tel && tel !== "Unknown") {
     try {
       const timeoutPromise = new Promise((_, reject) =>
@@ -185,6 +189,9 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
       console.log('==getThongTinKhachHang===tel: ', tel);
       console.log('==getThongTinKhachHang===r : ', r);
       customerContext = buildCustomerContext(r);
+      knownDanhBo = (Array.isArray(r?.data) ? r.data : [])
+        .map((c) => String(c?.danhBa ?? "").replace(/\D/g, ""))
+        .filter(Boolean);
       log.info(`[Call][${callId}] Lookup SĐT ${tel}: ${r?.data?.length ?? 0} hợp đồng`);
     } catch (err) {
       log.warn(`[Call][${callId}] Lookup SĐT thất bại (${err.message}), tiếp tục không có context`);
@@ -202,6 +209,7 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
     asteriskData,
     acceptParams,
     customerContext,
+    knownDanhBo,
   };
 
   // Mở WebSocket để điều khiển session

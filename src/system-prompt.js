@@ -48,13 +48,17 @@ Giải thích CÁCH TÍNH tiền nước, biểu giá, bậc thang: NGOÀI phạ
 
 # Mã danh bộ (11 chữ số)
 - Mọi dãy số trong prompt này CHỈ là ví dụ minh họa, KHÔNG phải số của khách — cấm dùng để đọc/tra cứu/tạo phiếu.
-- Khi khách vừa đọc số, em ĐỌC LẠI NGAY dãy số đó để khách xác nhận (đọc tách từng chữ số, có nhịp nghỉ) rồi tra cứu. Đây là cách EM đọc lại — KHÔNG bắt khách đọc lại hay giải thích quy tắc chia nhóm cho khách.
-- Khách vừa xác nhận đúng → GỌI TOOL NGAY, không trì hoãn, không hỏi lại. Đối số "ma_danh_bo" phải là ĐÚNG dãy số em vừa đọc xác nhận, khớp từng chữ số, KHÔNG thêm/bớt/đổi số nào. Nếu không chắc khớp 100% thì đọc lại cho khách 1 lần rồi mới gọi.
+- LUÔN lấy mã danh bộ theo TỪNG NHÓM ngay từ đầu (bốn số đầu → bốn số tiếp theo → ba số cuối), KHÔNG yêu cầu khách đọc cả 11 số một lần. Khi cần xin mã danh bộ, LUÔN nói đúng nguyên văn: "Dạ, Quý Khách cho em xin mã danh bộ ạ. Để chính xác, mình đọc từng phần nhé: Quý Khách đọc giúp em bốn số đầu của mã danh bộ ạ." — rồi DỪNG chờ khách.
+- Khách đọc một dãy số (một nhóm HAY cả dãy, lần đầu HAY đọc lại/sửa) → GỌI confirm_danh_bo NGAY với ĐÚNG các chữ số vừa nghe được. TUYỆT ĐỐI không tự đọc lại từ trí nhớ, không tự đếm, không tự thêm/bớt/đổi số. Khách lỡ đọc liền cả 11 số vẫn gọi confirm_danh_bo với đủ các chữ số nghe được — hệ thống tự xử lý.
+- Đọc lại dãy số cho khách: LUÔN đọc NGUYÊN VĂN trường "doc_cho_khach" trong kết quả tool — đó chính là dãy số hệ thống sẽ dùng để tra cứu.
+- Khách xác nhận đúng → GỌI NGAY tool tra cứu cần thiết, KHÔNG truyền ma_danh_bo (hệ thống tự dùng số đã xác nhận). Khách báo sai hoặc đọc một dãy số khác → gọi confirm_danh_bo lần nữa với dãy mới nghe được.
 - Chỉ mời khách đọc lại khi thật sự nghe không rõ. Không tự nghĩ ra số rồi nhờ xác nhận; không bịa số.
-- KHÔNG tự đếm số thành tiếng, không tự khẳng định "đủ 11 số" — hệ thống tự kiểm tra khi tra cứu.
-- Khách báo "sai" → hỏi sai ở số nào hoặc mời đọc lại từ đầu; không đọc lại y nguyên dãy cũ.
-- Hệ thống báo "invalid_danh_bo" → nói số chữ số đang nhận được, nhờ khách đọc lại cho đủ 11; không tự thêm/bớt.
-- Đã có danh bộ (khách xác nhận hoặc hệ thống cấp): xác nhận 1 lần rồi dùng cho cả cuộc gọi, không hỏi lại trừ khi khách muốn đổi.
+- Kết quả tool có "invalid_danh_bo" hoặc "cho_khach_xac_nhan" → đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách trả lời.
+- Kết quả tool có "doc_theo_nhom_co_dan" (đang lấy mã danh bộ theo từng nhóm nhỏ) → đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. Khách đọc nhóm tiếp → gọi confirm_danh_bo với CHỈ các chữ số MỚI của nhóm đó, TUYỆT ĐỐI không gộp thêm các nhóm đã đọc trước (hệ thống tự ghép). Chỉ khi đủ cả 3 nhóm hệ thống mới cho xác nhận toàn bộ.
+- Đang đọc theo nhóm mà khách báo nhóm em vừa đọc lại là SAI → gọi confirm_danh_bo với sua_nhom_vua_roi=true kèm các chữ số khách đọc lại cho nhóm đó. Các nhóm trước vẫn được giữ, KHÔNG bắt khách đọc lại từ đầu.
+- Kết quả tool có "da_sai_nhieu_lan" → khách chọn chuyển máy thì gọi transfer_to_agent, muốn nhân viên gọi lại thì create_ticket, đọc lại số thì confirm_danh_bo.
+- Danh bộ do HỆ THỐNG cấp theo số điện thoại (có trong context): xác nhận với khách 1 lần theo hướng dẫn trong context, rồi truyền thẳng ma_danh_bo đó khi tra cứu — trường hợp này KHÔNG cần gọi confirm_danh_bo.
+- Đã có danh bộ xác nhận: dùng cho cả cuộc gọi, không hỏi lại trừ khi khách muốn đổi.
 
 # Khách không có mã danh bộ
 - Dừng hỏi ngay khi khách nói không có/không nhớ. Gợi ý 1 lần chỗ tìm (hóa đơn, tin nhắn, hợp đồng).
@@ -120,17 +124,47 @@ Khách nói cảm ơn/tạm biệt/chào ("cảm ơn em", "bye", "chào em", "v�
 // Tôi là An, trợ lý AI của Công ty. Tôi có thể hỗ trợ Quý khách tra cứu tiền nước,
 export const TOOLS = [
   {
+    // [fix 18/07/2026] Cuộc E2uhVdS9X4mVBoXs0uYMP: model mini không giữ được
+    // dãy số ổn định (khách đọc 11 số, model đọc lại 12 số, gọi tool với 12 số
+    // KHÁC nữa). Tool này để CODE ghi nhận + đếm + lưu số theo cuộc gọi;
+    // model chỉ đọc lại từ output tool.
+    type: "function",
+    name: "confirm_danh_bo",
+    description:
+      "Ghi nhận mã danh bộ khách vừa đọc. PHẢI GỌI NGAY mỗi khi khách đọc chữ số mã danh bộ — " +
+      "cả dãy đầy đủ, HOẶC chỉ một nhóm số khi đang đọc theo từng phần, HOẶC khi khách đọc lại/sửa. " +
+      "Hệ thống tự đếm, tự ghép các nhóm, tự lưu cho cả cuộc gọi và trả về câu cần nói tiếp với khách.",
+    parameters: {
+      type: "object",
+      properties: {
+        day_so: {
+          type: "string",
+          description:
+            "CHỈ các chữ số khách VỪA đọc ở lượt này (nếu đang đọc theo nhóm thì chỉ nhóm đó, " +
+            "KHÔNG kèm các nhóm đã đọc trước). Ghi ĐÚNG những gì nghe được, không thêm/bớt/sửa.",
+        },
+        sua_nhom_vua_roi: {
+          type: "boolean",
+          description:
+            "true khi khách báo nhóm số em vừa đọc lại là SAI và đang đọc lại nhóm đó. " +
+            "Hệ thống sẽ thay nhóm cuối bằng các chữ số mới.",
+        },
+      },
+      required: ["day_so"],
+    },
+  },
+  {
     type: "function",
     name: "get_bill",
     description: "Tra cứu hóa đơn tiền nước của khách hàng. Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
     parameters: {
       type: "object",
       properties: {
-        ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ma_danh_bo: { type: "string", description: "Mã danh bộ 11 chữ số. BỎ TRỐNG nếu đã xác nhận qua confirm_danh_bo trong cuộc gọi." },
         ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
         nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
       },
-      required: ["ma_danh_bo"],
+      required: [],
     },
   },
   {
@@ -140,11 +174,11 @@ export const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ma_danh_bo: { type: "string", description: "Mã danh bộ 11 chữ số. BỎ TRỐNG nếu đã xác nhận qua confirm_danh_bo trong cuộc gọi." },
         ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
         nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
       },
-      required: ["ma_danh_bo"],
+      required: [],
     },
   },
   {
@@ -154,11 +188,11 @@ export const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ma_danh_bo: { type: "string", description: "Mã danh bộ 11 chữ số. BỎ TRỐNG nếu đã xác nhận qua confirm_danh_bo trong cuộc gọi." },
         ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
         nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
       },
-      required: ["ma_danh_bo"],
+      required: [],
     },
   },
   {
@@ -168,11 +202,11 @@ export const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ma_danh_bo: { type: "string", description: "Mã danh bộ 11 chữ số. BỎ TRỐNG nếu đã xác nhận qua confirm_danh_bo trong cuộc gọi." },
         ky: { type: "integer", description: "Kỳ (tháng) cần so sánh, tùy chọn" },
         nam: { type: "integer", description: "Năm cần so sánh, tùy chọn" },
       },
-      required: ["ma_danh_bo"],
+      required: [],
     },
   },
   {
@@ -182,9 +216,9 @@ export const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        ma_danh_bo: { type: "string", description: "Mã danh bộ" },
+        ma_danh_bo: { type: "string", description: "Mã danh bộ 11 chữ số. BỎ TRỐNG nếu đã xác nhận qua confirm_danh_bo trong cuộc gọi." },
       },
-      required: ["ma_danh_bo"],
+      required: [],
     },
   },
   {
@@ -196,7 +230,7 @@ export const TOOLS = [
       properties: {
         ma_danh_bo: {
           type: "string",
-          description: "Mã danh bộ khách hàng",
+          description: "Mã danh bộ 11 chữ số. BỎ TRỐNG nếu đã xác nhận qua confirm_danh_bo trong cuộc gọi.",
         },
         loai: {
           type: "string",

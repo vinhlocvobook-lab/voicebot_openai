@@ -33,10 +33,15 @@ Cần `.env` (xem `.env.example`); thiếu `OPENAI_API_KEY` server không chạy
 
 ### Function call (tools)
 
-Schema ở `system-prompt.js` (`TOOLS`), xử lý ở `tools.js` (8 tool):
+Schema ở `system-prompt.js` (`TOOLS`), xử lý ở `tools.js` (11 tool):
 
-Tool dữ liệu — `get_bill`, `get_water_usage`, `compare_usage`, `get_outages`,
-`create_ticket`, `get_procedure_info`: trả JSON cho AI đọc lại cho khách.
+Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
+`compare_usage`, `get_outages`, `create_ticket`, `get_procedure_info`,
+`check_missing_docs`: trả JSON cho AI đọc lại cho khách.
+
+Tool state — `confirm_danh_bo`: ghi nhận + đếm + lưu mã danh bộ vào `callState`
+(fix 18/07/2026, xem `docs/fix/fix_confirm_danh_bo_20260718.md`); các tool tra
+cứu dùng số đã lưu qua `resolveDanhBo`, KHÔNG tin `ma_danh_bo` model truyền lại.
 
 Tool action — `transfer_to_agent`, `end_call`: handler chỉ trả confirmation;
 hành động thật (REFER / hangup) thực thi trong `session-ws.js` dựa trên field

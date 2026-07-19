@@ -77,7 +77,40 @@ export function openSessionWebSocket(callId, callOps) {
   // [fix 18/07/2026] State theo CUỘC GỌI cho các tool handler (tools.js) — vd
   // guard "đã hỏi đối tượng chưa" của get_procedure_info (chống model tự đoán
   // doi_tuong ngay lượt đầu, cuộc E2u70cuT94h0rwpLAKOyA).
-  const _toolCallState = {};
+  // knownDanhBo: danh bộ hệ thống tra được theo SĐT — resolveDanhBo tin ngay,
+  // không ép vòng xác nhận confirm_danh_bo (fix cuộc E2uhVdS9X4mVBoXs0uYMP).
+  const _toolCallState = { knownDanhBo: callOps.knownDanhBo || [] };
+
+  // [fix 18/07/2026 v5] Cuộc E2yXyLXpaZz66DmCfxQBi: hủy response do prompt echo
+  // để lại câu nói DỞ của bot trong context ("...đọc giúp em nguyên văn: Hai
+  // hai") → model tưởng "Hai hai" là số khách vừa đọc, rồi tự bịa hội thoại 4
+  // lượt liền, KHÔNG gọi confirm_danh_bo nữa, khách cúp máy.
+  // → Sau khi hủy, nếu đang giữa luồng lấy mã danh bộ theo nhóm thì code tự
+  // đọc lại ĐÚNG câu của bước hiện tại, kéo cuộc gọi về đúng nhịp state machine.
+  const _reAssertDanhBoStep = (lyDo) => {
+    const _prompt = _toolCallState._danhBoLastPrompt;
+    if (!_toolCallState._danhBoGuided || !_prompt) return;
+    if (_hungUp || _transferred) return;
+    setTimeout(() => {
+      if (_hungUp || _transferred || _responseActive) return;
+      if (!_toolCallState._danhBoGuided) return; // đã xong nhóm trong lúc chờ
+      try {
+        _pendingCodeResponse = true;
+        ws.send(JSON.stringify({
+          type: "response.create",
+          response: {
+            instructions:
+              "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, " +
+              "KHÔNG nhắc lại bất kỳ chữ số nào ngoài đoạn này: \"" + _prompt + "\"",
+          },
+        }));
+        logger.addEvent("danh_bo_step_reasserted", `${lyDo} — đọc lại bước đang chờ`);
+        console.log(`[${callId}]:`, "danh_bo_step_reasserted", lyDo);
+      } catch (e) {
+        log.warn(`[WS][${callId}] không gửi được response.create kéo lại bước danh bộ: `, e.message);
+      }
+    }, 900); // chờ cancel hoàn tất (response.done về) rồi mới tạo response mới
+  };
 
   // Tránh save() 2 lần (close + error retry)
   let _saved = false;
@@ -351,6 +384,11 @@ export function openSessionWebSocket(callId, callOps) {
         break;
       }
 
+      case "input_audio_buffer.dtmf_event_received": {
+        const digit = event.event;
+        console.log("DTMF received:", digit);
+        break;
+      }
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
       case "conversation.item.input_audio_transcription.completed": {
         const khText = event.transcript?.trim();
@@ -416,6 +454,7 @@ export function openSessionWebSocket(callId, callOps) {
                 ws.send(JSON.stringify({ type: "response.cancel" }));
                 logger.addEvent("response_cancel_sent", `hủy response do prompt echo (nhiễu) kích hoạt (item ${_echoItemId})`);
                 console.log(`[${callId}]:`, "response_cancel_sent", `hủy response do prompt echo (item ${_echoItemId})`);
+                _reAssertDanhBoStep("sau khi hủy response do prompt echo");
               } catch (e) {
                 log.warn(`[WS][${callId}]không gửi được response.cancel: `, e.message);
                 console.log(`[WS][${callId}]không gửi được response.cancel: `, e.message);

@@ -102,6 +102,343 @@ function checkDanhBo(raw) {
   }
   return { ok: true, normalized, length };
 }
+
+// ─── Xác nhận mã danh bộ qua tool (fix 18/07/2026 — cuộc E2uhVdS9X4mVBoXs0uYMP) ──
+// Model mini KHÔNG giữ được dãy số ổn định qua các lượt: khách đọc 11 số
+// (2 lần giống nhau), model đọc lại thành 12 số (biến thể 1), rồi gọi tool với
+// 12 số KHÁC cả bản nó vừa đọc (biến thể 2) → guard chặn, khách bực, cúp máy.
+// Deterministic hoá bằng CODE:
+//   1. Khách đọc số → model gọi confirm_danh_bo → code normalize + đếm + LƯU
+//      vào callState.danhBo; model đọc lại NGUYÊN VĂN "doc_cho_khach" (chính là
+//      dãy hệ thống sẽ dùng tra cứu — khép kín khoảng hở "đọc một đằng, tra một nẻo").
+//   2. Khách xác nhận → model gọi tool tra cứu KHÔNG truyền ma_danh_bo — code
+//      dùng giá trị đã lưu, không cho model chép lại số (nguồn sai chính).
+//   3. Model gọi thẳng tool tra cứu khi chưa có số đã lưu → KHÔNG tra ngay,
+//      trả yêu cầu đọc lại xác nhận (ép read-back từ tool output ít nhất 1 lần).
+//   4. Danh bộ do HỆ THỐNG cấp (lookup SĐT, callState.knownDanhBo) → tin ngay,
+//      không ép vòng xác nhận tool (số không đi qua "tai" model).
+
+const DIGIT_WORDS = ["Không", "Một", "Hai", "Ba", "Bốn", "Năm", "Sáu", "Bảy", "Tám", "Chín"];
+const danhBoSpoken = (s) => String(s).split("").map((d) => DIGIT_WORDS[+d] ?? d).join(" - ");
+
+// Cửa sổ sống của phiên đọc theo nhóm (khách im lâu thì bỏ, đọc lại từ đầu) — ms.
+const DANH_BO_PARTIAL_WINDOW_MS = 45000;
+
+const SO_CHU = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "mười", "mười một"];
+const docSoLuong = (n) => SO_CHU[n] ?? String(n);
+
+// [fix 18/07/2026 v3] CHIA NHÓM CÓ DẪN DẮT (4 + 4 + 3).
+// Cuộc E2v1xrwL73YJDQ89dC9bQ: mini rơi mất 3-4 số đầu khi khách đọc 11 số liền
+// mạch, nhưng chép nhóm ngắn thì ổn. Bot xin từng nhóm, code gom lại.
+// [fix 19/07/2026] Áp dụng NGAY TỪ ĐẦU (không chờ nghe sai lần 1 mới chuyển):
+// bot xin 4 số đầu ngay khi cần danh bộ; khách tự đọc liền đủ 11 số vẫn nhận.
+// XÁC NHẬN NGẦM: mỗi nhóm bot đọc lại + hỏi luôn nhóm kế trong CÙNG một câu
+// (khách nghe sai thì ngắt sửa ngay), chỉ chốt xác nhận tường minh 1 lần khi đủ
+// 11 số — giữ 2 lớp kiểm tra nhưng chỉ tốn ~5 lượt thay vì ~9.
+const GUIDED_GROUPS = [4, 4, 3];
+const GUIDED_LABELS = ["bốn số đầu", "bốn số tiếp theo", "ba số cuối"];
+const GUIDED_MAX_RETRY = 2; // sai cùng 1 nhóm quá số lần này → escalation
+
+/**
+ * Đóng gói kết quả của một bước đọc nhóm + LƯU câu đang chờ khách trả lời vào
+ * callState. [fix 18/07/2026 v5] Cuộc E2yXyLXpaZz66DmCfxQBi: prompt echo làm
+ * code hủy response giữa chừng, để lại câu nói dở của bot ("...đọc giúp em
+ * nguyên văn: Hai hai") trong context → model tưởng "Hai hai" là số khách đọc,
+ * rồi tự bịa hội thoại 4 lượt liền KHÔNG gọi tool nữa, khách cúp máy.
+ * session-ws.js dùng câu lưu ở đây để kéo cuộc gọi về đúng bước sau khi hủy.
+ */
+function guidedPayload(callState, obj) {
+  callState._danhBoLastPrompt = obj.doc_cho_khach || null;
+  return JSON.stringify(obj);
+}
+
+/** Nhận xong 1 nhóm (chưa phải nhóm cuối): đọc lại nhóm + xin luôn nhóm kế. */
+function guidedNextResponse(callState, justDigits) {
+  const g = callState._danhBoGuided;
+  const idx = g.groups.length; // nhóm kế tiếp
+  return guidedPayload(callState, {
+    success: true,
+    doc_theo_nhom_co_dan: true,
+    buoc: idx + 1,
+    tong_so_buoc: GUIDED_GROUPS.length,
+    nhom_vua_nhan: justDigits,
+    doc_cho_khach:
+      `Dạ, em ghi nhận: ${danhBoSpoken(justDigits)}. ` +
+      `Quý Khách đọc tiếp ${GUIDED_LABELS[idx]} giúp em ạ.`,
+    message:
+      `Đã nhận ${g.groups.join("")}. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
+      `Khách đọc tiếp → gọi confirm_danh_bo với CHỈ chữ số MỚI của nhóm đó. ` +
+      `Khách báo nhóm vừa đọc SAI → gọi confirm_danh_bo với sua_nhom_vua_roi=true ` +
+      `kèm các chữ số khách đọc lại cho nhóm đó.`,
+  });
+}
+
+/** Nhóm nghe sai độ dài → xin đọc lại ĐÚNG nhóm đó (không mất các nhóm trước). */
+function guidedRetryResponse(callState, nhanDuoc) {
+  const g = callState._danhBoGuided;
+  const idx = g.groups.length;
+  const expected = GUIDED_GROUPS[idx];
+  return guidedPayload(callState, {
+    success: false,
+    doc_theo_nhom_co_dan: true,
+    buoc: idx + 1,
+    tong_so_buoc: GUIDED_GROUPS.length,
+    doc_cho_khach:
+      `Dạ, em nghe được ${docSoLuong(nhanDuoc)} số, mà phần này cần ` +
+      `${docSoLuong(expected)} số ạ. Quý Khách đọc lại ${GUIDED_LABELS[idx]} ` +
+      `thật chậm giúp em ạ.`,
+    message:
+      `Nhóm ${idx + 1} nhận ${nhanDuoc} số, cần ${expected}. Các nhóm trước VẪN GIỮ. ` +
+      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách đọc lại nhóm này.`,
+  });
+}
+
+/** Khách lặp lại nhóm vừa đọc → xác nhận đã ghi nhận, nhắc lại nhóm đang cần. */
+function guidedRepeatResponse(callState) {
+  const g = callState._danhBoGuided;
+  const idx = g.groups.length;
+  return guidedPayload(callState, {
+    success: true,
+    doc_theo_nhom_co_dan: true,
+    buoc: idx + 1,
+    tong_so_buoc: GUIDED_GROUPS.length,
+    doc_cho_khach:
+      `Dạ, phần đó em ghi nhận rồi ạ. Em còn thiếu ${GUIDED_LABELS[idx]} thôi ạ — ` +
+      `Quý Khách đọc giúp em ${docSoLuong(GUIDED_GROUPS[idx])} số đó ạ.`,
+    message:
+      `Khách lặp lại nhóm đã nhận, KHÔNG tính là lỗi. Đã có ${g.groups.join("")}. ` +
+      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách đọc nhóm ${idx + 1}.`,
+  });
+}
+
+/** Đã thử nhiều lần vẫn không xong → mời chuyển tổng đài viên / tạo phiếu. */
+function danhBoEscalationResponse(callState) {
+  callState._danhBoGuided = null;
+  callState._danhBoPartial = null;
+  callState._danhBoLastPrompt = null;
+  return JSON.stringify({
+    success: false,
+    invalid_danh_bo: true,
+    da_sai_nhieu_lan: callState.danhBoInvalidCount || 0,
+    doc_cho_khach:
+      `Dạ, em xin lỗi Quý Khách, đường truyền bên em vẫn chưa nghe trọn vẹn được mã danh bộ ạ. ` +
+      `Để Quý Khách khỏi mất thời gian, em chuyển máy sang tổng đài viên hỗ trợ trực tiếp, ` +
+      `hoặc em ghi nhận lại để nhân viên gọi lại cho Quý Khách. Quý Khách chọn giúp em cách nào ạ?`,
+    message:
+      `Đã nhiều lần không nhận được mã danh bộ. KHÔNG tra cứu. ` +
+      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách chọn. ` +
+      `Khách chọn chuyển máy → gọi transfer_to_agent. ` +
+      `Khách muốn nhân viên gọi lại → gọi create_ticket. ` +
+      `Khách vẫn muốn đọc lại số → gọi confirm_danh_bo với dãy mới nghe được.`,
+  });
+}
+
+// [fix 19/07/2026] Luôn lấy danh bộ theo nhóm 4+4+3 NGAY TỪ ĐẦU (cuộc
+// E2yeCWEsecOlWrgBM8CW1: khách đọc 11 số tách 2 hơi, VAD cắt đôi, model chỉ
+// lấy cụm cuối và còn chép sai số; bước chuyển giữa chừng sang chế độ nhóm làm
+// khách rối, cúp máy). Bỏ hẳn bước "nghe liền 11 số" — hàm này giờ chỉ dùng khi
+// CHƯA nhận được chữ số nào (model gọi tool tay không / tra cứu khi chưa có số):
+// xin đúng nhóm đang cần.
+function invalidDanhBoResponse(length, callState = {}) {
+  if (!callState._danhBoGuided) {
+    callState._danhBoGuided = { groups: [], at: Date.now(), retry: 0 };
+    callState._danhBoPartial = null;
+  }
+  const idx = callState._danhBoGuided.groups.length;
+  return guidedPayload(callState, {
+    success: false,
+    invalid_danh_bo: true,
+    doc_theo_nhom_co_dan: true,
+    buoc: idx + 1,
+    tong_so_buoc: GUIDED_GROUPS.length,
+    doc_cho_khach:
+      idx === 0
+        ? `Dạ, mã danh bộ gồm ${docSoLuong(DANH_BO_LENGTH)} số, mình đọc từng phần ` +
+          `cho chính xác ạ: Quý Khách đọc giúp em ${GUIDED_LABELS[0]} của mã danh bộ ạ.`
+        : `Dạ, Quý Khách đọc giúp em ${GUIDED_LABELS[idx]} của mã danh bộ ạ.`,
+    message:
+      `Chưa nhận được chữ số nào. Đang lấy mã theo nhóm ${GUIDED_GROUPS.join("+")}. ` +
+      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
+      `Khách đọc → gọi confirm_danh_bo với CHỈ các chữ số vừa nghe của nhóm đó.`,
+  });
+}
+
+function confirmRequestResponse(normalized) {
+  return JSON.stringify({
+    success: true,
+    cho_khach_xac_nhan: true,
+    ma_danh_bo: normalized,
+    doc_cho_khach:
+      `Dạ, em đọc lại mã danh bộ để Quý Khách kiểm tra: ${danhBoSpoken(normalized)}. ` +
+      `Quý Khách xác nhận giúp em có đúng không ạ?`,
+    message:
+      `Đã ghi nhận đủ ${DANH_BO_LENGTH} chữ số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
+      `Khách xác nhận ĐÚNG → gọi tool tra cứu cần thiết, KHÔNG truyền ma_danh_bo ` +
+      `(hệ thống tự dùng số đã xác nhận). Khách báo SAI hoặc đọc dãy số khác → ` +
+      `gọi confirm_danh_bo lần nữa với dãy số mới.`,
+  });
+}
+
+/** Chốt dãy 11 số: lưu callState + reset các bộ đếm/phiên đọc nhóm. */
+function acceptFullDanhBo(normalized, callState) {
+  callState.danhBo = { value: normalized, confirmed: false };
+  callState._danhBoGuided = null;
+  callState._danhBoPartial = null;
+  callState._danhBoLastPrompt = null;
+  callState.danhBoInvalidCount = 0;
+  return confirmRequestResponse(normalized);
+}
+
+/** Xử lý một lượt trong chế độ đọc theo nhóm có dẫn dắt. */
+function handleGuidedGroup(rawNormalized, suaNhomVuaRoi, callState) {
+  let normalized = rawNormalized;
+  const g = callState._danhBoGuided;
+
+  // [fix 18/07/2026 v4] Cuộc E2yQmFyGFTDr4ZQu3cGiM: model set sua_nhom_vua_roi
+  // = true SAI ngữ cảnh — code vừa xin khách "đọc lại ba số cuối", khách đọc
+  // "431" (đúng nhóm 3), model lại đánh dấu là sửa nhóm trước → code xóa mất
+  // nhóm 2 đã đúng, quay ngược một bước, khách cúp máy ở 8/11 số.
+  // Cờ điều khiển do model set KHÔNG đáng tin (bài học chung của repo này) →
+  // chỉ chấp nhận khi lượt trước code vừa NHẬN XONG một nhóm; nếu lượt trước
+  // code đang xin đọc lại chính nhóm hiện tại thì khách rõ ràng đang đọc lại
+  // nhóm đó, không phải sửa nhóm cũ.
+  if (suaNhomVuaRoi && g.groups.length > 0) {
+    const doDaiNhomTruoc = GUIDED_GROUPS[g.groups.length - 1];
+    const doDaiNhomHienTai = GUIDED_GROUPS[g.groups.length];
+    // Bằng chứng mạnh nhất là ĐỘ DÀI: số khách vừa đọc khớp nhóm ĐANG CẦN mà
+    // không khớp nhóm trước → chắc chắn là nhóm hiện tại, cờ model set sai.
+    const roRangLaNhomHienTai =
+      normalized.length === doDaiNhomHienTai && doDaiNhomHienTai !== doDaiNhomTruoc;
+
+    if (roRangLaNhomHienTai) {
+      console.warn(
+        `[danh_bo][guided] Bỏ qua sua_nhom_vua_roi: "${normalized}" dài ${normalized.length} số ` +
+        `= đúng nhóm ${g.groups.length + 1} đang cần, không phải bản sửa của nhóm trước.`
+      );
+    } else if (g.lastAction === "accepted") {
+      const bo = g.groups.pop();
+      console.log(`[danh_bo][guided] Khách sửa nhóm ${g.groups.length + 1}: bỏ "${bo}"`);
+    } else {
+      console.warn(
+        `[danh_bo][guided] Bỏ qua sua_nhom_vua_roi (lastAction=${g.lastAction}) — ` +
+        `khách đang đọc lại nhóm ${g.groups.length + 1}, không phải sửa nhóm cũ.`
+      );
+    }
+  }
+
+  const idx = g.groups.length;
+  const expected = GUIDED_GROUPS[idx];
+  g.at = Date.now();
+
+  // Model hay GỘP cả các nhóm đã đọc trước vào day_so dù đã dặn chỉ gửi nhóm
+  // mới. Nhận diện bằng prefix rồi tự cắt — đừng bắt khách đọc lại vì lỗi của model.
+  const daCo = g.groups.join("");
+  if (daCo && normalized.length > expected && normalized.startsWith(daCo)) {
+    const cat = normalized.slice(daCo.length);
+    console.warn(`[danh_bo][guided] Model gộp cả nhóm cũ ("${normalized}") — cắt còn "${cat}".`);
+    normalized = cat;
+  }
+
+  // [fix 18/07/2026 v4] Khách LẶP LẠI y nguyên nhóm vừa đọc (cuộc trên: bot xin
+  // 3 số cuối, khách nói lại "ba hai bốn bảy thôi em") → không phải nhóm mới,
+  // cũng không phải lỗi: nhắc lại yêu cầu nhóm hiện tại, KHÔNG tính retry.
+  const nhomTruoc = g.groups[g.groups.length - 1];
+  if (nhomTruoc && normalized === nhomTruoc && normalized.length !== expected) {
+    console.log(`[danh_bo][guided] Khách lặp lại nhóm vừa đọc ("${normalized}") — nhắc lại yêu cầu.`);
+    g.lastAction = "repeat";
+    return guidedRepeatResponse(callState);
+  }
+
+  if (normalized.length !== expected) {
+    g.retry = (g.retry || 0) + 1;
+    g.lastAction = "retry";
+    callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
+    if (g.retry > GUIDED_MAX_RETRY) return danhBoEscalationResponse(callState);
+    return guidedRetryResponse(callState, normalized.length);
+  }
+
+  g.groups.push(normalized);
+  g.retry = 0;
+  g.lastAction = "accepted";
+
+  // Chưa hết nhóm → đọc lại nhóm vừa nhận + xin luôn nhóm kế (xác nhận ngầm).
+  if (g.groups.length < GUIDED_GROUPS.length) return guidedNextResponse(callState, normalized);
+
+  // Đủ 3 nhóm → ghép, chốt xác nhận tường minh toàn bộ 1 lần.
+  const joined = g.groups.join("");
+  console.log(`[danh_bo][guided] Ghép ${g.groups.join(" + ")} = "${joined}"`);
+  return acceptFullDanhBo(joined, callState);
+}
+
+// [fix 19/07/2026] Lấy danh bộ theo nhóm 4+4+3 ngay từ đầu (trước đó: chỉ
+// chuyển sang nhóm sau lần nghe sai đầu tiên — bước chuyển làm khách rối).
+function handleConfirmDanhBo({ day_so, sua_nhom_vua_roi } = {}, callState = {}) {
+  const normalized = normalizeDanhBo(day_so);
+
+  // Phiên đọc nhóm quá cũ (khách bỏ giữa chừng) → hủy, quay về luồng thường.
+  const g = callState._danhBoGuided;
+  if (g && Date.now() - g.at > DANH_BO_PARTIAL_WINDOW_MS) {
+    console.log("[danh_bo][guided] Phiên đọc nhóm hết hạn — hủy.");
+    callState._danhBoGuided = null;
+  }
+
+  if (normalized.length === 0) return invalidDanhBoResponse(0, callState);
+
+  // Khách đọc thẳng đủ 11 số (kể cả đang giữa chừng chế độ nhóm) → nhận luôn.
+  if (normalized.length === DANH_BO_LENGTH) return acceptFullDanhBo(normalized, callState);
+
+  // [fix 19/07/2026] Luôn ở chế độ dẫn dắt 4+4+3 ngay từ chữ số đầu tiên —
+  // không còn bước "nghe liền 11 số rồi mới chuyển nhóm" (chuyển giữa chừng
+  // làm khách rối, cuộc E2yeCWEsecOlWrgBM8CW1 cúp máy).
+  if (!callState._danhBoGuided) {
+    callState._danhBoGuided = { groups: [], at: Date.now(), retry: 0 };
+    callState._danhBoPartial = null;
+  }
+  return handleGuidedGroup(normalized, !!sua_nhom_vua_roi, callState);
+}
+
+/**
+ * Lấy mã danh bộ CHO TOOL TRA CỨU từ callState (ưu tiên) hoặc từ arg của model.
+ * Trả { ok: true, value } khi được phép tra cứu; { ok: false, error } khi phải
+ * dừng lại (sai độ dài / cần khách xác nhận trước).
+ */
+function resolveDanhBo(rawArg, callState = {}) {
+  const argNorm = normalizeDanhBo(rawArg);
+  const stored = callState.danhBo;
+
+  if (stored?.value) {
+    // Model truyền dãy 11 số MỚI khác số đã lưu → coi là danh bộ mới (khách đổi
+    // số hoặc đọc lại) → bắt xác nhận lại trước khi tra.
+    if (argNorm.length === DANH_BO_LENGTH && argNorm !== stored.value) {
+      console.warn(`[danh_bo] Model gửi số MỚI "${argNorm}" khác số đã lưu "${stored.value}" → yêu cầu xác nhận lại.`);
+      callState.danhBo = { value: argNorm, confirmed: false };
+      return { ok: false, error: confirmRequestResponse(argNorm) };
+    }
+    // Arg sai độ dài / lệch → model chép sai số (đúng lỗi cuộc E2uhVdS9X...) →
+    // BỎ QUA arg, dùng số đã lưu.
+    if (argNorm && argNorm !== stored.value) {
+      console.warn(`[danh_bo] Model gửi "${argNorm}" (${argNorm.length} số) khác số đã lưu "${stored.value}" — dùng số đã lưu.`);
+    }
+    stored.confirmed = true;
+    return { ok: true, value: stored.value };
+  }
+
+  // Chưa có số trong callState
+  if (argNorm.length !== DANH_BO_LENGTH) {
+    return { ok: false, error: invalidDanhBoResponse(argNorm.length, callState) };
+  }
+
+  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT) → tin ngay, không ép xác nhận tool.
+  if (Array.isArray(callState.knownDanhBo) && callState.knownDanhBo.includes(argNorm)) {
+    callState.danhBo = { value: argNorm, confirmed: true };
+    return { ok: true, value: argNorm };
+  }
+
+  // Model gọi thẳng tool tra cứu, bỏ qua confirm_danh_bo → ép đọc lại xác nhận trước.
+  callState.danhBo = { value: argNorm, confirmed: false };
+  return { ok: false, error: confirmRequestResponse(argNorm) };
+}
+
 // function normalizeDanhBo(raw) {
 //   console.log("==========[normalizeDanhBo]==================")
 //   console.log("raw", raw)
@@ -160,17 +497,17 @@ function prevPeriod() {
  * Trả về { ok, rows?, error? } — error là JSON string sẵn cho AI, giữ error_code
  * để model phân biệt CUSTOMER_NOT_FOUND (đọc lại danh bộ) vs INVOICE/PRODUCTION_NOT_FOUND (kỳ chưa có).
  */
-async function fetchBilling(ma_danh_bo, ky, nam) {
-  const chk = checkDanhBo(ma_danh_bo);
-  if (!chk.ok) return { ok: false, error: chk.error };
+async function fetchBilling(ma_danh_bo, ky, nam, callState) {
+  const rs = resolveDanhBo(ma_danh_bo, callState);
+  if (!rs.ok) return { ok: false, error: rs.error };
 
-  let r = await getTrangThaiTT(chk.normalized, ky, nam);
+  let r = await getTrangThaiTT(rs.value, ky, nam);
 
   const noPeriodGiven = (ky === null || ky === undefined) && (nam === null || nam === undefined);
   const notFound = ["INVOICE_NOT_FOUND", "PRODUCTION_NOT_FOUND"].includes(r?.error_code);
   if (!r.success && noPeriodGiven && notFound) {
     const p = prevPeriod();
-    r = await getTrangThaiTT(chk.normalized, p.ky, p.nam);
+    r = await getTrangThaiTT(rs.value, p.ky, p.nam);
   }
 
   if (!r.success) {
@@ -188,8 +525,8 @@ async function fetchBilling(ma_danh_bo, ky, nam) {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-async function handleGetBill({ ma_danh_bo, ky, nam }) {
-  const f = await fetchBilling(ma_danh_bo, ky, nam);
+async function handleGetBill({ ma_danh_bo, ky, nam }, callState) {
+  const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
   const parts = f.rows.map((d) => {
     const tt = d.TrangThaiThanhToan === "Đã thanh toán"
@@ -204,8 +541,8 @@ async function handleGetBill({ ma_danh_bo, ky, nam }) {
   });
 }
 
-async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
-  const f = await fetchBilling(ma_danh_bo, ky, nam);
+async function handleGetWaterUsage({ ma_danh_bo, ky, nam }, callState) {
+  const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
   const parts = f.rows.map(
     (d) => `Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
@@ -217,8 +554,8 @@ async function handleGetWaterUsage({ ma_danh_bo, ky, nam }) {
   });
 }
 
-async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }) {
-  const f = await fetchBilling(ma_danh_bo, ky, nam);
+async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }, callState) {
+  const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
   // KHÔNG đọc DonViThanhToan cho khách (mã nội bộ như "GDGV", chưa có bảng map).
   const parts = f.rows.map((d) => {
@@ -234,10 +571,10 @@ async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }) {
   });
 }
 
-async function handleCompareUsage({ ma_danh_bo, ky, nam }) {
-  const chk = checkDanhBo(ma_danh_bo);
-  if (!chk.ok) return chk.error;
-  const r = await getSoSanhTangGiam(chk.normalized, ky, nam);
+async function handleCompareUsage({ ma_danh_bo, ky, nam }, callState) {
+  const rs = resolveDanhBo(ma_danh_bo, callState);
+  if (!rs.ok) return rs.error;
+  const r = await getSoSanhTangGiam(rs.value, ky, nam);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không có dữ liệu so sánh." });
   }
@@ -248,10 +585,10 @@ async function handleCompareUsage({ ma_danh_bo, ky, nam }) {
   });
 }
 
-async function handleGetOutages({ ma_danh_bo }) {
-  const chk = checkDanhBo(ma_danh_bo);
-  if (!chk.ok) return chk.error;
-  const r = await getThongBaoCupNuoc(chk.normalized);
+async function handleGetOutages({ ma_danh_bo }, callState) {
+  const rs = resolveDanhBo(ma_danh_bo, callState);
+  if (!rs.ok) return rs.error;
+  const r = await getThongBaoCupNuoc(rs.value);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tra cứu được thông tin cúp nước." });
   }
@@ -271,12 +608,12 @@ async function handleGetOutages({ ma_danh_bo }) {
   });
 }
 
-async function handleCreateTicket({ ma_danh_bo, loai, mo_ta }) {
-  const chk = checkDanhBo(ma_danh_bo);
-  if (!chk.ok) return chk.error;
+async function handleCreateTicket({ ma_danh_bo, loai, mo_ta }, callState) {
+  const rs = resolveDanhBo(ma_danh_bo, callState);
+  if (!rs.ok) return rs.error;
   // Gộp loại + mô tả thành nội dung gửi lên endpoint bao-su-co.
   const noiDung = loai ? `[${loai}] ${mo_ta}` : mo_ta;
-  const r = await baoSuCo(chk.normalized, noiDung);
+  const r = await baoSuCo(rs.value, noiDung);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tạo được phiếu sự cố." });
   }
@@ -791,12 +1128,13 @@ function handleEndCall({ ly_do } = {}) {
 export async function dispatchTool(name, args, callState = {}) {
   try {
     switch (name) {
-      case "get_bill": return await handleGetBill(args);
-      case "get_water_usage": return await handleGetWaterUsage(args);
-      case "get_payment_status": return await handleGetPaymentStatus(args);
-      case "compare_usage": return await handleCompareUsage(args);
-      case "get_outages": return await handleGetOutages(args);
-      case "create_ticket": return await handleCreateTicket(args);
+      case "confirm_danh_bo": return handleConfirmDanhBo(args, callState);
+      case "get_bill": return await handleGetBill(args, callState);
+      case "get_water_usage": return await handleGetWaterUsage(args, callState);
+      case "get_payment_status": return await handleGetPaymentStatus(args, callState);
+      case "compare_usage": return await handleCompareUsage(args, callState);
+      case "get_outages": return await handleGetOutages(args, callState);
+      case "create_ticket": return await handleCreateTicket(args, callState);
       case "get_procedure_info": return handleGetProcedureInfo(args, callState);
       case "check_missing_docs": return handleCheckMissingDocs(args);
       case "transfer_to_agent": return handleTransferToAgent(args);
