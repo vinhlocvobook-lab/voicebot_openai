@@ -9,7 +9,9 @@ import {
   getThongBaoCupNuoc,
   baoSuCo,
   getTrangThaiTT,
+  getThongTinKhachHang,
 } from "./api.js";
+import { arbitrateDanhBo } from "./danh-bo-arbiter.js";
 import { PROCEDURES } from "./huongdanthutuc-data.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -119,104 +121,41 @@ function checkDanhBo(raw) {
 //      không ép vòng xác nhận tool (số không đi qua "tai" model).
 
 const DIGIT_WORDS = ["Không", "Một", "Hai", "Ba", "Bốn", "Năm", "Sáu", "Bảy", "Tám", "Chín"];
-const danhBoSpoken = (s) => String(s).split("").map((d) => DIGIT_WORDS[+d] ?? d).join(" - ");
-
-// Cửa sổ sống của phiên đọc theo nhóm (khách im lâu thì bỏ, đọc lại từ đầu) — ms.
-const DANH_BO_PARTIAL_WINDOW_MS = 45000;
+// export [fix 19/07/2026 v2]: session-ws.js cần đọc lại số khách BẤM PHÍM (DTMF).
+export const danhBoSpoken = (s) => String(s).split("").map((d) => DIGIT_WORDS[+d] ?? d).join(" - ");
 
 const SO_CHU = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "mười", "mười một"];
 const docSoLuong = (n) => SO_CHU[n] ?? String(n);
 
-// [fix 18/07/2026 v3] CHIA NHÓM CÓ DẪN DẮT (4 + 4 + 3).
-// Cuộc E2v1xrwL73YJDQ89dC9bQ: mini rơi mất 3-4 số đầu khi khách đọc 11 số liền
-// mạch, nhưng chép nhóm ngắn thì ổn. Bot xin từng nhóm, code gom lại.
-// [fix 19/07/2026] Áp dụng NGAY TỪ ĐẦU (không chờ nghe sai lần 1 mới chuyển):
-// bot xin 4 số đầu ngay khi cần danh bộ; khách tự đọc liền đủ 11 số vẫn nhận.
-// XÁC NHẬN NGẦM: mỗi nhóm bot đọc lại + hỏi luôn nhóm kế trong CÙNG một câu
-// (khách nghe sai thì ngắt sửa ngay), chỉ chốt xác nhận tường minh 1 lần khi đủ
-// 11 số — giữ 2 lớp kiểm tra nhưng chỉ tốn ~5 lượt thay vì ~9.
-const GUIDED_GROUPS = [4, 4, 3];
-const GUIDED_LABELS = ["bốn số đầu", "bốn số tiếp theo", "ba số cuối"];
-const GUIDED_MAX_RETRY = 2; // sai cùng 1 nhóm quá số lần này → escalation
+// [fix 19/07/2026] BỎ phương án đọc theo nhóm 4-4-3 (bước "chuyển sang đọc
+// từng nhóm" giữa chừng làm khách rối — cuộc E2yeCWEsecOlWrgBM8CW1 cúp máy).
+// [fix 19/07/2026 v2] TRỌNG TÀI thành CO-PILOT NGẦM chạy từ LƯỢT 1:
+//   - Lượt 1 đủ 11 số → đọc lại NGAY bản realtime (không thêm độ trễ), đồng
+//     thời fire trọng tài gpt-5.1 chạy NỀN (song song lúc bot đang đọc lại).
+//     Khách báo SAI không kèm dãy mới → dùng ngay ứng viên nền, không bắt đọc lại.
+//   - Lượt ≥2 (khách đọc lại) → trọng tài chạy ĐỒNG BỘ đối chiếu MỌI quan sát
+//     (các dãy model nghe + transcript + danh bộ theo SĐT + các dãy đã bị bác)
+//     trước khi đọc lại xác nhận.
+//   - Hết DANH_BO_MAX_READS lượt đọc giọng nói vẫn chưa chốt → mời BẤM PHÍM
+//     (DTMF, session-ws.js tự ghi nhận); không bấm được → chuyển máy / tạo phiếu.
+const DANH_BO_MAX_READS = 3;
+const ARBITER_MIN_CONFIDENCE = Number(process.env.DANH_BO_ARBITER_MIN_CONFIDENCE || 0.7);
 
 /**
- * Đóng gói kết quả của một bước đọc nhóm + LƯU câu đang chờ khách trả lời vào
+ * Đóng gói kết quả bước lấy danh bộ + LƯU câu đang chờ khách trả lời vào
  * callState. [fix 18/07/2026 v5] Cuộc E2yXyLXpaZz66DmCfxQBi: prompt echo làm
- * code hủy response giữa chừng, để lại câu nói dở của bot ("...đọc giúp em
- * nguyên văn: Hai hai") trong context → model tưởng "Hai hai" là số khách đọc,
- * rồi tự bịa hội thoại 4 lượt liền KHÔNG gọi tool nữa, khách cúp máy.
+ * code hủy response giữa chừng, để lại câu nói dở của bot trong context →
+ * model tự bịa hội thoại, không gọi tool nữa, khách cúp máy.
  * session-ws.js dùng câu lưu ở đây để kéo cuộc gọi về đúng bước sau khi hủy.
  */
-function guidedPayload(callState, obj) {
+function danhBoPayload(callState, obj) {
   callState._danhBoLastPrompt = obj.doc_cho_khach || null;
   return JSON.stringify(obj);
 }
 
-/** Nhận xong 1 nhóm (chưa phải nhóm cuối): đọc lại nhóm + xin luôn nhóm kế. */
-function guidedNextResponse(callState, justDigits) {
-  const g = callState._danhBoGuided;
-  const idx = g.groups.length; // nhóm kế tiếp
-  return guidedPayload(callState, {
-    success: true,
-    doc_theo_nhom_co_dan: true,
-    buoc: idx + 1,
-    tong_so_buoc: GUIDED_GROUPS.length,
-    nhom_vua_nhan: justDigits,
-    doc_cho_khach:
-      `Dạ, em ghi nhận: ${danhBoSpoken(justDigits)}. ` +
-      `Quý Khách đọc tiếp ${GUIDED_LABELS[idx]} giúp em ạ.`,
-    message:
-      `Đã nhận ${g.groups.join("")}. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách đọc tiếp → gọi confirm_danh_bo với CHỈ chữ số MỚI của nhóm đó. ` +
-      `Khách báo nhóm vừa đọc SAI → gọi confirm_danh_bo với sua_nhom_vua_roi=true ` +
-      `kèm các chữ số khách đọc lại cho nhóm đó.`,
-  });
-}
-
-/** Nhóm nghe sai độ dài → xin đọc lại ĐÚNG nhóm đó (không mất các nhóm trước). */
-function guidedRetryResponse(callState, nhanDuoc) {
-  const g = callState._danhBoGuided;
-  const idx = g.groups.length;
-  const expected = GUIDED_GROUPS[idx];
-  return guidedPayload(callState, {
-    success: false,
-    doc_theo_nhom_co_dan: true,
-    buoc: idx + 1,
-    tong_so_buoc: GUIDED_GROUPS.length,
-    doc_cho_khach:
-      `Dạ, em nghe được ${docSoLuong(nhanDuoc)} số, mà phần này cần ` +
-      `${docSoLuong(expected)} số ạ. Quý Khách đọc lại ${GUIDED_LABELS[idx]} ` +
-      `thật chậm giúp em ạ.`,
-    message:
-      `Nhóm ${idx + 1} nhận ${nhanDuoc} số, cần ${expected}. Các nhóm trước VẪN GIỮ. ` +
-      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách đọc lại nhóm này.`,
-  });
-}
-
-/** Khách lặp lại nhóm vừa đọc → xác nhận đã ghi nhận, nhắc lại nhóm đang cần. */
-function guidedRepeatResponse(callState) {
-  const g = callState._danhBoGuided;
-  const idx = g.groups.length;
-  return guidedPayload(callState, {
-    success: true,
-    doc_theo_nhom_co_dan: true,
-    buoc: idx + 1,
-    tong_so_buoc: GUIDED_GROUPS.length,
-    doc_cho_khach:
-      `Dạ, phần đó em ghi nhận rồi ạ. Em còn thiếu ${GUIDED_LABELS[idx]} thôi ạ — ` +
-      `Quý Khách đọc giúp em ${docSoLuong(GUIDED_GROUPS[idx])} số đó ạ.`,
-    message:
-      `Khách lặp lại nhóm đã nhận, KHÔNG tính là lỗi. Đã có ${g.groups.join("")}. ` +
-      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách đọc nhóm ${idx + 1}.`,
-  });
-}
-
 /** Đã thử nhiều lần vẫn không xong → mời chuyển tổng đài viên / tạo phiếu. */
 function danhBoEscalationResponse(callState) {
-  callState._danhBoGuided = null;
-  callState._danhBoPartial = null;
-  callState._danhBoLastPrompt = null;
-  return JSON.stringify({
+  return danhBoPayload(callState, {
     success: false,
     invalid_danh_bo: true,
     da_sai_nhieu_lan: callState.danhBoInvalidCount || 0,
@@ -233,38 +172,40 @@ function danhBoEscalationResponse(callState) {
   });
 }
 
-// [fix 19/07/2026] Luôn lấy danh bộ theo nhóm 4+4+3 NGAY TỪ ĐẦU (cuộc
-// E2yeCWEsecOlWrgBM8CW1: khách đọc 11 số tách 2 hơi, VAD cắt đôi, model chỉ
-// lấy cụm cuối và còn chép sai số; bước chuyển giữa chừng sang chế độ nhóm làm
-// khách rối, cúp máy). Bỏ hẳn bước "nghe liền 11 số" — hàm này giờ chỉ dùng khi
-// CHƯA nhận được chữ số nào (model gọi tool tay không / tra cứu khi chưa có số):
-// xin đúng nhóm đang cần.
 function invalidDanhBoResponse(length, callState = {}) {
-  if (!callState._danhBoGuided) {
-    callState._danhBoGuided = { groups: [], at: Date.now(), retry: 0 };
-    callState._danhBoPartial = null;
+  if (length === 0) {
+    return danhBoPayload(callState, {
+      success: false,
+      invalid_danh_bo: true,
+      do_dai_hien_tai: 0,
+      do_dai_yeu_cau: DANH_BO_LENGTH,
+      doc_cho_khach:
+        `Dạ, Quý Khách cho em xin mã danh bộ gồm ${DANH_BO_LENGTH} chữ số, ` +
+        `đọc chậm từng chữ số giúp em ạ.`,
+      message:
+        `Chưa có mã danh bộ. Đọc NGUYÊN VĂN "doc_cho_khach" để xin mã danh bộ. ` +
+        `Khách đọc xong → gọi confirm_danh_bo với ĐÚNG dãy số nghe được.`,
+    });
   }
-  const idx = callState._danhBoGuided.groups.length;
-  return guidedPayload(callState, {
+
+  callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
+  return danhBoPayload(callState, {
     success: false,
     invalid_danh_bo: true,
-    doc_theo_nhom_co_dan: true,
-    buoc: idx + 1,
-    tong_so_buoc: GUIDED_GROUPS.length,
+    do_dai_hien_tai: length,
+    do_dai_yeu_cau: DANH_BO_LENGTH,
     doc_cho_khach:
-      idx === 0
-        ? `Dạ, mã danh bộ gồm ${docSoLuong(DANH_BO_LENGTH)} số, mình đọc từng phần ` +
-          `cho chính xác ạ: Quý Khách đọc giúp em ${GUIDED_LABELS[0]} của mã danh bộ ạ.`
-        : `Dạ, Quý Khách đọc giúp em ${GUIDED_LABELS[idx]} của mã danh bộ ạ.`,
+      `Dạ, em nghe được ${docSoLuong(length)} số, mà mã danh bộ cần đúng ` +
+      `${docSoLuong(DANH_BO_LENGTH)} số ạ. Quý Khách đọc lại đầy đủ, ` +
+      `chậm từng chữ số giúp em ạ.`,
     message:
-      `Chưa nhận được chữ số nào. Đang lấy mã theo nhóm ${GUIDED_GROUPS.join("+")}. ` +
-      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách đọc → gọi confirm_danh_bo với CHỈ các chữ số vừa nghe của nhóm đó.`,
+      `Nghe chưa đủ ${DANH_BO_LENGTH} số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
+      `Khách đọc lại → gọi confirm_danh_bo với ĐÚNG dãy số nghe được.`,
   });
 }
 
-function confirmRequestResponse(normalized) {
-  return JSON.stringify({
+function confirmRequestResponse(normalized, callState = {}) {
+  return danhBoPayload(callState, {
     success: true,
     cho_khach_xac_nhan: true,
     ma_danh_bo: normalized,
@@ -274,127 +215,287 @@ function confirmRequestResponse(normalized) {
     message:
       `Đã ghi nhận đủ ${DANH_BO_LENGTH} chữ số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
       `Khách xác nhận ĐÚNG → gọi tool tra cứu cần thiết, KHÔNG truyền ma_danh_bo ` +
-      `(hệ thống tự dùng số đã xác nhận). Khách báo SAI hoặc đọc dãy số khác → ` +
-      `gọi confirm_danh_bo lần nữa với dãy số mới.`,
+      `(hệ thống tự dùng số đã xác nhận). Khách đọc dãy số khác → gọi confirm_danh_bo ` +
+      `với dãy mới nghe được. Khách báo SAI mà KHÔNG đọc dãy mới → gọi NGAY ` +
+      `confirm_danh_bo với day_so RỖNG (hệ thống có phương án xử lý), KHÔNG tự bắt khách đọc lại.`,
   });
 }
 
-/** Chốt dãy 11 số: lưu callState + reset các bộ đếm/phiên đọc nhóm. */
+/** Chốt dãy 11 số: lưu callState + reset bộ đếm. */
 function acceptFullDanhBo(normalized, callState) {
   callState.danhBo = { value: normalized, confirmed: false };
-  callState._danhBoGuided = null;
-  callState._danhBoPartial = null;
-  callState._danhBoLastPrompt = null;
   callState.danhBoInvalidCount = 0;
-  return confirmRequestResponse(normalized);
+  // Khách tự đọc thẳng (không qua trọng tài) → KHÔNG cần gate xác nhận lời nói
+  // thật (xem resolveDanhBo) — chỉ áp dụng cho danh bộ do trọng tài suy luận.
+  callState._danhBoNeedsVerbalYes = false;
+  return confirmRequestResponse(normalized, callState);
 }
 
-/** Xử lý một lượt trong chế độ đọc theo nhóm có dẫn dắt. */
-function handleGuidedGroup(rawNormalized, suaNhomVuaRoi, callState) {
-  let normalized = rawNormalized;
-  const g = callState._danhBoGuided;
+// ─── [fix 19/07/2026 v2] CO-PILOT gpt-5.1 chạy ngầm từ lượt 1 ────────────────
 
-  // [fix 18/07/2026 v4] Cuộc E2yQmFyGFTDr4ZQu3cGiM: model set sua_nhom_vua_roi
-  // = true SAI ngữ cảnh — code vừa xin khách "đọc lại ba số cuối", khách đọc
-  // "431" (đúng nhóm 3), model lại đánh dấu là sửa nhóm trước → code xóa mất
-  // nhóm 2 đã đúng, quay ngược một bước, khách cúp máy ở 8/11 số.
-  // Cờ điều khiển do model set KHÔNG đáng tin (bài học chung của repo này) →
-  // chỉ chấp nhận khi lượt trước code vừa NHẬN XONG một nhóm; nếu lượt trước
-  // code đang xin đọc lại chính nhóm hiện tại thì khách rõ ràng đang đọc lại
-  // nhóm đó, không phải sửa nhóm cũ.
-  if (suaNhomVuaRoi && g.groups.length > 0) {
-    const doDaiNhomTruoc = GUIDED_GROUPS[g.groups.length - 1];
-    const doDaiNhomHienTai = GUIDED_GROUPS[g.groups.length];
-    // Bằng chứng mạnh nhất là ĐỘ DÀI: số khách vừa đọc khớp nhóm ĐANG CẦN mà
-    // không khớp nhóm trước → chắc chắn là nhóm hiện tại, cờ model set sai.
-    const roRangLaNhomHienTai =
-      normalized.length === doDaiNhomHienTai && doDaiNhomHienTai !== doDaiNhomTruoc;
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    if (roRangLaNhomHienTai) {
-      console.warn(
-        `[danh_bo][guided] Bỏ qua sua_nhom_vua_roi: "${normalized}" dài ${normalized.length} số ` +
-        `= đúng nhóm ${g.groups.length + 1} đang cần, không phải bản sửa của nhóm trước.`
-      );
-    } else if (g.lastAction === "accepted") {
-      const bo = g.groups.pop();
-      console.log(`[danh_bo][guided] Khách sửa nhóm ${g.groups.length + 1}: bỏ "${bo}"`);
-    } else {
-      console.warn(
-        `[danh_bo][guided] Bỏ qua sua_nhom_vua_roi (lastAction=${g.lastAction}) — ` +
-        `khách đang đọc lại nhóm ${g.groups.length + 1}, không phải sửa nhóm cũ.`
-      );
+/**
+ * Gom mọi quan sát hiện có trong callState rồi hỏi trọng tài gpt-5.1.
+ * waitTranscriptMs: transcript chạy song song, thường về TRỄ hơn tool call vài
+ * trăm ms → chờ một nhịp để quan sát của lượt vừa rồi kịp vào buffer.
+ */
+async function runDanhBoArbiter(callState, { waitTranscriptMs = 800 } = {}) {
+  await _sleep(waitTranscriptMs);
+  let verdict = null;
+  try {
+    verdict = await arbitrateDanhBo({
+      reads: callState._danhBoReads || [],
+      transcripts: (callState._danhBoTranscripts || []).map((t) => t.text),
+      knownDanhBo: callState.knownDanhBo || [],
+      rejected: callState._danhBoRejected || [],
+    });
+  } catch (e) {
+    console.warn(`[danh_bo][arbiter] Lỗi gọi trọng tài: ${e.message}`);
+  }
+  callState._logger?.addEvent?.(
+    "danh_bo_arbiter",
+    verdict ? JSON.stringify(verdict) : "arbiter_failed"
+  );
+  return verdict;
+}
+
+/**
+ * Fire-and-forget: chạy trọng tài SONG SONG trong lúc bot đang đọc lại 11 số
+ * cho khách (~8-10s) — khi khách trả lời "sai", ứng viên sửa đã có sẵn,
+ * không ai phải chờ. Khách nói "đúng" → verdict bị bỏ, vô hại.
+ */
+function fireBackgroundArbiter(callState) {
+  callState._danhBoBgVerdict = undefined; // undefined = đang chạy; null = fail
+  callState._danhBoBgPromise = runDanhBoArbiter(callState)
+    .then((v) => { callState._danhBoBgVerdict = v ?? null; return v; })
+    .catch(() => { callState._danhBoBgVerdict = null; return null; });
+}
+
+/** Lấy verdict nền; nếu còn đang chạy thì chờ thêm tối đa extraWaitMs. */
+async function awaitBackgroundVerdict(callState, extraWaitMs = 6000) {
+  if (callState._danhBoBgVerdict !== undefined) return callState._danhBoBgVerdict;
+  if (!callState._danhBoBgPromise) return null;
+  return Promise.race([callState._danhBoBgPromise, _sleep(extraWaitMs).then(() => null)]);
+}
+
+/** API nghiệp vụ có biết danh bộ này không. Lỗi mạng/timeout ≠ số sai → coi như có. */
+async function candidateExistsInApi(candidate, callState) {
+  try {
+    const r = await getThongTinKhachHang(candidate);
+    const khongKetNoiDuoc = ["TIMEOUT", "CONNECTION_ERROR", "INVALID_RESPONSE"].includes(r?.error_code);
+    const coKhach = r?.success && Array.isArray(r.data) && r.data.length > 0;
+    if (khongKetNoiDuoc) return true;
+    if (!coKhach) {
+      console.warn(`[danh_bo][arbiter] "${candidate}" không có trong hệ thống.`);
+      callState._logger?.addEvent?.("danh_bo_arbiter", `candidate ${candidate} không tồn tại trong hệ thống`);
     }
+    return coKhach;
+  } catch (e) {
+    console.warn(`[danh_bo][arbiter] Xác thực lỗi (${e.message}) — vẫn cho khách xác nhận.`);
+    return true;
   }
-
-  const idx = g.groups.length;
-  const expected = GUIDED_GROUPS[idx];
-  g.at = Date.now();
-
-  // Model hay GỘP cả các nhóm đã đọc trước vào day_so dù đã dặn chỉ gửi nhóm
-  // mới. Nhận diện bằng prefix rồi tự cắt — đừng bắt khách đọc lại vì lỗi của model.
-  const daCo = g.groups.join("");
-  if (daCo && normalized.length > expected && normalized.startsWith(daCo)) {
-    const cat = normalized.slice(daCo.length);
-    console.warn(`[danh_bo][guided] Model gộp cả nhóm cũ ("${normalized}") — cắt còn "${cat}".`);
-    normalized = cat;
-  }
-
-  // [fix 18/07/2026 v4] Khách LẶP LẠI y nguyên nhóm vừa đọc (cuộc trên: bot xin
-  // 3 số cuối, khách nói lại "ba hai bốn bảy thôi em") → không phải nhóm mới,
-  // cũng không phải lỗi: nhắc lại yêu cầu nhóm hiện tại, KHÔNG tính retry.
-  const nhomTruoc = g.groups[g.groups.length - 1];
-  if (nhomTruoc && normalized === nhomTruoc && normalized.length !== expected) {
-    console.log(`[danh_bo][guided] Khách lặp lại nhóm vừa đọc ("${normalized}") — nhắc lại yêu cầu.`);
-    g.lastAction = "repeat";
-    return guidedRepeatResponse(callState);
-  }
-
-  if (normalized.length !== expected) {
-    g.retry = (g.retry || 0) + 1;
-    g.lastAction = "retry";
-    callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
-    if (g.retry > GUIDED_MAX_RETRY) return danhBoEscalationResponse(callState);
-    return guidedRetryResponse(callState, normalized.length);
-  }
-
-  g.groups.push(normalized);
-  g.retry = 0;
-  g.lastAction = "accepted";
-
-  // Chưa hết nhóm → đọc lại nhóm vừa nhận + xin luôn nhóm kế (xác nhận ngầm).
-  if (g.groups.length < GUIDED_GROUPS.length) return guidedNextResponse(callState, normalized);
-
-  // Đủ 3 nhóm → ghép, chốt xác nhận tường minh toàn bộ 1 lần.
-  const joined = g.groups.join("");
-  console.log(`[danh_bo][guided] Ghép ${g.groups.join(" + ")} = "${joined}"`);
-  return acceptFullDanhBo(joined, callState);
 }
 
-// [fix 19/07/2026] Lấy danh bộ theo nhóm 4+4+3 ngay từ đầu (trước đó: chỉ
-// chuyển sang nhóm sau lần nghe sai đầu tiên — bước chuyển làm khách rối).
-function handleConfirmDanhBo({ day_so, sua_nhom_vua_roi } = {}, callState = {}) {
-  const normalized = normalizeDanhBo(day_so);
+/**
+ * Ứng viên trọng tài đạt chuẩn → lưu + trả câu đọc lại xác nhận. Không đạt → null.
+ * Chuẩn: đủ 11 số, đủ tin cậy, CHƯA từng bị khách bác, tồn tại trong API,
+ * và chưa quá 2 lần đề xuất (chống lặp vô hạn đoán-sai-đoán-lại).
+ *
+ * [fix 19/07/2026] do_tin_cay thiếu/sai kiểu → Number() ra NaN, mọi so sánh với
+ * NaN đều false → viết theo hướng CHẤP NHẬN để dữ liệu rác tự rơi vào nhánh loại.
+ */
+async function tryProposeArbiterCandidate(verdict, callState) {
+  const candidate = normalizeDanhBo(verdict?.ma_danh_bo);
+  const conf = Number(verdict?.do_tin_cay);
+  const duTinCay = Number.isFinite(conf) && conf >= ARBITER_MIN_CONFIDENCE;
+  if (candidate.length !== DANH_BO_LENGTH || !duTinCay) {
+    console.warn(`[danh_bo][arbiter] Không đủ tin cậy (candidate="${candidate}", conf=${conf}).`);
+    return null;
+  }
+  if ((callState._danhBoRejected || []).includes(candidate)) return null;
+  if ((callState._danhBoProposeCount || 0) >= 2) return null;
+  if (!(await candidateExistsInApi(candidate, callState))) return null;
 
-  // Phiên đọc nhóm quá cũ (khách bỏ giữa chừng) → hủy, quay về luồng thường.
-  const g = callState._danhBoGuided;
-  if (g && Date.now() - g.at > DANH_BO_PARTIAL_WINDOW_MS) {
-    console.log("[danh_bo][guided] Phiên đọc nhóm hết hạn — hủy.");
-    callState._danhBoGuided = null;
+  callState._danhBoProposeCount = (callState._danhBoProposeCount || 0) + 1;
+  console.log(`[danh_bo][arbiter] Ứng viên "${candidate}" (conf=${conf}) → đọc lại xác nhận.`);
+  callState.danhBo = { value: candidate, confirmed: false };
+  // [fix 19/07/2026] Cuộc E3JJPyzYujYdwQG048Bf7: danh bộ do trọng tài SUY LUẬN
+  // (không phải khách tự đọc trôi chảy) rủi ro cao hơn nếu sai → bắt buộc có
+  // LƯỢT KHÁCH THẬT chứa từ khẳng định mới cho tra cứu (gỡ cờ ở session-ws.js,
+  // chặn ở resolveDanhBo bên dưới).
+  callState._danhBoNeedsVerbalYes = true;
+  return confirmRequestResponse(candidate, callState);
+}
+
+/**
+ * [fix 19/07/2026 v2] TỰ SỬA khi tra cứu chết ở CUSTOMER_NOT_FOUND: số đang
+ * dùng (thường là bản realtime khách "xác nhận") không có trong hệ thống, NHƯNG
+ * co-pilot gpt-5.1 chạy nền có thể đã suy ra dãy KHÁC đúng hơn (vd realtime nghe
+ * 22273240168, transcript 23273240168 — sai 1 số). Thay vì báo khách "không tìm
+ * thấy, đọc lại", đọc lại ỨNG VIÊN co-pilot cho khách xác nhận.
+ * Trả về response string (đọc lại xác nhận) nếu có ứng viên khác hợp lệ; null nếu không.
+ */
+async function danhBoNotFoundSelfCorrect(callState) {
+  const current = callState.danhBo?.value || null;
+  const verdict = await awaitBackgroundVerdict(callState);
+  const candidate = normalizeDanhBo(verdict?.ma_danh_bo);
+  if (candidate.length !== DANH_BO_LENGTH || candidate === current) return null;
+  // Số hiện tại vừa NOT_FOUND → đẩy vào rejected để co-pilot không quay lại nó.
+  rejectStoredDanhBo(callState);
+  callState._logger?.addEvent?.(
+    "danh_bo_self_correct",
+    `NOT_FOUND "${current}" → thử ứng viên co-pilot "${candidate}"`
+  );
+  console.log(`[danh_bo][self-correct] NOT_FOUND "${current}" → đọc lại ứng viên "${candidate}".`);
+  // tryProposeArbiterCandidate tự xác thực API + set gate xác nhận lời nói.
+  return tryProposeArbiterCandidate(verdict, callState);
+}
+
+/** Ghi nhận dãy đã bị khách bác bỏ (để trọng tài né và không đề xuất lại). */
+function rejectStoredDanhBo(callState) {
+  const stored = callState.danhBo?.value;
+  if (!stored) return;
+  (callState._danhBoRejected ??= []);
+  if (!callState._danhBoRejected.includes(stored)) callState._danhBoRejected.push(stored);
+  callState.danhBo = null;
+}
+
+/** Khách báo sai, chưa có ứng viên thay thế → mời đọc lại toàn bộ. */
+function reReadRequestResponse(callState) {
+  return danhBoPayload(callState, {
+    success: false,
+    doc_lai: true,
+    doc_cho_khach:
+      `Dạ, em xin lỗi ạ. Quý Khách đọc lại giúp em toàn bộ ${docSoLuong(DANH_BO_LENGTH)} ` +
+      `chữ số mã danh bộ, chậm từng chữ số một ạ.`,
+    message:
+      `Số vừa đọc lại khách báo SAI. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
+      `Khách đọc lại → gọi confirm_danh_bo với ĐÚNG dãy số nghe được.`,
+  });
+}
+
+/**
+ * Hết lượt đọc giọng nói → mời BẤM PHÍM (DTMF). session-ws.js tự buffer phím
+ * bấm, đủ 11 số sẽ tự đọc lại xác nhận — model KHÔNG tham gia nghe phím.
+ */
+function danhBoDtmfInviteResponse(callState) {
+  callState._danhBoDtmfInvited = true;
+  return danhBoPayload(callState, {
+    success: false,
+    moi_bam_phim: true,
+    doc_cho_khach:
+      `Dạ, em xin lỗi Quý Khách, đường truyền bên em vẫn chưa nghe trọn vẹn được mã danh bộ ạ. ` +
+      `Quý Khách vui lòng BẤM ${docSoLuong(DANH_BO_LENGTH)} chữ số mã danh bộ trên bàn phím ` +
+      `điện thoại giúp em; nếu lỡ bấm nhầm, Quý Khách bấm phím SAO để nhập lại từ đầu ạ. ` +
+      `Trường hợp không tiện bấm phím, Quý Khách nói "chuyển máy" để gặp tổng đài viên hỗ trợ ạ.`,
+    message:
+      `Đã hết lượt đọc bằng giọng nói — chuyển sang BẤM PHÍM. Đọc NGUYÊN VĂN "doc_cho_khach" ` +
+      `rồi DỪNG chờ. Hệ thống TỰ ĐỘNG ghi nhận phím bấm — TUYỆT ĐỐI không tự đọc/đoán số từ ` +
+      `tiếng bấm phím, không gọi confirm_danh_bo trong lúc khách bấm. ` +
+      `Khách muốn chuyển máy → transfer_to_agent. Khách muốn nhân viên gọi lại → create_ticket.`,
+  });
+}
+
+// [fix 19/07/2026 v2] Luồng: đọc liền 11 số, tối đa DANH_BO_MAX_READS (3) lượt
+// giọng nói, co-pilot gpt-5.1 hỗ trợ ngầm từ lượt 1; hết lượt → mời bấm DTMF.
+async function handleConfirmDanhBo({ day_so } = {}, callState = {}) {
+  const normalized = normalizeDanhBo(day_so);
+  const stored = callState.danhBo?.value || null;
+  const storedConfirmed = !!callState.danhBo?.confirmed;
+  const saidNo = !!callState._danhBoCustomerSaidNo;
+  callState._danhBoCustomerSaidNo = false;
+
+  // ── Khách BÁO SAI số đã đọc lại mà KHÔNG kèm dãy mới ──────────────────────
+  // (model gọi với day_so rỗng, hoặc lặp lại đúng số cũ sau lượt khách phủ định)
+  const laBaoSai = stored && !storedConfirmed &&
+    (normalized.length === 0 || (normalized === stored && saidNo));
+  if (laBaoSai) {
+    rejectStoredDanhBo(callState);
+    // Co-pilot nền đã phân tích từ lúc bot đọc lại số → dùng ngay nếu đạt chuẩn.
+    const verdict = await awaitBackgroundVerdict(callState);
+    const resp = await tryProposeArbiterCandidate(verdict, callState);
+    if (resp) return resp;
+    if ((callState._danhBoReads?.length || 0) >= DANH_BO_MAX_READS) {
+      return danhBoDtmfInviteResponse(callState);
+    }
+    return reReadRequestResponse(callState);
   }
 
   if (normalized.length === 0) return invalidDanhBoResponse(0, callState);
 
-  // Khách đọc thẳng đủ 11 số (kể cả đang giữa chừng chế độ nhóm) → nhận luôn.
-  if (normalized.length === DANH_BO_LENGTH) return acceptFullDanhBo(normalized, callState);
+  // Lưu quan sát của model cho trọng tài (kể cả dãy sai độ dài).
+  const reads = (callState._danhBoReads ??= []);
+  reads.push(normalized);
+  // Khách đọc dãy MỚI thay cho số cũ chưa xác nhận → số cũ coi như bị bác.
+  if (stored && !storedConfirmed && normalized !== stored) rejectStoredDanhBo(callState);
 
-  // [fix 19/07/2026] Luôn ở chế độ dẫn dắt 4+4+3 ngay từ chữ số đầu tiên —
-  // không còn bước "nghe liền 11 số rồi mới chuyển nhóm" (chuyển giữa chừng
-  // làm khách rối, cuộc E2yeCWEsecOlWrgBM8CW1 cúp máy).
-  if (!callState._danhBoGuided) {
-    callState._danhBoGuided = { groups: [], at: Date.now(), retry: 0 };
-    callState._danhBoPartial = null;
+  // ── Đủ 11 số ──────────────────────────────────────────────────────────────
+  // [fix 19/07/2026 v3] LUÔN đọc lại NGAY bản realtime (không bao giờ chặn chờ
+  // trọng tài — gpt-5.1 reasoning có thể >12s), co-pilot LUÔN chạy nền. Số được
+  // sửa khi: khách báo sai (dùng verdict nền) hoặc tra cứu NOT_FOUND (tự sửa).
+  if (normalized.length === DANH_BO_LENGTH) {
+    const out = acceptFullDanhBo(normalized, callState);
+    fireBackgroundArbiter(callState);
+    return out;
   }
-  return handleGuidedGroup(normalized, !!sua_nhom_vua_roi, callState);
+
+  // ── Sai độ dài ────────────────────────────────────────────────────────────
+  // Đã mời bấm phím rồi mà vẫn quay lại đọc sai tiếp → không lặp, escalation.
+  if (callState._danhBoDtmfInvited) {
+    callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
+    return danhBoEscalationResponse(callState);
+  }
+  if (reads.length < DANH_BO_MAX_READS) {
+    // Từ lượt 2: thử trọng tài cứu (ghép các mảnh) trước khi bắt khách đọc lại.
+    if (reads.length >= 2) {
+      const verdict = await runDanhBoArbiter(callState);
+      const resp = await tryProposeArbiterCandidate(verdict, callState);
+      if (resp) return resp;
+    }
+    return invalidDanhBoResponse(normalized.length, callState);
+  }
+  // Hết lượt đọc → trọng tài lần cuối; vẫn không được → mời bấm phím.
+  callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
+  const verdict = await runDanhBoArbiter(callState);
+  const resp = await tryProposeArbiterCandidate(verdict, callState);
+  if (resp) return resp;
+  return danhBoDtmfInviteResponse(callState);
+}
+
+// ─── [fix 19/07/2026 v3] Co-pilot TỰ GOM số từ transcript (không chờ model) ───
+// Model mini không gom được số khách đọc qua NHIỀU HƠI (semantic VAD tạo response
+// mỗi hơi → model đáp "chưa đủ" ngay, không kịp tích lũy, thậm chí KHÔNG gọi
+// confirm_danh_bo). session-ws.js gọi hàm này sau khi khách NGƯNG đọc số một
+// nhịp: gpt-5.1 ghép mọi transcript hơi đọc thành 11 số, code đọc lại xác nhận.
+
+/**
+ * Chạy trọng tài trên MỌI quan sát hiện có; nếu ra ứng viên 11 số đủ tin cậy +
+ * hợp lệ → lưu callState + trả CÂU đọc lại xác nhận (chuỗi doc_cho_khach) cho
+ * session-ws đọc. Không đủ tin cậy → null (im lặng, không làm phiền khách).
+ * Chỉ chạy khi CHƯA có danh bộ đang chờ/đã xác nhận (không chen ngang model/DTMF).
+ */
+export async function proactiveAssembleDanhBo(callState = {}) {
+  if (callState.danhBo) return null; // đã có ứng viên (model/DTMF/trọng tài) → không chen
+  if (callState._danhBoDtmfInvited) return null; // đã mời bấm phím → chờ khách bấm, thôi gom giọng nói
+  callState._danhBoAssembleTries = (callState._danhBoAssembleTries || 0) + 1;
+  const verdict = await runDanhBoArbiter(callState, { waitTranscriptMs: 0 });
+  const resp = await tryProposeArbiterCandidate(verdict, callState);
+  if (resp) {
+    try { return JSON.parse(resp).doc_cho_khach || null; } catch { return null; }
+  }
+  // Đã gom nhiều nhịp mà gpt-5.1 vẫn không ghép nổi 11 số tin cậy → mời BẤM PHÍM
+  // (đọc trực tiếp, không phụ thuộc model có gọi tool hay không).
+  if (callState._danhBoAssembleTries >= 3 && !callState._danhBoDtmfInvited) {
+    try { return JSON.parse(danhBoDtmfInviteResponse(callState)).doc_cho_khach || null; } catch { return null; }
+  }
+  return null;
+}
+
+/** session-ws gọi khi khách PHỦ ĐỊNH số đang chờ xác nhận: đẩy vào rejected +
+ *  xoá để co-pilot / model được đề xuất dãy khác. */
+export function noteDanhBoRejected(callState = {}) {
+  rejectStoredDanhBo(callState);
 }
 
 /**
@@ -412,14 +513,24 @@ function resolveDanhBo(rawArg, callState = {}) {
     if (argNorm.length === DANH_BO_LENGTH && argNorm !== stored.value) {
       console.warn(`[danh_bo] Model gửi số MỚI "${argNorm}" khác số đã lưu "${stored.value}" → yêu cầu xác nhận lại.`);
       callState.danhBo = { value: argNorm, confirmed: false };
-      return { ok: false, error: confirmRequestResponse(argNorm) };
+      // Số mới do khách tự đọc trực tiếp (không qua trọng tài) — không cần gate.
+      callState._danhBoNeedsVerbalYes = false;
+      return { ok: false, error: confirmRequestResponse(argNorm, callState) };
     }
     // Arg sai độ dài / lệch → model chép sai số (đúng lỗi cuộc E2uhVdS9X...) →
     // BỎ QUA arg, dùng số đã lưu.
     if (argNorm && argNorm !== stored.value) {
       console.warn(`[danh_bo] Model gửi "${argNorm}" (${argNorm.length} số) khác số đã lưu "${stored.value}" — dùng số đã lưu.`);
     }
+    // [fix 19/07/2026] Danh bộ do TRỌNG TÀI đưa ra chưa có lượt khách THẬT xác
+    // nhận (xem tryProposeArbiterCandidate) → KHÔNG tin việc model tự gọi tool tra
+    // cứu là bằng chứng khách đã đồng ý. Chặn, bắt đọc lại xác nhận.
+    if (callState._danhBoNeedsVerbalYes) {
+      console.warn(`[danh_bo] Danh bộ trọng tài "${stored.value}" CHƯA có xác nhận lời nói thật từ khách — chặn tra cứu, đọc lại xác nhận.`);
+      return { ok: false, error: confirmRequestResponse(stored.value, callState) };
+    }
     stored.confirmed = true;
+    callState._danhBoLastPrompt = null; // đã chốt — tắt cơ chế re-assert bước danh bộ
     return { ok: true, value: stored.value };
   }
 
@@ -436,7 +547,7 @@ function resolveDanhBo(rawArg, callState = {}) {
 
   // Model gọi thẳng tool tra cứu, bỏ qua confirm_danh_bo → ép đọc lại xác nhận trước.
   callState.danhBo = { value: argNorm, confirmed: false };
-  return { ok: false, error: confirmRequestResponse(argNorm) };
+  return { ok: false, error: confirmRequestResponse(argNorm, callState) };
 }
 
 // function normalizeDanhBo(raw) {
@@ -511,6 +622,11 @@ async function fetchBilling(ma_danh_bo, ky, nam, callState) {
   }
 
   if (!r.success) {
+    // Danh bộ không có trong hệ thống → thử tự sửa bằng ứng viên co-pilot nền.
+    if (r.error_code === "CUSTOMER_NOT_FOUND") {
+      const corrected = await danhBoNotFoundSelfCorrect(callState);
+      if (corrected) return { ok: false, error: corrected };
+    }
     return {
       ok: false,
       error: JSON.stringify({
@@ -1128,7 +1244,7 @@ function handleEndCall({ ly_do } = {}) {
 export async function dispatchTool(name, args, callState = {}) {
   try {
     switch (name) {
-      case "confirm_danh_bo": return handleConfirmDanhBo(args, callState);
+      case "confirm_danh_bo": return await handleConfirmDanhBo(args, callState);
       case "get_bill": return await handleGetBill(args, callState);
       case "get_water_usage": return await handleGetWaterUsage(args, callState);
       case "get_payment_status": return await handleGetPaymentStatus(args, callState);

@@ -78,7 +78,11 @@ app.post(WEBHOOK_PATH, async (req, res) => {
   }
 
   const event = req.body;
-  log.info(`[Webhook] 1.Nhận event: ${event.type} (id: ${event.id})`);
+  // [debug 19/07/2026] Đo độ trễ webhook: nhiều cuộc lỗi "No session found" nghi
+  // do webhook đến chậm / OpenAI gửi lại khi cuộc SIP đã kết thúc (2 cặp cuộc lỗi
+  // cách nhau đúng 47s). created_at là unix seconds do OpenAI đóng dấu lúc phát event.
+  const _treGiay = event.created_at ? (Date.now() / 1000 - event.created_at).toFixed(1) : "?";
+  log.info(`[Webhook] 1.Nhận event: ${event.type} (id: ${event.id}, created_at=${event.created_at}, trễ=${_treGiay}s)`);
   // log.info(`[Webhook] 2.Nhận event: ${JSON.stringify(event)}`);
 
   // 2. Chỉ xử lý realtime.call.incoming

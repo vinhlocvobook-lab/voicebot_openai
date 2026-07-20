@@ -9,7 +9,7 @@
  */
 
 import WebSocket from "ws";
-import { dispatchTool } from "./tools.js";
+import { dispatchTool, danhBoSpoken, proactiveAssembleDanhBo, noteDanhBoRejected } from "./tools.js";
 import { runWithApiTrace } from "./api-trace.js";
 import { log } from "./logger.js";
 import { ConversationLogger } from "./conversation-logger.js";
@@ -79,7 +79,43 @@ export function openSessionWebSocket(callId, callOps) {
   // doi_tuong ngay lượt đầu, cuộc E2u70cuT94h0rwpLAKOyA).
   // knownDanhBo: danh bộ hệ thống tra được theo SĐT — resolveDanhBo tin ngay,
   // không ép vòng xác nhận confirm_danh_bo (fix cuộc E2uhVdS9X4mVBoXs0uYMP).
-  const _toolCallState = { knownDanhBo: callOps.knownDanhBo || [] };
+  // _logger: cho tools.js ghi event (vd kết quả trọng tài danh bộ) vào timeline.
+  const _toolCallState = { knownDanhBo: callOps.knownDanhBo || [], _logger: logger };
+
+  // [fix 19/07/2026] Nhận diện lượt khách nói có vẻ đang đọc CHỮ SỐ (buffer cho
+  // trọng tài danh bộ trong tools.js). Chỉ là bộ lọc thô — việc bóc chữ số thật
+  // do model trọng tài làm. NGOẠI LỆ có chủ đích của quy ước "transcript chỉ để
+  // debug": transcript chỉ dùng làm dữ liệu fallback, kết quả luôn phải qua
+  // xác thực API + khách xác nhận lại từng số.
+  // [fix 19/07/2026 v2] Cuộc E3IwDpl3qXKJ2hoRtHHRU: regex cũ chỉ khớp số đọc
+  // TÁCH TỪNG CHỮ ("hai hai không..."), bỏ sót transcript ASR phiên âm thành
+  // CHUỖI SỐ LIỀN ("232474431") — mỗi ký tự số phải theo sau bởi khoảng trắng/
+  // cuối chuỗi mới tính, nên "232474431" chỉ khớp đúng 1 (chữ số cuối cùng),
+  // dưới ngưỡng 3 → bị loại khỏi buffer, trọng tài mất mất 1 quan sát tốt.
+  // Thêm nhánh đếm SỐ KÝ TỰ CHỮ SỐ trong chuỗi (không cần khoảng trắng ngăn).
+  const _DIGIT_WORD_RE = /(?:không|một|mốt|hai|ba|bốn|tư|năm|lăm|sáu|bảy|tám|chín|mươi|mười)(?=\s|$|[,.!?])/gi;
+  const _looksLikeDigitTurn = (t) => {
+    const s = String(t);
+    const digitChars = (s.match(/\d/g) || []).length; // vd "232474431" → 9
+    if (digitChars >= 3) return true;
+    return (s.match(_DIGIT_WORD_RE) || []).length >= 3; // vd "hai hai không..."
+  };
+
+  // [fix 19/07/2026] Cuộc E3JJPyzYujYdwQG048Bf7: sau khi TRỌNG TÀI đưa ra ứng
+  // viên danh bộ, model bỏ qua hẳn việc đọc lại xác nhận, tự nói câu khác rồi
+  // GỌI THẲNG tool tra cứu — không có lượt khách nào xác nhận ở giữa. Nếu
+  // trọng tài đoán SAI (dù qua được xác thực API vì trùng số của khách khác),
+  // hệ thống sẽ đọc thông tin người khác cho người gọi nghe. Vì model không
+  // đáng tin ở bước này, danh bộ do trọng tài đưa ra (callState._danhBoNeedsVerbalYes)
+  // CHỈ được coi là đã xác nhận khi có MỘT LƯỢT KHÁCH THẬT chứa từ khẳng định —
+  // resolveDanhBo (tools.js) chặn tra cứu tới khi cờ này được gỡ ở đây.
+  const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bừ\b|\bừm\b|\bờ\b|\bok\b|\boke\b|\bđược\b|yes)/i;
+  const _PHU_DINH_RE = /(không đúng|chưa đúng|sai rồi|\bsai\b|chưa phải|không phải)/i;
+  const _isAffirmative = (t) => {
+    const s = String(t);
+    if (_PHU_DINH_RE.test(s)) return false;
+    return _KHANG_DINH_RE.test(s);
+  };
 
   // [fix 18/07/2026 v5] Cuộc E2yXyLXpaZz66DmCfxQBi: hủy response do prompt echo
   // để lại câu nói DỞ của bot trong context ("...đọc giúp em nguyên văn: Hai
@@ -89,11 +125,11 @@ export function openSessionWebSocket(callId, callOps) {
   // đọc lại ĐÚNG câu của bước hiện tại, kéo cuộc gọi về đúng nhịp state machine.
   const _reAssertDanhBoStep = (lyDo) => {
     const _prompt = _toolCallState._danhBoLastPrompt;
-    if (!_toolCallState._danhBoGuided || !_prompt) return;
+    if (!_prompt) return;
     if (_hungUp || _transferred) return;
     setTimeout(() => {
       if (_hungUp || _transferred || _responseActive) return;
-      if (!_toolCallState._danhBoGuided) return; // đã xong nhóm trong lúc chờ
+      if (!_toolCallState._danhBoLastPrompt) return; // đã chốt danh bộ trong lúc chờ
       try {
         _pendingCodeResponse = true;
         ws.send(JSON.stringify({
@@ -110,6 +146,68 @@ export function openSessionWebSocket(callId, callOps) {
         log.warn(`[WS][${callId}] không gửi được response.create kéo lại bước danh bộ: `, e.message);
       }
     }, 900); // chờ cancel hoàn tất (response.done về) rồi mới tạo response mới
+  };
+
+  // [fix 19/07/2026 v2] Ép bot đọc NGUYÊN VĂN một câu do code tạo (dùng cho
+  // xác nhận danh bộ bấm phím DTMF). Khách bấm phím trong lúc bot còn đang nói
+  // (response active) → gửi response.create ngay sẽ lỗi
+  // conversation_already_has_active_response → retry chờ response.done.
+  const _speakVerbatim = (text, tag, attempt = 0) => {
+    if (_hungUp || _transferred) return;
+    if (_responseActive) {
+      if (attempt < 8) setTimeout(() => _speakVerbatim(text, tag, attempt + 1), 1200);
+      else logger.addEvent("speak_verbatim_dropped", `${tag} — response active quá lâu`);
+      return;
+    }
+    try {
+      _pendingCodeResponse = true;
+      ws.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại: \"" + text + "\"",
+        },
+      }));
+      logger.addEvent("response_create_sent", tag);
+    } catch (e) {
+      log.warn(`[WS][${callId}] không gửi được response.create (${tag}): `, e.message);
+    }
+  };
+
+  // [fix 19/07/2026 v3] CO-PILOT tự gom số từ transcript khi model mini KHÔNG
+  // gom được số khách đọc qua nhiều hơi (semantic VAD tạo response mỗi hơi →
+  // model đáp "chưa đủ" ngay, không gọi confirm_danh_bo → mọi logic tools.js
+  // không chạy). Sau khi khách NGƯNG đọc số ~3s, nhờ gpt-5.1 ghép các hơi
+  // transcript đã buffer thành 11 số rồi tự đọc lại xác nhận. Debounce reset
+  // mỗi hơi số mới → chỉ chạy sau khi khách thật sự dừng. Có khoảng nghỉ tối
+  // thiểu giữa 2 lần chạy để không spam gpt-5.1.
+  const _DANHBO_ASSEMBLE_DEBOUNCE_MS = 3000;
+  const _DANHBO_ASSEMBLE_MIN_GAP_MS = 6000;
+  const _maybeAssembleDanhBo = () => {
+    clearTimeout(_toolCallState._danhBoAssembleTimer);
+    _toolCallState._danhBoAssembleTimer = setTimeout(async () => {
+      if (_hungUp || _transferred) return;
+      // Đã có ứng viên (model/DTMF/trọng tài) đang chờ hoặc đã xác nhận → không chen.
+      if (_toolCallState.danhBo) return;
+      if (_toolCallState._danhBoAssembleRunning) return;
+      const _now = Date.now();
+      if (_toolCallState._danhBoAssembleLastAt && _now - _toolCallState._danhBoAssembleLastAt < _DANHBO_ASSEMBLE_MIN_GAP_MS) return;
+      _toolCallState._danhBoAssembleRunning = true;
+      _toolCallState._danhBoAssembleLastAt = _now;
+      try {
+        const prompt = await proactiveAssembleDanhBo(_toolCallState);
+        if (prompt && !_toolCallState.danhBo?.confirmed) {
+          _toolCallState._danhBoLastPrompt = prompt;
+          logger.addEvent("danh_bo_proactive_assemble", prompt);
+          console.log(`[${callId}]:`, "danh_bo_proactive_assemble", prompt);
+          _speakVerbatim(prompt, "danh_bo_proactive_assemble");
+        }
+      } catch (e) {
+        log.warn(`[WS][${callId}] proactiveAssembleDanhBo lỗi: `, e.message);
+      } finally {
+        _toolCallState._danhBoAssembleRunning = false;
+      }
+    }, _DANHBO_ASSEMBLE_DEBOUNCE_MS);
   };
 
   // Tránh save() 2 lần (close + error retry)
@@ -129,6 +227,22 @@ export function openSessionWebSocket(callId, callOps) {
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
+  });
+
+  // [debug 19/07/2026] WS handshake bị từ chối (vd 404) — bắt STATUS + BODY của
+  // response để biết lý do thật từ OpenAI (call not found / already attached /
+  // config invalid...). Trước đây chỉ log "Unexpected server response: 404".
+  ws.on("unexpected-response", (_req, res) => {
+    let body = "";
+    res.on("data", (c) => { body += c; });
+    res.on("end", () => {
+      const msg = `HTTP ${res.statusCode} | headers=${JSON.stringify({
+        "x-request-id": res.headers["x-request-id"],
+        "openai-project": res.headers["openai-project"],
+      })} | body=${body.slice(0, 500)}`;
+      log.error(`[WS][${callId}] Handshake bị từ chối: ${msg}`);
+      logger.addError("ws_handshake_rejected", msg);
+    });
   });
 
   ws.on("open", () => {
@@ -384,9 +498,47 @@ export function openSessionWebSocket(callId, callOps) {
         break;
       }
 
+      // ── [fix 19/07/2026 v2] Nhập mã danh bộ bằng BẤM PHÍM (DTMF) ─────────
+      // Nhận phím BẤT KỲ LÚC NÀO trong cuộc gọi (không chờ tới lúc bot mời bấm):
+      // khách sốt ruột bấm luôn cũng được. Đủ 11 số → code tự lưu vào callState
+      // + ép bot đọc lại xác nhận. Phím số là dữ liệu CHÍNH XÁC tuyệt đối (không
+      // qua "tai" model) nên KHÔNG cần gate xác nhận lời nói của trọng tài —
+      // chỉ cần vòng xác nhận thường.
       case "input_audio_buffer.dtmf_event_received": {
-        const digit = event.event;
+        const digit = String(event.event ?? "").trim();
         console.log("DTMF received:", digit);
+        logger.addEvent("dtmf_received", digit);
+
+        const _now = Date.now();
+        // Phím cách nhau quá lâu → coi như khách bắt đầu nhập dãy mới.
+        if (_toolCallState._dtmfLastAt && _now - _toolCallState._dtmfLastAt > 15000) {
+          _toolCallState._dtmfBuffer = "";
+        }
+        _toolCallState._dtmfLastAt = _now;
+
+        if (digit === "*") {
+          // Bấm sao → xoá nhập lại từ đầu.
+          _toolCallState._dtmfBuffer = "";
+          logger.addEvent("dtmf_buffer_cleared", "khách bấm *");
+          break;
+        }
+        if (!/^\d$/.test(digit)) break; // '#' và phím khác: bỏ qua
+
+        _toolCallState._dtmfBuffer = (_toolCallState._dtmfBuffer || "") + digit;
+        if (_toolCallState._dtmfBuffer.length < 11) break;
+
+        const _dtmfValue = _toolCallState._dtmfBuffer.slice(0, 11);
+        _toolCallState._dtmfBuffer = "";
+        _toolCallState.danhBo = { value: _dtmfValue, confirmed: false };
+        _toolCallState._danhBoNeedsVerbalYes = false;
+        _toolCallState._danhBoCustomerSaidNo = false;
+        const _dtmfPrompt =
+          `Dạ, em nhận được mã danh bộ Quý Khách vừa bấm là: ${danhBoSpoken(_dtmfValue)}. ` +
+          `Quý Khách xác nhận giúp em có đúng không ạ?`;
+        _toolCallState._danhBoLastPrompt = _dtmfPrompt;
+        logger.addEvent("dtmf_danh_bo_complete", _dtmfValue);
+        console.log(`[${callId}]:`, "dtmf_danh_bo_complete", _dtmfValue);
+        _speakVerbatim(_dtmfPrompt, "dtmf_danh_bo_confirm");
         break;
       }
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
@@ -428,6 +580,45 @@ export function openSessionWebSocket(callId, callOps) {
           log.info(`[WS][${callId}] [KH nói]: ${khText}`);
           logger.addCustomerTurn(khText);
           _unansweredRealTurn = true; // [fix 18/07/2026 v2] khách vừa nói thật — chưa được trả lời
+
+          // [fix 19/07/2026] Buffer transcript các lượt có chữ số cho trọng tài
+          // danh bộ (tools.js đọc callState._danhBoTranscripts khi 2 lần đọc fail).
+          if (_looksLikeDigitTurn(khText)) {
+            (_toolCallState._danhBoTranscripts ??= []).push({ at: Date.now(), text: khText });
+            if (_toolCallState._danhBoTranscripts.length > 10) _toolCallState._danhBoTranscripts.shift();
+            // [fix 19/07/2026 v3] Model mini có thể KHÔNG gọi confirm_danh_bo khi
+            // khách đọc tách hơi → co-pilot tự gom từ transcript sau khi khách ngưng.
+            _maybeAssembleDanhBo();
+          }
+
+          // [fix 19/07/2026] Gỡ cờ chờ xác nhận lời nói cho danh bộ trọng tài —
+          // CHỈ gỡ khi lượt khách này thật sự chứa từ khẳng định (không phải do
+          // model tự gọi tool tra cứu). Xem giải thích ở khai báo _isAffirmative.
+          if (_toolCallState._danhBoNeedsVerbalYes && _isAffirmative(khText)) {
+            _toolCallState._danhBoNeedsVerbalYes = false;
+            if (_toolCallState.danhBo) _toolCallState.danhBo.confirmed = true;
+            logger.addEvent("danh_bo_verbal_confirm", khText);
+            console.log(`[${callId}]:`, "danh_bo_verbal_confirm", khText);
+          }
+
+          // [fix 19/07/2026 v2] Khách PHỦ ĐỊNH số bot vừa đọc lại (đang chờ xác
+          // nhận) → cắm cờ cho tools.js: lượt confirm_danh_bo kế tiếp mà model
+          // lặp lại đúng số cũ (không có dãy mới) sẽ được hiểu là "khách báo
+          // sai" → dùng ứng viên co-pilot gpt-5.1 đã tính sẵn ở nền. Cờ chỉ là
+          // TÍN HIỆU chọn nhánh xử lý — số thay thế luôn phải qua đọc lại xác
+          // nhận + gate lời nói như thường (không nới quy ước transcript).
+          if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed && _PHU_DINH_RE.test(khText)) {
+            _toolCallState._danhBoCustomerSaidNo = true;
+            logger.addEvent("danh_bo_customer_said_no", khText);
+            console.log(`[${callId}]:`, "danh_bo_customer_said_no", khText);
+            // [fix 19/07/2026 v3] Nếu số đang chờ là do CO-PILOT tự gom (model
+            // không tham gia), khách báo sai mà model cũng không gọi tool → tự
+            // bác số này để co-pilot được đề xuất dãy khác ở lần khách đọc/ngưng kế.
+            if (_toolCallState._danhBoNeedsVerbalYes) {
+              noteDanhBoRejected(_toolCallState);
+              logger.addEvent("danh_bo_rejected_proactive", "khách phủ định số co-pilot đề xuất");
+            }
+          }
         } else if (_isPromptEcho) {
           log.info(`[WS][${callId}] [KH nói - prompt echo, bỏ qua] || ${JSON.stringify({ khText, _isPromptEcho, _nk, _np, _sig })}`);
 

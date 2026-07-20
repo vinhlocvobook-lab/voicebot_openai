@@ -37,14 +37,18 @@ export async function acceptCall(callId, customerContext = "") {
     audio: {
       input: {
         transcription: {
+          // [fix 19/07/2026] KHÔNG dùng "gpt-realtime-whisper" ở đây: model đó chỉ
+          // cho session transcription riêng (type: "transcription"), không hợp lệ
+          // trong session realtime/SIP → accept vẫn 200 nhưng session không khởi
+          // tạo được, WS connect 404 cả 4 lần retry (cuộc rtc_u2_E3ChapqNtmYn1YsIVbKOs).
           model: "gpt-4o-mini-transcribe",
           language: "vi",
           // [fix 08/07/2026] Gợi ý ngữ cảnh để giảm transcribe sai ngôn ngữ
           // (vd "bye bye" → "拜拜"). LƯU Ý: transcript chỉ dùng để log/debug,
           // KHÔNG dùng làm căn cứ xử lý nghiệp vụ (model nghe audio trực tiếp).
           prompt: "Cuộc gọi tổng đài chăm sóc khách hàng công ty cấp nước tại TP.HCM, "
-                + "toàn bộ bằng tiếng Việt. Có thể chứa mã danh bộ 11 chữ số, số tiền, "
-                + "tên thủ tục: định mức nước, lắp đặt đồng hồ, sang tên, nâng dời đồng hồ.",
+            + "toàn bộ bằng tiếng Việt. Có thể chứa mã danh bộ 11 chữ số, số tiền, "
+            + "tên thủ tục: định mức nước, lắp đặt đồng hồ, sang tên, nâng dời đồng hồ.",
         },
       },
     },

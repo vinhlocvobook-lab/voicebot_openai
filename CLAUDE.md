@@ -22,6 +22,7 @@ Cần `.env` (xem `.env.example`); thiếu `OPENAI_API_KEY` server không chạy
 | `session-ws.js` | **Trái tim runtime.** Mở WebSocket, gửi `session.update` (VAD) + `response.create` (chào), bắt function call từ `response.done`, route kết quả, ghi transcript, xử lý `end_call`/`transfer_to_agent`, lưu log khi đóng. |
 | `tools.js` | Handler từng function call + `dispatchTool(name, args, callState)` — `callState` là state theo cuộc gọi do session-ws truyền (vd guard "đã hỏi đối tượng"). `normalizeDanhBo()` bỏ mọi ký tự không phải số. |
 | `api.js` | Client REST gọi `docs/api.php`. Bóc response 2 lớp (gateway + nghiệp vụ), có timeout. **Nguồn dữ liệu hiện hành.** |
+| `danh-bo-arbiter.js` | Trọng tài mã danh bộ: 2 lần đọc chưa chốt → gửi mọi quan sát (dãy model nghe + transcript + danh bộ theo SĐT) cho model mạnh (`DANH_BO_ARBITER_MODEL`, mặc định gpt-5.1) suy ra dãy 11 số khả dĩ nhất. |
 | `system-prompt.js` | `SYSTEM_PROMPT` (persona "Em"/"Quý Khách") + mảng `TOOLS` (JSON schema gửi OpenAI). |
 | `conversation-logger.js` | `ConversationLogger`: transcript 2 chiều, tool call, token usage, chi phí → `conversation_summary/yyyy/mm/dd/{tel}_{callId}.json`. |
 | `pricing.js` | Tính cost từ token (`calcRealtimeCost`, `calcChatCost`) theo `openai_pricing.json`. |
@@ -42,6 +43,19 @@ Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
 Tool state — `confirm_danh_bo`: ghi nhận + đếm + lưu mã danh bộ vào `callState`
 (fix 18/07/2026, xem `docs/fix/fix_confirm_danh_bo_20260718.md`); các tool tra
 cứu dùng số đã lưu qua `resolveDanhBo`, KHÔNG tin `ma_danh_bo` model truyền lại.
+Trọng tài gpt-5.1 chạy như CO-PILOT NGẦM, LUÔN chạy nền (không bao giờ chặn bot
+đọc lại — timeout 20s): bot đọc lại NGAY bản realtime, khách báo sai/tra cứu
+NOT_FOUND thì thay bằng ứng viên nền. Model mini không gom được số khách đọc qua
+NHIỀU HƠI → session-ws tự gọi `proactiveAssembleDanhBo` sau khi khách ngưng ~3s,
+gpt-5.1 ghép transcript thành 11 số rồi code tự đọc lại xác nhận (không chờ
+model gọi tool). Hết 3 lượt / gom ≥3 nhịp không ra → mời BẤM PHÍM DTMF
+(session-ws.js tự buffer, đủ 11 số tự đọc lại xác nhận) (fix 19/07/2026, xem
+`docs/fix/fix_danh_bo_trong_tai_20260719.md` và
+`docs/fix/fix_danh_bo_copilot_dtmf_20260719.md`).
+Danh bộ do trọng tài đưa ra CHỈ được dùng để tra cứu sau khi có LƯỢT KHÁCH THẬT
+xác nhận (gate `_danhBoNeedsVerbalYes` — model gọi thẳng tool tra cứu KHÔNG
+được tính là bằng chứng đồng ý, đã có cuộc gọi thật bỏ qua bước đọc lại). Số
+bấm DTMF không qua "tai" model → không cần gate, chỉ cần xác nhận thường.
 
 Tool action — `transfer_to_agent`, `end_call`: handler chỉ trả confirmation;
 hành động thật (REFER / hangup) thực thi trong `session-ws.js` dựa trên field
