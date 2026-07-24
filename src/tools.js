@@ -59,10 +59,47 @@ function docTienVN(n) {
   return (num < 0 ? "âm " : "") + parts.join(" ") + " đồng";
 }
 
+// Bỏ dấu tiếng Việt + hạ chữ thường (để so khớp chữ số đọc bằng lời).
+function _deAccent(s) {
+  return String(s ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d").replace(/Đ/g, "D")
+    .toLowerCase();
+}
+
+// Chữ số đọc bằng lời tiếng Việt (đã bỏ dấu) → chữ số.
+const _VI_DIGIT_WORDS = {
+  khong: "0", linh: "0", le: "0",
+  mot: "1", hai: "2", ba: "3",
+  bon: "4", tu: "4", nam: "5", lam: "5",
+  sau: "6", bay: "7", tam: "8", chin: "9",
+};
+
+/**
+ * Ghép chuỗi ĐỌC THÀNH CHỮ ("Hai - Hai - Không...") thành chữ số. CHỈ nhận khi
+ * MỌI token đều là chữ số đọc bằng lời — có 1 token lạ (câu chữ thường) → trả ""
+ * để không ghép nhầm số từ câu nói bình thường.
+ */
+function viDigitsFromWords(raw) {
+  const tokens = _deAccent(raw).split(/[^a-z]+/).filter(Boolean);
+  if (tokens.length === 0) return "";
+  let out = "";
+  for (const t of tokens) {
+    if (!(t in _VI_DIGIT_WORDS)) return "";
+    out += _VI_DIGIT_WORDS[t];
+  }
+  return out;
+}
+
 /**
  * Chuẩn hoá mã danh bộ trước khi gọi API:
  * AI thường đọc số kèm dấu gạch ngang / khoảng trắng (vd "1-5-1-2-...").
  * Bỏ mọi ký tự không phải chữ số.
+ * [fix 23/07/2026] Model đôi khi echo lại bản ĐỌC THÀNH CHỮ ("Hai - Hai -
+ * Không...") vào day_so — strip ký tự sẽ ra RỖNG và bị hiểu nhầm là "khách báo
+ * sai" (cuộc E4jVVW..., danh bộ đúng 22023251775 bị đẩy vào rejected → deadlock).
+ * Rỗng mà chuỗi là dãy chữ số đọc bằng lời → ghép lại từ chữ.
  */
 function normalizeDanhBo(raw) {
   console.log("==========[normalizeDanhBo]==================")
@@ -70,6 +107,12 @@ function normalizeDanhBo(raw) {
 
   // Bảo vệ code nếu raw là null/undefined, sau đó xóa sạch ký tự không phải số
   let normalized = String(raw ?? "").replace(/\D/g, "");
+
+  // Không có chữ số ASCII nào → thử ghép từ chữ số đọc bằng lời tiếng Việt.
+  if (normalized.length === 0) {
+    const fromWords = viDigitsFromWords(raw);
+    if (fromWords) normalized = fromWords;
+  }
 
   console.log("normalized:", normalized);
   return normalized;
@@ -218,6 +261,25 @@ function confirmRequestResponse(normalized, callState = {}) {
       `(hệ thống tự dùng số đã xác nhận). Khách đọc dãy số khác → gọi confirm_danh_bo ` +
       `với dãy mới nghe được. Khách báo SAI mà KHÔNG đọc dãy mới → gọi NGAY ` +
       `confirm_danh_bo với day_so RỖNG (hệ thống có phương án xử lý), KHÔNG tự bắt khách đọc lại.`,
+  });
+}
+
+/**
+ * [fix 23/07/2026] Danh bộ ĐÃ xác nhận nhưng model vẫn gọi confirm_danh_bo với
+ * dãy rác (cuộc E4jpBWc...: khách đã "đúng đó", model re-transcribe ra 9 số sai
+ * → hệ thống bắt đọc lại, khởi động lại vòng danh bộ, khách cúp máy). Nhắc model
+ * dùng số đã xác nhận đi tra cứu, KHÔNG hỏi/đọc lại số.
+ */
+function danhBoAlreadyConfirmedResponse(callState) {
+  return danhBoPayload(callState, {
+    success: true,
+    da_xac_nhan: true,
+    ma_danh_bo: callState.danhBo?.value || null,
+    message:
+      `Mã danh bộ ĐÃ được Quý Khách xác nhận — KHÔNG hỏi lại, KHÔNG đọc lại số, ` +
+      `KHÔNG gọi confirm_danh_bo nữa. Gọi NGAY tool tra cứu mà Quý Khách cần ` +
+      `(get_bill / get_payment_status / get_water_usage / get_outages / create_ticket...), ` +
+      `KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.`,
   });
 }
 
@@ -397,19 +459,69 @@ function danhBoDtmfInviteResponse(callState) {
   });
 }
 
+/**
+ * [fix 23/07/2026] Lấy dãy 11 số từ LƯỢT transcript ĐƠN gần nhất (model phiên âm
+ * riêng — theo CLAUDE.md đáng tin hơn "tai" model thoại). Chỉ nhận khi một lượt
+ * đơn ra ĐÚNG 11 số; lượt đọc tách hơi (mỗi lượt <11 số) → để trọng tài ghép.
+ */
+function latestTranscriptDanhBo(callState = {}) {
+  const arr = callState._danhBoTranscripts || [];
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const d = normalizeDanhBo(arr[i]?.text);
+    if (d.length === DANH_BO_LENGTH) return d;
+  }
+  return "";
+}
+
 // [fix 19/07/2026 v2] Luồng: đọc liền 11 số, tối đa DANH_BO_MAX_READS (3) lượt
 // giọng nói, co-pilot gpt-5.1 hỗ trợ ngầm từ lượt 1; hết lượt → mời bấm DTMF.
 async function handleConfirmDanhBo({ day_so } = {}, callState = {}) {
-  const normalized = normalizeDanhBo(day_so);
+
+  console.log("==========[handleConfirmDanhBo]==================")
+  console.log("day_so:", day_so);
+  console.log("callState:", callState);
+
+  // [fix 23/07/2026] Model mini chép mã danh bộ qua "tai" rất hay SAI (đảo/rơi
+  // số: cuộc E4k6V nghe "12023251757", E4k8t nghe "3213251775" trong khi khách
+  // đọc đúng 22023251775). Nếu LƯỢT transcript đơn gần nhất ra đúng 11 số → dùng
+  // nó thay day_so model. Giữ lại bản model nghe cho trọng tài đối chiếu.
+  const modelHeard = normalizeDanhBo(day_so);
+  const txDanhBo = latestTranscriptDanhBo(callState);
+  const normalized = (txDanhBo && txDanhBo !== modelHeard) ? txDanhBo : modelHeard;
+  if (normalized !== modelHeard) {
+    console.warn(`[danh_bo] Ưu tiên transcript "${normalized}" thay cho day_so model "${modelHeard}".`);
+  }
   const stored = callState.danhBo?.value || null;
   const storedConfirmed = !!callState.danhBo?.confirmed;
   const saidNo = !!callState._danhBoCustomerSaidNo;
   callState._danhBoCustomerSaidNo = false;
 
+  // ── Danh bộ ĐÃ XÁC NHẬN mà model vẫn gọi confirm_danh_bo ───────────────────
+  // [fix 23/07/2026] Chỉ dãy 11 số MỚI khác hẳn mới coi là khách ĐỔI danh bộ
+  // (rơi xuống nhánh chuẩn bên dưới → acceptFullDanhBo, xác nhận lại). Còn lại
+  // (rỗng / trùng số cũ / sai độ dài do model tự re-transcribe) → KHÔNG khởi động
+  // lại vòng danh bộ, giữ nguyên số đã chốt, nhắc model đi tra cứu.
+  if (storedConfirmed && stored &&
+    !(normalized.length === DANH_BO_LENGTH && normalized !== stored)) {
+    return danhBoAlreadyConfirmedResponse(callState);
+  }
+
+  // ── Model ECHO đúng số ĐANG CHỜ xác nhận (khách CHƯA phủ định) ─────────────
+  // [fix 23/07/2026] Co-pilot vừa đọc lại số cho khách; model mini thường tự gọi
+  // confirm_danh_bo lặp lại chính số đó (bằng chữ số hoặc bản đọc thành chữ).
+  // Đây KHÔNG phải khách báo sai → giữ nguyên trạng thái chờ (kể cả gate
+  // _danhBoNeedsVerbalYes của trọng tài), không reset cờ/bộ đếm, không ghi nhiễu
+  // vào reads. Trả lại đúng câu đang chờ để model khỏi bịa câu khác.
+  if (stored && !storedConfirmed && !saidNo && normalized === stored) {
+    return confirmRequestResponse(stored, callState);
+  }
+
   // ── Khách BÁO SAI số đã đọc lại mà KHÔNG kèm dãy mới ──────────────────────
   // (model gọi với day_so rỗng, hoặc lặp lại đúng số cũ sau lượt khách phủ định)
-  const laBaoSai = stored && !storedConfirmed &&
-    (normalized.length === 0 || (normalized === stored && saidNo));
+  // [fix 23/07/2026] BẮT BUỘC có cờ saidNo (khách phủ định thật trong transcript)
+  // — day_so rỗng do normalize xoá bản đọc-thành-chữ KHÔNG được tính là báo sai.
+  const laBaoSai = stored && !storedConfirmed && saidNo &&
+    (normalized.length === 0 || normalized === stored);
   if (laBaoSai) {
     rejectStoredDanhBo(callState);
     // Co-pilot nền đã phân tích từ lúc bot đọc lại số → dùng ngay nếu đạt chuẩn.
@@ -426,9 +538,18 @@ async function handleConfirmDanhBo({ day_so } = {}, callState = {}) {
 
   // Lưu quan sát của model cho trọng tài (kể cả dãy sai độ dài).
   const reads = (callState._danhBoReads ??= []);
-  reads.push(normalized);
+  if (modelHeard) reads.push(modelHeard);
   // Khách đọc dãy MỚI thay cho số cũ chưa xác nhận → số cũ coi như bị bác.
-  if (stored && !storedConfirmed && normalized !== stored) rejectStoredDanhBo(callState);
+  // [fix 23/07/2026] KHÔNG bác dựa trên "tai" model: model mini hay chép sai/thiếu
+  // số trong lúc khách đọc LẠI chính số đang chờ (cuộc E4k8t: nghe 10 số
+  // "3213251775" trong khi khách đọc đúng 22023251775 → suýt bác số đúng, deadlock).
+  //  - Ứng viên TRỌNG TÀI (đối chiếu transcript) chỉ bị bác khi KHÁCH báo sai (saidNo).
+  //  - Chỉ bác khi nghe RÕ dãy ĐỦ 11 số MỚI khác hẳn (khách chủ động đổi danh bộ).
+  const uVienTrongTai = !!callState._danhBoNeedsVerbalYes;
+  if (stored && !storedConfirmed && !uVienTrongTai &&
+    normalized.length === DANH_BO_LENGTH && normalized !== stored) {
+    rejectStoredDanhBo(callState);
+  }
 
   // ── Đủ 11 số ──────────────────────────────────────────────────────────────
   // [fix 19/07/2026 v3] LUÔN đọc lại NGAY bản realtime (không bao giờ chặn chờ
@@ -644,11 +765,17 @@ async function fetchBilling(ma_danh_bo, ky, nam, callState) {
 async function handleGetBill({ ma_danh_bo, ky, nam }, callState) {
   const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
+  // const parts = f.rows.map((d) => {
+  //   const tt = d.TrangThaiThanhToan === "Đã thanh toán"
+  //     ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
+  //     : `, chưa thanh toán`;
+  //   return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
+  // });
   const parts = f.rows.map((d) => {
     const tt = d.TrangThaiThanhToan === "Đã thanh toán"
       ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
       : `, chưa thanh toán`;
-    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
+    return `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
   });
   return JSON.stringify({
     success: true,
@@ -661,7 +788,7 @@ async function handleGetWaterUsage({ ma_danh_bo, ky, nam }, callState) {
   const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
   const parts = f.rows.map(
-    (d) => `Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
+    (d) => `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
   );
   return JSON.stringify({
     success: true,
@@ -676,9 +803,9 @@ async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }, callState) {
   // KHÔNG đọc DonViThanhToan cho khách (mã nội bộ như "GDGV", chưa có bảng map).
   const parts = f.rows.map((d) => {
     if (d.TrangThaiThanhToan === "Đã thanh toán") {
-      return `Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`;
+      return `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}, số tiền ${docTienVN(d.TongTien)}`;
     }
-    return `Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${docTienVN(d.TongTien)}`;
+    return `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${docTienVN(d.TongTien)}`;
   });
   return JSON.stringify({
     success: true,

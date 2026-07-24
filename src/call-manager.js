@@ -41,7 +41,9 @@ export async function acceptCall(callId, customerContext = "") {
           // cho session transcription riêng (type: "transcription"), không hợp lệ
           // trong session realtime/SIP → accept vẫn 200 nhưng session không khởi
           // tạo được, WS connect 404 cả 4 lần retry (cuộc rtc_u2_E3ChapqNtmYn1YsIVbKOs).
-          model: "gpt-4o-mini-transcribe",
+          //model: "gpt-realtime-whisper",//
+          // model: "gpt-4o-mini-transcribe",
+          model: "gpt-4o-transcribe",
           language: "vi",
           // [fix 08/07/2026] Gợi ý ngữ cảnh để giảm transcribe sai ngôn ngữ
           // (vd "bye bye" → "拜拜"). LƯU Ý: transcript chỉ dùng để log/debug,
