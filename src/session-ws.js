@@ -577,6 +577,8 @@ export function openSessionWebSocket(callId, callOps) {
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
       case "conversation.item.input_audio_transcription.completed": {
         console.log("....conversation.item.input_audio_transcription.completed....");
+        console.log("[conversation.item.input_audio_transcription.completed]: input_text_customer.transcript=", event.transcript?.trim());
+
         const khText = event.transcript?.trim();
         // Tích lũy transcription token usage (tính phí riêng cho model transcription)
         if (event.usage) {
@@ -620,9 +622,12 @@ export function openSessionWebSocket(callId, callOps) {
           if (_looksLikeDigitTurn(khText)) {
             (_toolCallState._danhBoTranscripts ??= []).push({ at: Date.now(), text: khText });
             if (_toolCallState._danhBoTranscripts.length > 10) _toolCallState._danhBoTranscripts.shift();
-            // [fix 19/07/2026 v3] Model mini có thể KHÔNG gọi confirm_danh_bo khi
-            // khách đọc tách hơi → co-pilot tự gom từ transcript sau khi khách ngưng.
-            _maybeAssembleDanhBo();
+            console.log("[WS]", callId, "_danhBoTranscripts : ", _toolCallState._danhBoTranscripts);
+            // [fix 25/07/2026] TẮT gom nền theo debounce — trọng tài gpt-5.1 giờ
+            // chạy ON-DEMAND trong resolveDanhBo (khi hàm tra cứu cần số), tránh
+            // lệch pha giữa câu tool và câu đọc-lại nền. Vẫn buffer transcript ở
+            // trên để arbiter on-demand dùng.
+            // _maybeAssembleDanhBo();
           }
 
           // [fix 23/07/2026] XÁC NHẬN LỜI NÓI universal: bất kỳ ứng viên danh bộ

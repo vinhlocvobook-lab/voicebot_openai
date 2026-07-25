@@ -207,7 +207,10 @@ export const TOOLS = [
     type: "function",
     name: "get_bill",
     // description: "Tra cứu hóa đơn tiền nước của khách hàng. Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
-    description: "Tra cứu tiền nước của khách hàng (là bao nhiêu). Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
+    description: `
+    Mục đích :
+      - Tra cứu tiền nước của khách hàng (là bao nhiêu). 
+    Lời thoại hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
@@ -222,7 +225,10 @@ export const TOOLS = [
     type: "function",
     name: "get_payment_status",
     // description: "Tra cứu trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán). Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
-    description: "Tra cứu hoá đơn tiền nước, trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán). Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
+    description: `
+    Mục đích :
+      - Tra cứu hoá đơn tiền nước, trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán). 
+    Lời thoại hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
@@ -236,7 +242,10 @@ export const TOOLS = [
   {
     type: "function",
     name: "get_water_usage",
-    description: "Tra cứu sản lượng nước sử dụng. Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
+    description: ` 
+    Mục đích :
+     - Tra cứu sản lượng nước sử dụng. 
+    Lời thoại hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
