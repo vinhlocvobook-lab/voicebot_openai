@@ -211,7 +211,7 @@ function danhBoEscalationResponse(callState) {
       `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách chọn. ` +
       `Khách chọn chuyển máy → gọi transfer_to_agent. ` +
       `Khách muốn nhân viên gọi lại → gọi create_ticket. ` +
-      `Khách vẫn muốn đọc lại số → gọi confirm_danh_bo với dãy mới nghe được.`,
+      `Khách vẫn muốn đọc lại số → gọi lại hàm tra cứu với ma_danh_bo = dãy mới nghe được.`,
   });
 }
 
@@ -227,7 +227,7 @@ function invalidDanhBoResponse(length, callState = {}) {
         `đọc chậm từng chữ số giúp em ạ.`,
       message:
         `Chưa có mã danh bộ. Đọc NGUYÊN VĂN "doc_cho_khach" để xin mã danh bộ. ` +
-        `Khách đọc xong → gọi confirm_danh_bo với ĐÚNG dãy số nghe được.`,
+        `Khách đọc xong → gọi lại hàm tra cứu (get_bill/…) với ma_danh_bo = dãy số nghe được; hệ thống tự ghép/xác nhận.`,
     });
   }
 
@@ -243,7 +243,7 @@ function invalidDanhBoResponse(length, callState = {}) {
       `chậm từng chữ số giúp em ạ.`,
     message:
       `Nghe chưa đủ ${DANH_BO_LENGTH} số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách đọc lại → gọi confirm_danh_bo với ĐÚNG dãy số nghe được.`,
+      `Khách đọc lại → gọi lại hàm tra cứu với ma_danh_bo = dãy số nghe được; hệ thống tự ghép/xác nhận.`,
   });
 }
 
@@ -257,10 +257,9 @@ function confirmRequestResponse(normalized, callState = {}) {
       `Quý Khách xác nhận giúp em có đúng không ạ?`,
     message:
       `Đã ghi nhận đủ ${DANH_BO_LENGTH} chữ số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách xác nhận ĐÚNG → gọi tool tra cứu cần thiết, KHÔNG truyền ma_danh_bo ` +
-      `(hệ thống tự dùng số đã xác nhận). Khách đọc dãy số khác → gọi confirm_danh_bo ` +
-      `với dãy mới nghe được. Khách báo SAI mà KHÔNG đọc dãy mới → gọi NGAY ` +
-      `confirm_danh_bo với day_so RỖNG (hệ thống có phương án xử lý), KHÔNG tự bắt khách đọc lại.`,
+      `Khách xác nhận ĐÚNG → gọi lại hàm tra cứu khách cần, KHÔNG cần đọc số ` +
+      `(hệ thống tự dùng số đã xác nhận). Khách báo SAI hoặc đọc dãy khác → CHỜ, ` +
+      `hệ thống tự xử lý ở lượt sau; đừng tự bịa số, đừng tự đọc lại.`,
   });
 }
 
@@ -433,7 +432,7 @@ function reReadRequestResponse(callState) {
       `chữ số mã danh bộ, chậm từng chữ số một ạ.`,
     message:
       `Số vừa đọc lại khách báo SAI. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách đọc lại → gọi confirm_danh_bo với ĐÚNG dãy số nghe được.`,
+      `Khách đọc lại → gọi lại hàm tra cứu với ma_danh_bo = dãy số nghe được; hệ thống tự ghép/xác nhận.`,
   });
 }
 
@@ -454,8 +453,7 @@ function danhBoDtmfInviteResponse(callState) {
     message:
       `Đã hết lượt đọc bằng giọng nói — chuyển sang BẤM PHÍM. Đọc NGUYÊN VĂN "doc_cho_khach" ` +
       `rồi DỪNG chờ. Hệ thống TỰ ĐỘNG ghi nhận phím bấm — TUYỆT ĐỐI không tự đọc/đoán số từ ` +
-      `tiếng bấm phím, không gọi confirm_danh_bo trong lúc khách bấm. ` +
-      `Khách muốn chuyển máy → transfer_to_agent. Khách muốn nhân viên gọi lại → create_ticket.`,
+      `tiếng bấm phím. Khách muốn chuyển máy → transfer_to_agent. Khách muốn nhân viên gọi lại → create_ticket.`,
   });
 }
 
@@ -624,51 +622,53 @@ export function noteDanhBoRejected(callState = {}) {
  * Trả { ok: true, value } khi được phép tra cứu; { ok: false, error } khi phải
  * dừng lại (sai độ dài / cần khách xác nhận trước).
  */
+// [fix 23/07/2026] CỔNG danh bộ dùng chung cho MỌI hàm tra cứu — thay cho tool
+// confirm_danh_bo (đã gỡ). Nguyên tắc: KHÔNG tin "tai" model (arg ma_danh_bo hay
+// sai/thiếu); ưu tiên transcript; số chỉ được TRA CỨU sau khi khách xác nhận LỜI
+// NÓI (session-ws bắt "đúng" → danhBo.confirmed=true). Thu số nhiều hơi + trọng
+// tài do proactiveAssembleDanhBo (session-ws) lo; hết lượt → DTMF → chuyển máy.
 function resolveDanhBo(rawArg, callState = {}) {
-  const argNorm = normalizeDanhBo(rawArg);
   const stored = callState.danhBo;
+  const txDanhBo = latestTranscriptDanhBo(callState); // lượt transcript đơn = 11 số
 
-  if (stored?.value) {
-    // Model truyền dãy 11 số MỚI khác số đã lưu → coi là danh bộ mới (khách đổi
-    // số hoặc đọc lại) → bắt xác nhận lại trước khi tra.
-    if (argNorm.length === DANH_BO_LENGTH && argNorm !== stored.value) {
-      console.warn(`[danh_bo] Model gửi số MỚI "${argNorm}" khác số đã lưu "${stored.value}" → yêu cầu xác nhận lại.`);
-      callState.danhBo = { value: argNorm, confirmed: false };
-      // Số mới do khách tự đọc trực tiếp (không qua trọng tài) — không cần gate.
+  // ── Đã có số ĐÃ XÁC NHẬN ──────────────────────────────────────────────────
+  if (stored?.value && stored.confirmed) {
+    // Khách đọc MỘT dãy 11 số MỚI khác hẳn → đổi danh bộ → xác nhận lại số mới.
+    if (txDanhBo && txDanhBo !== stored.value) {
+      console.warn(`[danh_bo] Khách đọc danh bộ MỚI "${txDanhBo}" khác số đã xác nhận "${stored.value}" → xác nhận lại.`);
+      callState.danhBo = { value: txDanhBo, confirmed: false };
       callState._danhBoNeedsVerbalYes = false;
-      return { ok: false, error: confirmRequestResponse(argNorm, callState) };
+      return { ok: false, error: confirmRequestResponse(txDanhBo, callState) };
     }
-    // Arg sai độ dài / lệch → model chép sai số (đúng lỗi cuộc E2uhVdS9X...) →
-    // BỎ QUA arg, dùng số đã lưu.
-    if (argNorm && argNorm !== stored.value) {
-      console.warn(`[danh_bo] Model gửi "${argNorm}" (${argNorm.length} số) khác số đã lưu "${stored.value}" — dùng số đã lưu.`);
-    }
-    // [fix 19/07/2026] Danh bộ do TRỌNG TÀI đưa ra chưa có lượt khách THẬT xác
-    // nhận (xem tryProposeArbiterCandidate) → KHÔNG tin việc model tự gọi tool tra
-    // cứu là bằng chứng khách đã đồng ý. Chặn, bắt đọc lại xác nhận.
-    if (callState._danhBoNeedsVerbalYes) {
-      console.warn(`[danh_bo] Danh bộ trọng tài "${stored.value}" CHƯA có xác nhận lời nói thật từ khách — chặn tra cứu, đọc lại xác nhận.`);
-      return { ok: false, error: confirmRequestResponse(stored.value, callState) };
-    }
-    stored.confirmed = true;
-    callState._danhBoLastPrompt = null; // đã chốt — tắt cơ chế re-assert bước danh bộ
+    callState._danhBoLastPrompt = null; // đã chốt — tắt cơ chế re-assert
     return { ok: true, value: stored.value };
   }
 
-  // Chưa có số trong callState
-  if (argNorm.length !== DANH_BO_LENGTH) {
-    return { ok: false, error: invalidDanhBoResponse(argNorm.length, callState) };
+  // ── Có ứng viên đang CHỜ xác nhận (chưa confirmed) ────────────────────────
+  // KHÔNG cho tra cứu tới khi khách xác nhận lời nói. Arg model (hay sai) KHÔNG
+  // được thay/bác ứng viên đang chờ — giữ nguyên, đọc lại xác nhận.
+  if (stored?.value) {
+    return { ok: false, error: confirmRequestResponse(stored.value, callState) };
   }
 
-  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT) → tin ngay, không ép xác nhận tool.
-  if (Array.isArray(callState.knownDanhBo) && callState.knownDanhBo.includes(argNorm)) {
-    callState.danhBo = { value: argNorm, confirmed: true };
-    return { ok: true, value: argNorm };
+  // ── Chưa có số ────────────────────────────────────────────────────────────
+  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT) → tin ngay, không ép xác nhận.
+  const argModel = normalizeDanhBo(rawArg);
+  if (argModel.length === DANH_BO_LENGTH &&
+      Array.isArray(callState.knownDanhBo) && callState.knownDanhBo.includes(argModel)) {
+    callState.danhBo = { value: argModel, confirmed: true };
+    return { ok: true, value: argModel };
   }
-
-  // Model gọi thẳng tool tra cứu, bỏ qua confirm_danh_bo → ép đọc lại xác nhận trước.
-  callState.danhBo = { value: argNorm, confirmed: false };
-  return { ok: false, error: confirmRequestResponse(argNorm, callState) };
+  // Có LƯỢT transcript đơn = 11 số (đáng tin) → lưu chờ + đọc lại xác nhận.
+  if (txDanhBo) {
+    callState.danhBo = { value: txDanhBo, confirmed: false };
+    callState._danhBoNeedsVerbalYes = false;
+    return { ok: false, error: confirmRequestResponse(txDanhBo, callState) };
+  }
+  // Chỉ có arg model (thường SAI/thiếu) hoặc chưa đủ số → KHÔNG cam kết số model
+  // nghe. proactiveAssembleDanhBo (nền) ghép các hơi transcript rồi tự đọc lại
+  // xác nhận. Trong lúc chờ, mời khách đọc mã danh bộ.
+  return { ok: false, error: invalidDanhBoResponse(argModel.length === DANH_BO_LENGTH ? 0 : argModel.length, callState) };
 }
 
 // function normalizeDanhBo(raw) {
@@ -1371,7 +1371,8 @@ function handleEndCall({ ly_do } = {}) {
 export async function dispatchTool(name, args, callState = {}) {
   try {
     switch (name) {
-      case "confirm_danh_bo": return await handleConfirmDanhBo(args, callState);
+      // [23/07/2026] confirm_danh_bo GỠ khỏi TOOLS — model không còn tự quản danh
+      // bộ; thu-xác nhận do CODE lo (resolveDanhBo + proactiveAssembleDanhBo + DTMF).
       case "get_bill": return await handleGetBill(args, callState);
       case "get_water_usage": return await handleGetWaterUsage(args, callState);
       case "get_payment_status": return await handleGetPaymentStatus(args, callState);

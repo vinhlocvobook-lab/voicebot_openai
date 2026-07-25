@@ -132,12 +132,14 @@ export function openSessionWebSocket(callId, callOps) {
       if (!_toolCallState._danhBoLastPrompt) return; // đã chốt danh bộ trong lúc chờ
       try {
         _pendingCodeResponse = true;
+        let instructions = "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, " +
+          "KHÔNG nhắc lại bất kỳ chữ số nào ngoài đoạn này: \"" + _prompt + "\"";
+        console.log("[_reAssertDanhBoStep]: lydo=", lyDo);
+        console.log("[_reAssertDanhBoStep]: instructions=", instructions);
         ws.send(JSON.stringify({
           type: "response.create",
           response: {
-            instructions:
-              "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, " +
-              "KHÔNG nhắc lại bất kỳ chữ số nào ngoài đoạn này: \"" + _prompt + "\"",
+            instructions: instructions,
           },
         }));
         logger.addEvent("danh_bo_step_reasserted", `${lyDo} — đọc lại bước đang chờ`);
@@ -161,11 +163,15 @@ export function openSessionWebSocket(callId, callOps) {
     }
     try {
       _pendingCodeResponse = true;
+      let instructions = "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại: \"" + text + "\"";
+      console.log("[_speakVerbatim]: text=", text);
+      console.log("[_speakVerbatim]: tag=", tag);
+      console.log("[_speakVerbatim]: attempt=", attempt);
+      console.log("[_speakVerbatim]: instructions=", instructions);
       ws.send(JSON.stringify({
         type: "response.create",
         response: {
-          instructions:
-            "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại: \"" + text + "\"",
+          instructions: instructions,
         },
       }));
       logger.addEvent("response_create_sent", tag);
@@ -317,7 +323,7 @@ export function openSessionWebSocket(callId, callOps) {
     // [fix 08/07/2026 đợt 7] Siết chặt hơn — cuộc gọi DzLM04 model diễn giải
     // lại thành "Chào anh/chị..." (sai persona). Câu chào chuẩn cũng đã được
     // thêm vào SYSTEM_PROMPT (section Phong cách) làm lớp dự phòng.
-    const greetingInstruction = 'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: "... Alo ... Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
+    const greetingInstruction = 'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: " Alo! Hello! Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
 
     setTimeout(() => {
       _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
@@ -342,11 +348,35 @@ export function openSessionWebSocket(callId, callOps) {
     // log.info(`[WS][${callId}] ← ${event.type}`);
 
     switch (event.type) {
+      // Mỗi response được tạo (do VAD hoặc do code) — đối chiếu với
+      // response_create_sent/greeting_sent để biết nguồn gốc từng response
+      case "response.created":
+        console.log("....response.created....: AI bắt đầu sinh phản hồi, do VAD kích hoạt hoặc do code yêu cầu");
+        _responseActive = true;
+        // [fix 18/07/2026] Gắn response với nguồn kích hoạt:
+        // - code vừa gửi response.create (greeting/tool result) → trigger = null
+        // - còn lại là do VAD → trigger = item audio vừa commit
+        if (_pendingCodeResponse) {
+          _activeResponseTriggerItemId = null;
+          _pendingCodeResponse = false;
+        } else {
+          _activeResponseTriggerItemId = _lastCommittedItemId;
+        }
+        logger.addEvent("response_created",
+          `${event.response?.id ?? null} (trigger: ${_activeResponseTriggerItemId ?? "code"})`);
+        break;
+
       // ── Response hoàn chỉnh → kiểm tra có function_call không ─────────────
       // Theo pattern của openai_nestle_step3.js: bắt function call qua
       // response.done → response.output[], lọc item.type === "function_call".
 
       case "response.done": {
+        console.log("....response.done....: AI đã nói xong trọn vẹn câu thoại hoặc bị ngắt/hủy");
+        if (_pendingCodeResponse) {
+          console.log("[response.done]: Response do code tạo, đánh dấu đã hoàn thành ");
+        } else {
+          console.log("[response.done]: Response do VAD kích hoạt, đánh dấu đã hoàn thành ");
+        }
         _responseActive = false;
         _activeResponseTriggerItemId = null; // [fix 18/07/2026] response xong → hết gắn với item nào
         // [fix 18/07/2026 v2] Response HOÀN TẤT (không bị cancel/interrupt) →
@@ -381,6 +411,8 @@ export function openSessionWebSocket(callId, callOps) {
           const toolCallId = item.call_id;
           const name = item.name;
           const argsStr = item.arguments;
+          console.log("function name = ", name);
+          console.log("function args = ", argsStr);
           log.info(`[WS][${callId}] Tool call: ${name}(${argsStr})`);
 
           let args = {};
@@ -505,6 +537,7 @@ export function openSessionWebSocket(callId, callOps) {
       // qua "tai" model) nên KHÔNG cần gate xác nhận lời nói của trọng tài —
       // chỉ cần vòng xác nhận thường.
       case "input_audio_buffer.dtmf_event_received": {
+        console.log("....input_audio_buffer.dtmf_event_received....");
         const digit = String(event.event ?? "").trim();
         console.log("DTMF received:", digit);
         logger.addEvent("dtmf_received", digit);
@@ -543,6 +576,7 @@ export function openSessionWebSocket(callId, callOps) {
       }
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
       case "conversation.item.input_audio_transcription.completed": {
+        console.log("....conversation.item.input_audio_transcription.completed....");
         const khText = event.transcript?.trim();
         // Tích lũy transcription token usage (tính phí riêng cho model transcription)
         if (event.usage) {
@@ -591,33 +625,29 @@ export function openSessionWebSocket(callId, callOps) {
             _maybeAssembleDanhBo();
           }
 
-          // [fix 19/07/2026] Gỡ cờ chờ xác nhận lời nói cho danh bộ trọng tài —
-          // CHỈ gỡ khi lượt khách này thật sự chứa từ khẳng định (không phải do
-          // model tự gọi tool tra cứu). Xem giải thích ở khai báo _isAffirmative.
-          if (_toolCallState._danhBoNeedsVerbalYes && _isAffirmative(khText)) {
+          // [fix 23/07/2026] XÁC NHẬN LỜI NÓI universal: bất kỳ ứng viên danh bộ
+          // đang CHỜ (do proactiveAssemble/resolveDanhBo/DTMF đọc lại) mà khách nói
+          // từ khẳng định → chốt confirmed=true. Đây là DẤU HIỆU DUY NHẤT cho phép
+          // tra cứu (không tin việc model tự gọi tool). Xóa buffer transcript để
+          // lần đọc số MỚI sau (đổi danh bộ) không bị dính số cũ.
+          if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed && _isAffirmative(khText)) {
             _toolCallState._danhBoNeedsVerbalYes = false;
-            if (_toolCallState.danhBo) _toolCallState.danhBo.confirmed = true;
+            _toolCallState.danhBo.confirmed = true;
+            _toolCallState._danhBoTranscripts = [];
             logger.addEvent("danh_bo_verbal_confirm", khText);
             console.log(`[${callId}]:`, "danh_bo_verbal_confirm", khText);
           }
 
-          // [fix 19/07/2026 v2] Khách PHỦ ĐỊNH số bot vừa đọc lại (đang chờ xác
-          // nhận) → cắm cờ cho tools.js: lượt confirm_danh_bo kế tiếp mà model
-          // lặp lại đúng số cũ (không có dãy mới) sẽ được hiểu là "khách báo
-          // sai" → dùng ứng viên co-pilot gpt-5.1 đã tính sẵn ở nền. Cờ chỉ là
-          // TÍN HIỆU chọn nhánh xử lý — số thay thế luôn phải qua đọc lại xác
-          // nhận + gate lời nói như thường (không nới quy ước transcript).
+          // [fix 23/07/2026] Khách PHỦ ĐỊNH số đang chờ xác nhận → BÁC ngay ứng
+          // viên (mọi ứng viên chưa confirmed, không chỉ ứng viên trọng tài) để
+          // proactiveAssembleDanhBo được đề xuất dãy KHÁC ở lượt đọc/ngưng kế
+          // (danh bộ cũ vào _danhBoRejected, trọng tài né). Không còn confirm_danh_bo.
           if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed && _PHU_DINH_RE.test(khText)) {
             _toolCallState._danhBoCustomerSaidNo = true;
             logger.addEvent("danh_bo_customer_said_no", khText);
             console.log(`[${callId}]:`, "danh_bo_customer_said_no", khText);
-            // [fix 19/07/2026 v3] Nếu số đang chờ là do CO-PILOT tự gom (model
-            // không tham gia), khách báo sai mà model cũng không gọi tool → tự
-            // bác số này để co-pilot được đề xuất dãy khác ở lần khách đọc/ngưng kế.
-            if (_toolCallState._danhBoNeedsVerbalYes) {
-              noteDanhBoRejected(_toolCallState);
-              logger.addEvent("danh_bo_rejected_proactive", "khách phủ định số co-pilot đề xuất");
-            }
+            noteDanhBoRejected(_toolCallState);
+            logger.addEvent("danh_bo_rejected_proactive", "khách phủ định số đang chờ xác nhận");
           }
         } else if (_isPromptEcho) {
           log.info(`[WS][${callId}] [KH nói - prompt echo, bỏ qua] || ${JSON.stringify({ khText, _isPromptEcho, _nk, _np, _sig })}`);
@@ -671,6 +701,7 @@ export function openSessionWebSocket(callId, callOps) {
 
       // conversation.item.done: bắt lời AI (output_audio transcript) để ghi log đủ 2 chiều
       case "conversation.item.done": {
+        console.log("....conversation.item.done....");
         const content = event?.item?.content;
         if (Array.isArray(content)) {
           const aiPart = content.find((c) => c?.type === "output_audio" && c?.transcript);
@@ -684,6 +715,7 @@ export function openSessionWebSocket(callId, callOps) {
       }
 
       case "response.audio_transcript.done": {
+        console.log("....response.audio_transcript.done....");
         const aiText = event.transcript?.trim();
         log.info(`[WS][${callId}][AI nói]: ${aiText}`);
         if (aiText) logger.flushAI(aiText);
@@ -697,55 +729,47 @@ export function openSessionWebSocket(callId, callOps) {
       // Cuộc gọi "khỏe": số vad_speech_started ≈ số lượt khách nói thật.
 
       case "input_audio_buffer.speech_started":
+        console.log("....input_audio_buffer.speech_started....");
         logger.addEvent("vad_speech_started", null);
         break;
 
       case "input_audio_buffer.speech_stopped":
+        console.log("....input_audio_buffer.speech_stopped....");
         logger.addEvent("vad_speech_stopped", null);
         break;
 
       // [fix 18/07/2026] VAD commit audio thành conversation item → nhớ item_id.
       // Response do VAD tạo ngay sau đó sẽ được gắn với item này (response.created).
       case "input_audio_buffer.committed":
+        console.log("....input_audio_buffer.committed....");
         _lastCommittedItemId = event.item_id ?? null;
         logger.addEvent("audio_committed", _lastCommittedItemId);
         break;
 
-      // Mỗi response được tạo (do VAD hoặc do code) — đối chiếu với
-      // response_create_sent/greeting_sent để biết nguồn gốc từng response
-      case "response.created":
-        _responseActive = true;
-        // [fix 18/07/2026] Gắn response với nguồn kích hoạt:
-        // - code vừa gửi response.create (greeting/tool result) → trigger = null
-        // - còn lại là do VAD → trigger = item audio vừa commit
-        if (_pendingCodeResponse) {
-          _activeResponseTriggerItemId = null;
-          _pendingCodeResponse = false;
-        } else {
-          _activeResponseTriggerItemId = _lastCommittedItemId;
-        }
-        logger.addEvent("response_created",
-          `${event.response?.id ?? null} (trigger: ${_activeResponseTriggerItemId ?? "code"})`);
-        break;
+
 
       // Transcription thất bại (trước đây rơi vào default, mất dấu vết)
       case "conversation.item.input_audio_transcription.failed":
+        console.log("....conversation.item.input_audio_transcription.failed....");
         logger.addError("transcription_failed", event.error?.message || _safeJson(event.error));
         break;
 
       // ── Lỗi từ OpenAI ─────────────────────────────────────────────────────
       case "error":
+        console.log("....error....");
         log.error(`[WS][${callId}]OpenAI error: `, event.error);
         logger.addError("openai_event", event.error?.message || _safeJson(event.error));
         break;
 
       case "session.created":
+        console.log("....session.created....");
         log.info(`[WS][${callId}]session.created: ${event.session?.id}`);
         logger.setSessionCreatedData(event.session ?? {});
         logger.addEvent("session_created", event.session?.id || null);
         break;
 
       case "session.updated":
+        console.log("....session.updated....");
         log.info(`[WS][${callId}]session.updated OK`);
         logger.addEvent("session_updated", null);
         break;
