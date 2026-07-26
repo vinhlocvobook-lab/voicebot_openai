@@ -13,6 +13,7 @@ import {
 } from "./api.js";
 import { arbitrateDanhBo } from "./danh-bo-arbiter.js";
 import { PROCEDURES } from "./huongdanthutuc-data.js";
+import { log } from "./logger.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -71,7 +72,7 @@ function _deAccent(s) {
 // Chữ số đọc bằng lời tiếng Việt (đã bỏ dấu) → chữ số.
 const _VI_DIGIT_WORDS = {
   khong: "0", linh: "0", le: "0",
-  mot: "1", hai: "2", ba: "3",
+  mot: "1", hai: "2", hay: "2", ba: "3",
   bon: "4", tu: "4", nam: "5", lam: "5",
   sau: "6", bay: "7", tam: "8", chin: "9",
 };
@@ -102,9 +103,6 @@ function viDigitsFromWords(raw) {
  * Rỗng mà chuỗi là dãy chữ số đọc bằng lời → ghép lại từ chữ.
  */
 function normalizeDanhBo(raw) {
-  console.log("==========[normalizeDanhBo]==================")
-  console.log("raw:", raw);
-
   // Bảo vệ code nếu raw là null/undefined, sau đó xóa sạch ký tự không phải số
   let normalized = String(raw ?? "").replace(/\D/g, "");
 
@@ -114,39 +112,14 @@ function normalizeDanhBo(raw) {
     if (fromWords) normalized = fromWords;
   }
 
-  console.log("normalized:", normalized);
+  // [0.2 — 26/07/2026] Trước đây in 2 dòng console.log mỗi lần gọi; hàm này chạy
+  // hàng chục lần mỗi cuộc gọi nên log bị ngập (>40 khối trong cuộc
+  // rtc_u2_E5eDfB96UnJE6iDWfPbRX), che mất các dòng quan trọng. Hạ xuống debug.
+  log.debug(`[normalizeDanhBo] "${raw}" → "${normalized}"`);
   return normalized;
 }
 
 const DANH_BO_LENGTH = 11;
-
-/**
- * Kiểm tra độ dài mã danh bộ bằng CODE (deterministic) — không để model tự đếm bằng tai.
- * Trả về { ok, normalized, length, error } để handler chặn gọi API khi sai độ dài
- * và phản hồi cho model con số chính xác.
- */
-function checkDanhBo(raw) {
-  const normalized = normalizeDanhBo(raw);
-  const length = normalized.length;
-  if (length !== DANH_BO_LENGTH) {
-    return {
-      ok: false,
-      normalized,
-      length,
-      error: JSON.stringify({
-        success: false,
-        invalid_danh_bo: true,
-        do_dai_hien_tai: length,
-        do_dai_yeu_cau: DANH_BO_LENGTH,
-        message:
-          `Mã danh bộ vừa nhận có ${length} chữ số, cần đúng ${DANH_BO_LENGTH} chữ số. ` +
-          `KHÔNG tra cứu. Hãy báo Quý Khách số chữ số đang nhận được và nhờ đọc lại chậm, ` +
-          `từng chữ số một, cho đủ ${DANH_BO_LENGTH} số. Không tự đoán hay tự thêm/bớt số.`,
-      }),
-    };
-  }
-  return { ok: true, normalized, length };
-}
 
 // ─── Xác nhận mã danh bộ qua tool (fix 18/07/2026 — cuộc E2uhVdS9X4mVBoXs0uYMP) ──
 // Model mini KHÔNG giữ được dãy số ổn định qua các lượt: khách đọc 11 số
@@ -183,6 +156,100 @@ const docSoLuong = (n) => SO_CHU[n] ?? String(n);
 //     (DTMF, session-ws.js tự ghi nhận); không bấm được → chuyển máy / tạo phiếu.
 const DANH_BO_MAX_READS = 3;
 const ARBITER_MIN_CONFIDENCE = Number(process.env.DANH_BO_ARBITER_MIN_CONFIDENCE || 0.7);
+// [fix 26/07/2026] Ngưỡng THẤP — chỉ dùng khi API xác nhận DỨT KHOÁT số có thật.
+// Xem giải thích ở tryProposeArbiterCandidate.
+const ARBITER_LOW_CONFIDENCE = Number(process.env.DANH_BO_ARBITER_LOW_CONFIDENCE || 0.3);
+// [1.5 — 26/07/2026] Hạn chờ trọng tài trong LUỒNG XÁC MINH (chạy ở đường nền,
+// KHÔNG chặn function_call_output). Khách không phải chờ trong im lặng vì
+// session-ws đã phát câu lấp khoảng lặng trước khi gọi.
+//
+// [fix 26/07/2026] 6000 → 10000. Cuộc rtc_u1_E5hSj6jwK5jeMHvCZV7yx: gpt-5.1 mất
+// 7,3s / 8,2s / 9,3s (reasoning ~1000 token) nên bị cắt cả 3 lần — lần cuối nó
+// trả về ĐÚNG "22023251775" chỉ 2 giây SAU hạn chờ. Bắt khách đọc lại trọn 11 số
+// tốn 30+ giây, đắt hơn nhiều so với chờ thêm 4 giây có câu lấp khoảng lặng.
+const DANH_BO_VERIFY_WAIT_MS = Number(process.env.DANH_BO_VERIFY_WAIT_MS || 10000);
+
+// ─── [1.1 — 26/07/2026] HAI BIẾN TÍCH LUỸ ────────────────────────────────────
+// Biến 1 — `callState._danhBoTranscripts`: TOÀN cuộc gọi, chỉ để cấp quan sát
+//          cho trọng tài gpt-5.1. KHÔNG BAO GIỜ dùng để đếm đủ/thiếu.
+// Biến 2 — `callState._danhBoSession`: MỘT lượt yêu cầu khách đọc. Reset mỗi khi
+//          code mời khách đọc lại TOÀN BỘ mã. Đây là biến DUY NHẤT được dùng để
+//          xác định đã đủ / chưa đủ / vượt 11 số.
+//
+// Lý do tách (cuộc rtc_u2_E5eDfB96UnJE6iDWfPbRX): code cũ ghép mù toàn bộ buffer
+// → sau vài lượt đã có 31 chữ số, vòng chờ "đủ 11 số" thoát tức thì và chết lâm
+// sàng đúng lúc cần nhất, còn khách thì nghe "chưa có mã danh bộ" dù đã đọc 5 lần.
+
+/** Lấy (hoặc khởi tạo) phiên đọc số hiện tại. */
+export function ensureDanhBoSession(callState = {}) {
+  if (!callState._danhBoSession) {
+    callState._danhBoSession = { requestNo: 0, startedAt: null, turns: [], digits: "" };
+  }
+  return callState._danhBoSession;
+}
+
+/**
+ * Mở một LƯỢT YÊU CẦU mới: xoá sạch số đã gom, tăng `requestNo`.
+ * Gọi mỗi khi code phát câu mời khách đọc TOÀN BỘ mã danh bộ.
+ */
+export function startDanhBoRequest(callState = {}, lyDo = null) {
+  const s = ensureDanhBoSession(callState);
+
+  // [1.8] KHÔNG tính là lượt mới nếu lượt trước chưa nghe được chữ số nào.
+  // Model hay gọi liên tiếp nhiều tool tra cứu trước khi khách kịp nói — mỗi lần
+  // như vậy đều rơi vào nhánh "xin số", nếu cứ tăng `requestNo` thì mới 3 tool
+  // call là đã mời khách bấm phím dù khách chưa được hỏi lần nào.
+  if (s.turns.length === 0 && s.startedAt != null) {
+    s.startedAt = Date.now();
+    log.debug(`[danh_bo] Giữ nguyên lượt #${s.requestNo} (lượt trước chưa nghe được chữ số nào).`);
+    return s;
+  }
+
+  s.requestNo += 1;
+  s.startedAt = Date.now();
+  s.turns = [];
+  s.digits = "";
+  callState._logger?.markDanhBoStarted?.();
+  callState._logger?.setDanhBoRequestCount?.(s.requestNo);
+  callState._logger?.addEvent?.("danh_bo_request", `lượt ${s.requestNo}${lyDo ? ` — ${lyDo}` : ""}`);
+  log.info(`[danh_bo] Mở lượt yêu cầu #${s.requestNo}${lyDo ? ` (${lyDo})` : ""}`);
+  return s;
+}
+
+/** Ghi một lượt transcript có chữ số vào CẢ HAI biến. Trả về phiên hiện tại. */
+export function noteDanhBoTranscript(callState = {}, text = "") {
+  const s = ensureDanhBoSession(callState);
+  if (s.requestNo === 0) startDanhBoRequest(callState, "khách chủ động đọc số");
+
+  // Biến 1 — kho quan sát cho trọng tài (toàn cuộc gọi).
+  const all = (callState._danhBoTranscripts ??= []);
+  all.push({ at: Date.now(), text });
+  // [1.10] 10 → 20: trọng tài cần bề dày lịch sử, mỗi phần tử chỉ là chuỗi ngắn.
+  while (all.length > 20) all.shift();
+
+  // Biến 2 — phiên đọc hiện tại (dùng để đếm).
+  s.turns.push({ at: Date.now(), text });
+  s.digits += normalizeDanhBo(text);
+  return s;
+}
+
+/** Số chữ số đã gom trong LƯỢT YÊU CẦU hiện tại. */
+export function danhBoSessionDigits(callState = {}) {
+  return ensureDanhBoSession(callState).digits.length;
+}
+
+/**
+ * Dãy 11 số lấy từ MỘT lượt transcript ĐƠN trong phiên hiện tại (mới nhất trước).
+ * Chỉ nhận lượt đơn ra đúng 11 số — lượt đọc tách hơi để trọng tài ghép.
+ */
+function latestSessionDanhBo(callState = {}) {
+  const turns = ensureDanhBoSession(callState).turns;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const d = normalizeDanhBo(turns[i]?.text);
+    if (d.length === DANH_BO_LENGTH) return d;
+  }
+  return "";
+}
 
 /**
  * Đóng gói kết quả bước lấy danh bộ + LƯU câu đang chờ khách trả lời vào
@@ -215,7 +282,15 @@ function danhBoEscalationResponse(callState) {
   });
 }
 
+/**
+ * [1.6 — 26/07/2026] Mời khách đọc (lại) TOÀN BỘ mã danh bộ — mở một LƯỢT YÊU CẦU mới.
+ * Phân biệt rõ 3 trạng thái. Trước đây khi ghép mù vượt 11 số, code truyền `0`
+ * xuống đây làm khách nghe "chưa có mã danh bộ" trong khi hệ thống đã nghe 31
+ * chữ số (cuộc rtc_u2_E5eDfB96UnJE6iDWfPbRX) — hỏi lại như chưa nói gì, rất ức chế.
+ */
 function invalidDanhBoResponse(length, callState = {}) {
+  startDanhBoRequest(callState, `mời đọc lại (đang nghe ${length} số)`);
+
   if (length === 0) {
     return danhBoPayload(callState, {
       success: false,
@@ -226,12 +301,31 @@ function invalidDanhBoResponse(length, callState = {}) {
         `Dạ, Quý Khách cho em xin mã danh bộ gồm ${DANH_BO_LENGTH} chữ số, ` +
         `đọc chậm từng chữ số giúp em ạ.`,
       message:
-        `Chưa có mã danh bộ. Đọc NGUYÊN VĂN "doc_cho_khach" để xin mã danh bộ. ` +
-        `Khách đọc xong → gọi lại hàm tra cứu (get_bill/…) với ma_danh_bo = dãy số nghe được; hệ thống tự ghép/xác nhận.`,
+        `Chưa có mã danh bộ. Đọc NGUYÊN VĂN "doc_cho_khach" để xin mã danh bộ rồi DỪNG chờ khách. ` +
+        `TUYỆT ĐỐI không tự đọc/tự đoán bất kỳ chữ số nào. Hệ thống tự gom số và xác nhận.`,
     });
   }
 
   callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
+
+  // Vượt 11 số: thường do lẫn tạp âm / khách đọc chồng lượt. Nói đúng bản chất
+  // thay vì bảo khách "đọc thiếu".
+  if (length > DANH_BO_LENGTH) {
+    return danhBoPayload(callState, {
+      success: false,
+      invalid_danh_bo: true,
+      do_dai_hien_tai: length,
+      do_dai_yeu_cau: DANH_BO_LENGTH,
+      doc_cho_khach:
+        `Dạ, đường truyền bên em nghe bị lẫn nên chưa tách được đúng ` +
+        `${docSoLuong(DANH_BO_LENGTH)} chữ số ạ. Quý Khách vui lòng đọc lại một lần nữa, ` +
+        `chậm và rõ từng chữ số giúp em ạ.`,
+      message:
+        `Nghe được ${length} số (NHIỀU HƠN ${DANH_BO_LENGTH}) — lẫn nhiễu. Đọc NGUYÊN VĂN ` +
+        `"doc_cho_khach" rồi DỪNG chờ khách. TUYỆT ĐỐI không tự đọc/tự đoán chữ số nào.`,
+    });
+  }
+
   return danhBoPayload(callState, {
     success: false,
     invalid_danh_bo: true,
@@ -243,8 +337,67 @@ function invalidDanhBoResponse(length, callState = {}) {
       `chậm từng chữ số giúp em ạ.`,
     message:
       `Nghe chưa đủ ${DANH_BO_LENGTH} số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách đọc lại → gọi lại hàm tra cứu với ma_danh_bo = dãy số nghe được; hệ thống tự ghép/xác nhận.`,
+      `TUYỆT ĐỐI không tự đọc/tự đoán chữ số nào. Hệ thống tự gom số và xác nhận.`,
   });
+}
+
+/**
+ * [1.3] Đã đủ số, đường nền đang xác minh (API + trọng tài). Tool trả ngay để
+ * không treo; câu đọc lại xác nhận do CODE phát qua `_speakVerbatim`.
+ */
+function dangXacMinhResponse() {
+  return JSON.stringify({
+    success: false,
+    dang_xac_minh: true,
+    doc_cho_khach: `Dạ, em ghi nhận rồi ạ, Quý Khách chờ em một chút.`,
+    message:
+      `Hệ thống đã nhận đủ số và ĐANG XÁC MINH. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG. ` +
+      `TUYỆT ĐỐI không đọc lại chữ số nào. Đây là câu TẠM THỜI, chỉ đọc MỘT LẦN — ngay sau đó ` +
+      `hệ thống sẽ gửi câu đọc lại mã cho khách xác nhận; khi đó phải đọc câu MỚI NHẤT và ` +
+      `TUYỆT ĐỐI không lặp lại câu chờ này.`,
+  });
+}
+
+/**
+ * [fix 26/07/2026 đợt 4] Khách ĐANG đọc dở — chỉ báo hiệu là em đang nghe, KHÔNG
+ * hướng dẫn gì thêm, KHÔNG reset phiên, KHÔNG tăng `requestNo`.
+ *
+ * Trước đó bản đợt 3 nhắc "đọc tiếp N số còn lại" — sai về trải nghiệm: khách
+ * KHÔNG biết hệ thống nghe được tới đâu, mà chỗ nối giữa hai hơi đọc lại đúng là
+ * chỗ ASR hay nghe sai nhất. Khi thật sự cần, ta mời khách đọc lại TRỌN VẸN mã
+ * (invalidDanhBoResponse) — mỗi lần đọc đầy đủ là một quan sát độc lập để trọng
+ * tài đối chiếu theo từng vị trí chữ số.
+ */
+function dangGomSoResponse(daNghe) {
+  return JSON.stringify({
+    success: false,
+    dang_gom_so: true,
+    da_nghe: daNghe,
+    can: DANH_BO_LENGTH,
+    doc_cho_khach: `Dạ, em đang nghe ạ.`,
+    message:
+      `Hệ thống ĐANG GOM số (${daNghe}/${DANH_BO_LENGTH}) — khách có thể còn đang đọc dở. ` +
+      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG, chờ khách đọc xong. TUYỆT ĐỐI không đọc lại ` +
+      `chữ số nào, KHÔNG hỏi khách đọc tiếp từ số nào, KHÔNG bảo khách đọc lại. ` +
+      `Đây là câu TẠM THỜI, chỉ đọc MỘT LẦN: nếu ngay sau đó hệ thống yêu cầu đọc câu khác, ` +
+      `phải đọc câu MỚI NHẤT và TUYỆT ĐỐI không lặp lại câu này. Khách hỏi chuyện KHÁC ` +
+      `(thủ tục, khiếu nại...) thì trả lời câu hỏi đó bình thường.`,
+  });
+}
+
+/**
+ * [1.8] Mời đọc lại, hoặc leo thang khi khách đã phải đọc quá nhiều lần.
+ * `requestNo` là bộ đếm leo thang DUY NHẤT — nó đếm đúng thứ khách cảm nhận
+ * được ("tôi đã phải đọc lại bao nhiêu lần rồi"), thay cho 2 bộ đếm cũ
+ * (`_danhBoResolveTries`, `_danhBoAssembleTries`) vốn đếm theo nhánh code nội bộ
+ * nên cuộc gọi mẫu chạy 3,5 phút mà chưa lần nào khách được mời bấm phím.
+ */
+function danhBoReReadOrEscalate(callState, heardLen) {
+  if (callState._danhBoDtmfInvited) return danhBoEscalationResponse(callState);
+  if (ensureDanhBoSession(callState).requestNo >= DANH_BO_MAX_READS) {
+    return danhBoDtmfInviteResponse(callState);
+  }
+  return invalidDanhBoResponse(heardLen, callState);
 }
 
 function confirmRequestResponse(normalized, callState = {}) {
@@ -263,35 +416,6 @@ function confirmRequestResponse(normalized, callState = {}) {
   });
 }
 
-/**
- * [fix 23/07/2026] Danh bộ ĐÃ xác nhận nhưng model vẫn gọi confirm_danh_bo với
- * dãy rác (cuộc E4jpBWc...: khách đã "đúng đó", model re-transcribe ra 9 số sai
- * → hệ thống bắt đọc lại, khởi động lại vòng danh bộ, khách cúp máy). Nhắc model
- * dùng số đã xác nhận đi tra cứu, KHÔNG hỏi/đọc lại số.
- */
-function danhBoAlreadyConfirmedResponse(callState) {
-  return danhBoPayload(callState, {
-    success: true,
-    da_xac_nhan: true,
-    ma_danh_bo: callState.danhBo?.value || null,
-    message:
-      `Mã danh bộ ĐÃ được Quý Khách xác nhận — KHÔNG hỏi lại, KHÔNG đọc lại số, ` +
-      `KHÔNG gọi confirm_danh_bo nữa. Gọi NGAY tool tra cứu mà Quý Khách cần ` +
-      `(get_bill / get_payment_status / get_water_usage / get_outages / create_ticket...), ` +
-      `KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.`,
-  });
-}
-
-/** Chốt dãy 11 số: lưu callState + reset bộ đếm. */
-function acceptFullDanhBo(normalized, callState) {
-  callState.danhBo = { value: normalized, confirmed: false };
-  callState.danhBoInvalidCount = 0;
-  // Khách tự đọc thẳng (không qua trọng tài) → KHÔNG cần gate xác nhận lời nói
-  // thật (xem resolveDanhBo) — chỉ áp dụng cho danh bộ do trọng tài suy luận.
-  callState._danhBoNeedsVerbalYes = false;
-  return confirmRequestResponse(normalized, callState);
-}
-
 // ─── [fix 19/07/2026 v2] CO-PILOT gpt-5.1 chạy ngầm từ lượt 1 ────────────────
 
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -308,11 +432,13 @@ async function runDanhBoArbiter(callState, { waitTranscriptMs = 800 } = {}) {
     verdict = await arbitrateDanhBo({
       reads: callState._danhBoReads || [],
       transcripts: (callState._danhBoTranscripts || []).map((t) => t.text),
+      // [1.7] Lần đọc mới nhất = phiên hiện tại (biến 2) — ưu tiên cao nhất.
+      latestTranscripts: ensureDanhBoSession(callState).turns.map((t) => t.text),
       knownDanhBo: callState.knownDanhBo || [],
       rejected: callState._danhBoRejected || [],
     });
   } catch (e) {
-    console.warn(`[danh_bo][arbiter] Lỗi gọi trọng tài: ${e.message}`);
+    log.warn(`[danh_bo][arbiter] Lỗi gọi trọng tài: ${e.message}`);
   }
   callState._logger?.addEvent?.(
     "danh_bo_arbiter",
@@ -322,64 +448,77 @@ async function runDanhBoArbiter(callState, { waitTranscriptMs = 800 } = {}) {
 }
 
 /**
- * Fire-and-forget: chạy trọng tài SONG SONG trong lúc bot đang đọc lại 11 số
- * cho khách (~8-10s) — khi khách trả lời "sai", ứng viên sửa đã có sẵn,
- * không ai phải chờ. Khách nói "đúng" → verdict bị bỏ, vô hại.
+ * Hỏi API nghiệp vụ xem danh bộ này có thật không.
+ * @returns {{coThat:boolean, chacChan:boolean}}
+ *   `chacChan` = API trả lời DỨT KHOÁT (không phải lỗi mạng/timeout). Cần phân
+ *   biệt vì lỗi mạng ≠ số sai: khi đó vẫn cho khách xác nhận (`coThat: true`)
+ *   nhưng KHÔNG được coi là bằng chứng để nới ngưỡng tin cậy.
  */
-function fireBackgroundArbiter(callState) {
-  callState._danhBoBgVerdict = undefined; // undefined = đang chạy; null = fail
-  callState._danhBoBgPromise = runDanhBoArbiter(callState)
-    .then((v) => { callState._danhBoBgVerdict = v ?? null; return v; })
-    .catch(() => { callState._danhBoBgVerdict = null; return null; });
-}
-
-/** Lấy verdict nền; nếu còn đang chạy thì chờ thêm tối đa extraWaitMs. */
-async function awaitBackgroundVerdict(callState, extraWaitMs = 6000) {
-  if (callState._danhBoBgVerdict !== undefined) return callState._danhBoBgVerdict;
-  if (!callState._danhBoBgPromise) return null;
-  return Promise.race([callState._danhBoBgPromise, _sleep(extraWaitMs).then(() => null)]);
+async function checkDanhBoApi(candidate, callState) {
+  try {
+    const r = await getThongTinKhachHang(candidate);
+    const khongKetNoiDuoc = ["TIMEOUT", "CONNECTION_ERROR", "INVALID_RESPONSE"].includes(r?.error_code);
+    if (khongKetNoiDuoc) return { coThat: true, chacChan: false };
+    const coKhach = !!(r?.success && Array.isArray(r.data) && r.data.length > 0);
+    if (!coKhach) {
+      log.warn(`[danh_bo][arbiter] "${candidate}" không có trong hệ thống.`);
+      callState._logger?.addEvent?.("danh_bo_arbiter", `candidate ${candidate} không tồn tại trong hệ thống`);
+    }
+    return { coThat: coKhach, chacChan: true };
+  } catch (e) {
+    log.warn(`[danh_bo][arbiter] Xác thực lỗi (${e.message}) — vẫn cho khách xác nhận.`);
+    return { coThat: true, chacChan: false };
+  }
 }
 
 /** API nghiệp vụ có biết danh bộ này không. Lỗi mạng/timeout ≠ số sai → coi như có. */
 async function candidateExistsInApi(candidate, callState) {
-  try {
-    const r = await getThongTinKhachHang(candidate);
-    const khongKetNoiDuoc = ["TIMEOUT", "CONNECTION_ERROR", "INVALID_RESPONSE"].includes(r?.error_code);
-    const coKhach = r?.success && Array.isArray(r.data) && r.data.length > 0;
-    if (khongKetNoiDuoc) return true;
-    if (!coKhach) {
-      console.warn(`[danh_bo][arbiter] "${candidate}" không có trong hệ thống.`);
-      callState._logger?.addEvent?.("danh_bo_arbiter", `candidate ${candidate} không tồn tại trong hệ thống`);
-    }
-    return coKhach;
-  } catch (e) {
-    console.warn(`[danh_bo][arbiter] Xác thực lỗi (${e.message}) — vẫn cho khách xác nhận.`);
-    return true;
-  }
+  return (await checkDanhBoApi(candidate, callState)).coThat;
 }
 
 /**
  * Ứng viên trọng tài đạt chuẩn → lưu + trả câu đọc lại xác nhận. Không đạt → null.
- * Chuẩn: đủ 11 số, đủ tin cậy, CHƯA từng bị khách bác, tồn tại trong API,
- * và chưa quá 2 lần đề xuất (chống lặp vô hạn đoán-sai-đoán-lại).
+ * Chuẩn: đủ 11 số, CHƯA từng bị khách bác, chưa quá 2 lần đề xuất (chống lặp vô
+ * hạn đoán-sai-đoán-lại), tồn tại trong API, và đủ tin cậy theo 2 mức dưới đây.
  *
  * [fix 19/07/2026] do_tin_cay thiếu/sai kiểu → Number() ra NaN, mọi so sánh với
  * NaN đều false → viết theo hướng CHẤP NHẬN để dữ liệu rác tự rơi vào nhánh loại.
+ *
+ * [fix 26/07/2026] HAI MỨC TIN CẬY — API là trọng tài cuối, không phải LLM.
+ * Cuộc rtc_u1_E5hSj6jwK5jeMHvCZV7yx: gpt-5.1 suy ra ĐÚNG "22023251775" nhưng tự
+ * chấm do_tin_cay = 0.4 (nó phải ghép qua nhiều mảnh nên khiêm tốn) → ngưỡng cứng
+ * 0.7 loại thẳng, khách phải bấm DTMF. Trong khi chỉ cần 40ms gọi API là biết chắc
+ * số đó CÓ THẬT. Nên: tin cậy thấp vẫn được đề xuất, miễn API xác nhận DỨT KHOÁT
+ * là có — và khách vẫn phải xác nhận bằng lời trước khi tra cứu (gate bên dưới).
  */
 async function tryProposeArbiterCandidate(verdict, callState) {
   const candidate = normalizeDanhBo(verdict?.ma_danh_bo);
   const conf = Number(verdict?.do_tin_cay);
-  const duTinCay = Number.isFinite(conf) && conf >= ARBITER_MIN_CONFIDENCE;
-  if (candidate.length !== DANH_BO_LENGTH || !duTinCay) {
-    console.warn(`[danh_bo][arbiter] Không đủ tin cậy (candidate="${candidate}", conf=${conf}).`);
+
+  if (candidate.length !== DANH_BO_LENGTH) {
+    log.warn(`[danh_bo][arbiter] Không có ứng viên đủ ${DANH_BO_LENGTH} số (candidate="${candidate}", conf=${conf}).`);
     return null;
   }
   if ((callState._danhBoRejected || []).includes(candidate)) return null;
   if ((callState._danhBoProposeCount || 0) >= 2) return null;
-  if (!(await candidateExistsInApi(candidate, callState))) return null;
+
+  // Hỏi API TRƯỚC khi xét tin cậy: đây là nguồn sự thật rẻ nhất (~40ms) và chắc
+  // nhất, đừng bắt LLM tự chịu trách nhiệm chọn duy nhất một đáp án.
+  const api = await checkDanhBoApi(candidate, callState);
+  if (!api.coThat) return null;
+
+  const duTinCay = Number.isFinite(conf) && conf >= ARBITER_MIN_CONFIDENCE;
+  const duTinCayThap = Number.isFinite(conf) && conf >= ARBITER_LOW_CONFIDENCE;
+  if (!duTinCay && !(duTinCayThap && api.chacChan)) {
+    log.warn(`[danh_bo][arbiter] Không đủ tin cậy (candidate="${candidate}", conf=${conf}, api_chac_chan=${api.chacChan}).`);
+    return null;
+  }
+  if (!duTinCay) {
+    log.info(`[danh_bo][arbiter] conf=${conf} dưới ngưỡng ${ARBITER_MIN_CONFIDENCE} nhưng API xác nhận "${candidate}" CÓ THẬT → vẫn đề xuất.`);
+  }
 
   callState._danhBoProposeCount = (callState._danhBoProposeCount || 0) + 1;
-  console.log(`[danh_bo][arbiter] Ứng viên "${candidate}" (conf=${conf}) → đọc lại xác nhận.`);
+  log.info(`[danh_bo][arbiter] Ứng viên "${candidate}" (conf=${conf}) → đọc lại xác nhận.`);
   callState.danhBo = { value: candidate, confirmed: false };
   // [fix 19/07/2026] Cuộc E3JJPyzYujYdwQG048Bf7: danh bộ do trọng tài SUY LUẬN
   // (không phải khách tự đọc trôi chảy) rủi ro cao hơn nếu sai → bắt buộc có
@@ -401,17 +540,23 @@ async function danhBoNotFoundSelfCorrect(callState) {
   const current = callState.danhBo?.value || null;
   // Số hiện tại vừa NOT_FOUND → đẩy vào rejected để trọng tài KHÔNG quay lại nó.
   if (current) rejectStoredDanhBo(callState);
-  // [fix 25/07/2026] Gọi trọng tài ON-DEMAND (thay awaitBackgroundVerdict — nền đã tắt).
-  const verdict = await runDanhBoArbiter(callState);
-  const candidate = normalizeDanhBo(verdict?.ma_danh_bo);
-  if (candidate.length !== DANH_BO_LENGTH || candidate === current) return null;
-  callState._logger?.addEvent?.(
-    "danh_bo_self_correct",
-    `NOT_FOUND "${current}" → thử ứng viên "${candidate}"`
-  );
-  console.log(`[danh_bo][self-correct] NOT_FOUND "${current}" → đọc lại ứng viên "${candidate}".`);
-  // tryProposeArbiterCandidate tự xác thực API + set gate xác nhận lời nói.
-  return tryProposeArbiterCandidate(verdict, callState);
+
+  // [1.3 — 26/07/2026] MỨC B: trước đây gọi `runDanhBoArbiter` trực tiếp, có thể
+  // chặn tới 20s ngay giữa một tool call. Giờ đi qua LUỒNG XÁC MINH dùng chung
+  // (§2.3) — có hạn chờ DANH_BO_VERIFY_WAIT_MS và chạy 2 kênh song song.
+  const r = await verifyDanhBoFromSession(callState, { chapNhanThieuSo: true });
+  if (r.action === "none" || !r.payload) return null;
+
+  if (r.action === "confirm") {
+    callState._logger?.addEvent?.(
+      "danh_bo_self_correct",
+      `NOT_FOUND "${current}" → thử ứng viên "${r.value}" (${r.by})`
+    );
+    log.info(`[danh_bo][self-correct] NOT_FOUND "${current}" → đọc lại ứng viên "${r.value}".`);
+  } else {
+    log.info(`[danh_bo][self-correct] NOT_FOUND "${current}" → không có ứng viên thay thế, ${r.action}.`);
+  }
+  return r.payload;
 }
 
 /** Ghi nhận dãy đã bị khách bác bỏ (để trọng tài né và không đề xuất lại). */
@@ -421,24 +566,7 @@ function rejectStoredDanhBo(callState) {
   (callState._danhBoRejected ??= []);
   if (!callState._danhBoRejected.includes(stored)) callState._danhBoRejected.push(stored);
   callState.danhBo = null;
-  // [fix 25/07/2026] Xóa cache on-demand để lượt resolveDanhBo kế chạy lại trọng
-  // tài (không trả lại câu đọc-lại số vừa bị bác).
-  callState._danhBoLastResolveSig = null;
-  callState._danhBoLastResolveResp = null;
-}
-
-/** Khách báo sai, chưa có ứng viên thay thế → mời đọc lại toàn bộ. */
-function reReadRequestResponse(callState) {
-  return danhBoPayload(callState, {
-    success: false,
-    doc_lai: true,
-    doc_cho_khach:
-      `Dạ, em xin lỗi ạ. Quý Khách đọc lại giúp em toàn bộ ${docSoLuong(DANH_BO_LENGTH)} ` +
-      `chữ số mã danh bộ, chậm từng chữ số một ạ.`,
-    message:
-      `Số vừa đọc lại khách báo SAI. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `Khách đọc lại → gọi lại hàm tra cứu với ma_danh_bo = dãy số nghe được; hệ thống tự ghép/xác nhận.`,
-  });
+  callState._danhBoResolvedBy = null;
 }
 
 /**
@@ -462,165 +590,220 @@ function danhBoDtmfInviteResponse(callState) {
   });
 }
 
-/**
- * [fix 23/07/2026] Lấy dãy 11 số từ LƯỢT transcript ĐƠN gần nhất (model phiên âm
- * riêng — theo CLAUDE.md đáng tin hơn "tai" model thoại). Chỉ nhận khi một lượt
- * đơn ra ĐÚNG 11 số; lượt đọc tách hơi (mỗi lượt <11 số) → để trọng tài ghép.
- */
-function latestTranscriptDanhBo(callState = {}) {
-  const arr = callState._danhBoTranscripts || [];
-  console.log("[latestTranscriptDanhBo]: callState._danhBoTranscripts", arr);
-  for (let i = arr.length - 1; i >= 0; i--) {
-    const d = normalizeDanhBo(arr[i]?.text);
-    if (d.length === DANH_BO_LENGTH) return d;
-  }
-  return "";
-}
-
-// [fix 19/07/2026 v2] Luồng: đọc liền 11 số, tối đa DANH_BO_MAX_READS (3) lượt
-// giọng nói, co-pilot gpt-5.1 hỗ trợ ngầm từ lượt 1; hết lượt → mời bấm DTMF.
-async function handleConfirmDanhBo({ day_so } = {}, callState = {}) {
-
-  console.log("==========[handleConfirmDanhBo]==================")
-  console.log("day_so:", day_so);
-  console.log("callState:", callState);
-
-  // [fix 23/07/2026] Model mini chép mã danh bộ qua "tai" rất hay SAI (đảo/rơi
-  // số: cuộc E4k6V nghe "12023251757", E4k8t nghe "3213251775" trong khi khách
-  // đọc đúng 22023251775). Nếu LƯỢT transcript đơn gần nhất ra đúng 11 số → dùng
-  // nó thay day_so model. Giữ lại bản model nghe cho trọng tài đối chiếu.
-  const modelHeard = normalizeDanhBo(day_so);
-  const txDanhBo = latestTranscriptDanhBo(callState);
-  const normalized = (txDanhBo && txDanhBo !== modelHeard) ? txDanhBo : modelHeard;
-  if (normalized !== modelHeard) {
-    console.warn(`[danh_bo] Ưu tiên transcript "${normalized}" thay cho day_so model "${modelHeard}".`);
-  }
-  const stored = callState.danhBo?.value || null;
-  const storedConfirmed = !!callState.danhBo?.confirmed;
-  const saidNo = !!callState._danhBoCustomerSaidNo;
-  callState._danhBoCustomerSaidNo = false;
-
-  // ── Danh bộ ĐÃ XÁC NHẬN mà model vẫn gọi confirm_danh_bo ───────────────────
-  // [fix 23/07/2026] Chỉ dãy 11 số MỚI khác hẳn mới coi là khách ĐỔI danh bộ
-  // (rơi xuống nhánh chuẩn bên dưới → acceptFullDanhBo, xác nhận lại). Còn lại
-  // (rỗng / trùng số cũ / sai độ dài do model tự re-transcribe) → KHÔNG khởi động
-  // lại vòng danh bộ, giữ nguyên số đã chốt, nhắc model đi tra cứu.
-  if (storedConfirmed && stored &&
-    !(normalized.length === DANH_BO_LENGTH && normalized !== stored)) {
-    return danhBoAlreadyConfirmedResponse(callState);
-  }
-
-  // ── Model ECHO đúng số ĐANG CHỜ xác nhận (khách CHƯA phủ định) ─────────────
-  // [fix 23/07/2026] Co-pilot vừa đọc lại số cho khách; model mini thường tự gọi
-  // confirm_danh_bo lặp lại chính số đó (bằng chữ số hoặc bản đọc thành chữ).
-  // Đây KHÔNG phải khách báo sai → giữ nguyên trạng thái chờ (kể cả gate
-  // _danhBoNeedsVerbalYes của trọng tài), không reset cờ/bộ đếm, không ghi nhiễu
-  // vào reads. Trả lại đúng câu đang chờ để model khỏi bịa câu khác.
-  if (stored && !storedConfirmed && !saidNo && normalized === stored) {
-    return confirmRequestResponse(stored, callState);
-  }
-
-  // ── Khách BÁO SAI số đã đọc lại mà KHÔNG kèm dãy mới ──────────────────────
-  // (model gọi với day_so rỗng, hoặc lặp lại đúng số cũ sau lượt khách phủ định)
-  // [fix 23/07/2026] BẮT BUỘC có cờ saidNo (khách phủ định thật trong transcript)
-  // — day_so rỗng do normalize xoá bản đọc-thành-chữ KHÔNG được tính là báo sai.
-  const laBaoSai = stored && !storedConfirmed && saidNo &&
-    (normalized.length === 0 || normalized === stored);
-  if (laBaoSai) {
-    rejectStoredDanhBo(callState);
-    // Co-pilot nền đã phân tích từ lúc bot đọc lại số → dùng ngay nếu đạt chuẩn.
-    const verdict = await awaitBackgroundVerdict(callState);
-    const resp = await tryProposeArbiterCandidate(verdict, callState);
-    if (resp) return resp;
-    if ((callState._danhBoReads?.length || 0) >= DANH_BO_MAX_READS) {
-      return danhBoDtmfInviteResponse(callState);
-    }
-    return reReadRequestResponse(callState);
-  }
-
-  if (normalized.length === 0) return invalidDanhBoResponse(0, callState);
-
-  // Lưu quan sát của model cho trọng tài (kể cả dãy sai độ dài).
-  const reads = (callState._danhBoReads ??= []);
-  if (modelHeard) reads.push(modelHeard);
-  // Khách đọc dãy MỚI thay cho số cũ chưa xác nhận → số cũ coi như bị bác.
-  // [fix 23/07/2026] KHÔNG bác dựa trên "tai" model: model mini hay chép sai/thiếu
-  // số trong lúc khách đọc LẠI chính số đang chờ (cuộc E4k8t: nghe 10 số
-  // "3213251775" trong khi khách đọc đúng 22023251775 → suýt bác số đúng, deadlock).
-  //  - Ứng viên TRỌNG TÀI (đối chiếu transcript) chỉ bị bác khi KHÁCH báo sai (saidNo).
-  //  - Chỉ bác khi nghe RÕ dãy ĐỦ 11 số MỚI khác hẳn (khách chủ động đổi danh bộ).
-  const uVienTrongTai = !!callState._danhBoNeedsVerbalYes;
-  if (stored && !storedConfirmed && !uVienTrongTai &&
-    normalized.length === DANH_BO_LENGTH && normalized !== stored) {
-    rejectStoredDanhBo(callState);
-  }
-
-  // ── Đủ 11 số ──────────────────────────────────────────────────────────────
-  // [fix 19/07/2026 v3] LUÔN đọc lại NGAY bản realtime (không bao giờ chặn chờ
-  // trọng tài — gpt-5.1 reasoning có thể >12s), co-pilot LUÔN chạy nền. Số được
-  // sửa khi: khách báo sai (dùng verdict nền) hoặc tra cứu NOT_FOUND (tự sửa).
-  if (normalized.length === DANH_BO_LENGTH) {
-    const out = acceptFullDanhBo(normalized, callState);
-    fireBackgroundArbiter(callState);
-    return out;
-  }
-
-  // ── Sai độ dài ────────────────────────────────────────────────────────────
-  // Đã mời bấm phím rồi mà vẫn quay lại đọc sai tiếp → không lặp, escalation.
-  if (callState._danhBoDtmfInvited) {
-    callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
-    return danhBoEscalationResponse(callState);
-  }
-  if (reads.length < DANH_BO_MAX_READS) {
-    // Từ lượt 2: thử trọng tài cứu (ghép các mảnh) trước khi bắt khách đọc lại.
-    if (reads.length >= 2) {
-      const verdict = await runDanhBoArbiter(callState);
-      const resp = await tryProposeArbiterCandidate(verdict, callState);
-      if (resp) return resp;
-    }
-    return invalidDanhBoResponse(normalized.length, callState);
-  }
-  // Hết lượt đọc → trọng tài lần cuối; vẫn không được → mời bấm phím.
-  callState.danhBoInvalidCount = (callState.danhBoInvalidCount || 0) + 1;
-  const verdict = await runDanhBoArbiter(callState);
-  const resp = await tryProposeArbiterCandidate(verdict, callState);
-  if (resp) return resp;
-  return danhBoDtmfInviteResponse(callState);
-}
-
-// ─── [fix 19/07/2026 v3] Co-pilot TỰ GOM số từ transcript (không chờ model) ───
-// Model mini không gom được số khách đọc qua NHIỀU HƠI (semantic VAD tạo response
-// mỗi hơi → model đáp "chưa đủ" ngay, không kịp tích lũy, thậm chí KHÔNG gọi
-// confirm_danh_bo). session-ws.js gọi hàm này sau khi khách NGƯNG đọc số một
-// nhịp: gpt-5.1 ghép mọi transcript hơi đọc thành 11 số, code đọc lại xác nhận.
+// ─── [1.5 — 26/07/2026] LUỒNG XÁC MINH mã danh bộ (§2.3 kế hoạch v3) ──────────
+// Chạy ở ĐƯỜNG NỀN (session-ws gọi sau khi khách ngưng đọc), KHÔNG chặn tool.
+//
+// Nguyên tắc: transcript ra đúng 11 số VẪN phải qua gpt-5.1 — gpt-4o-transcribe
+// hoàn toàn có thể nghe sai mà vẫn cho ra đủ 11 chữ số, con số trông "sạch"
+// nhưng lại sai, rất khó phát hiện nếu chốt thẳng.
+//
+// Hai kênh chạy SONG SONG (không nối tiếp):
+//   (a) verify API  — ~40ms, biết chắc mã có tồn tại không
+//   (b) trọng tài gpt-5.1 — ~6-15s, đối chiếu mọi quan sát
+// Chờ (b) tối đa DANH_BO_VERIFY_WAIT_MS rồi quyết định theo bảng bên dưới.
 
 /**
- * Chạy trọng tài trên MỌI quan sát hiện có; nếu ra ứng viên 11 số đủ tin cậy +
- * hợp lệ → lưu callState + trả CÂU đọc lại xác nhận (chuỗi doc_cho_khach) cho
- * session-ws đọc. Không đủ tin cậy → null (im lặng, không làm phiền khách).
- * Chỉ chạy khi CHƯA có danh bộ đang chờ/đã xác nhận (không chen ngang model/DTMF).
+ * @returns {Promise<{action:"confirm"|"reread"|"dtmf"|"none", prompt?:string, value?:string, by?:string}>}
  */
-export async function proactiveAssembleDanhBo(callState = {}) {
-  if (callState.danhBo) return null; // đã có ứng viên (model/DTMF/trọng tài) → không chen
-  if (callState._danhBoDtmfInvited) return null; // đã mời bấm phím → chờ khách bấm, thôi gom giọng nói
-  callState._danhBoAssembleTries = (callState._danhBoAssembleTries || 0) + 1;
-  const verdict = await runDanhBoArbiter(callState, { waitTranscriptMs: 0 });
+export async function verifyDanhBoFromSession(callState = {}, { chapNhanThieuSo = false } = {}) {
+  // Guard: đã có ứng viên đang chờ / đã chốt (model, DTMF, lượt trước) → không chen ngang.
+  if (callState.danhBo) return { action: "none" };
+  if (callState._danhBoDtmfInvited) return { action: "none" };
+
+  const session = ensureDanhBoSession(callState);
+  // Biến 2 rỗng nhưng biến 1 còn quan sát → vẫn chạy được (đường tự sửa khi API
+  // báo CUSTOMER_NOT_FOUND gọi thẳng hàm này, không qua lượt đọc mới).
+  if (!session.digits && (callState._danhBoTranscripts || []).length === 0) return { action: "none" };
+
+  // [fix 26/07/2026 đợt 3] CHƯA ĐỦ 11 SỐ THÌ CHƯA GỌI TRỌNG TÀI.
+  // Cuộc rtc_u2_E5hhmAHqS8cDGvUnCph0x: verify nổ khi mới có 4/11 số → gpt-5.1
+  // đương nhiên trả null ("thiếu 7 chữ số") → code hiểu là bó tay và RESET phiên
+  // ngay giữa lúc khách đang đọc dở. Vừa tốn token vừa phá cuộc gọi.
+  if (!chapNhanThieuSo && session.digits.length < DANH_BO_LENGTH) {
+    return { action: "chua_du_so", prompt: null };
+  }
+
+  const requestNoAtStart = session.requestNo;
+  const digitsAtStart = session.digits; // để phát hiện khách đọc thêm trong lúc chờ // guard chống verdict về trễ (xem cuối hàm)
+
+  const rejected = callState._danhBoRejected || [];
+  const txSingle = latestSessionDanhBo(callState); // lượt ĐƠN ra đúng 11 số (nếu có)
+
+  // (a) và (b) khởi động cùng lúc.
+  const apiCheckP = (txSingle && !rejected.includes(txSingle))
+    ? candidateExistsInApi(txSingle, callState)
+    : Promise.resolve(false);
+  const arbiterP = runDanhBoArbiter(callState, { waitTranscriptMs: 0 });
+
+  // [fix 26/07/2026] Cờ `xong` để nhánh hết-giờ KHÔNG log cảnh báo giả khi trọng
+  // tài đã về kịp (cuộc rtc_u1_E5hSj6j: log báo "quá 6000ms" ngay sau khi verdict
+  // đã dùng xong — timer vẫn chạy tiếp sau khi Promise.race đã ngã ngũ).
+  let xong = false;
+  const verdict = await Promise.race([
+    arbiterP.then((v) => { xong = true; return v; }),
+    _sleep(DANH_BO_VERIFY_WAIT_MS).then(() => {
+      if (xong) return null;
+      log.warn(`[danh_bo][verify] Trọng tài quá ${DANH_BO_VERIFY_WAIT_MS}ms — quyết định bằng dữ liệu đang có.`);
+      return null;
+    }),
+  ]);
+  const txExists = await apiCheckP;
+
+  // Trong lúc chờ, khách có thể đã bấm DTMF / lượt yêu cầu đã sang phiên mới →
+  // kết quả này thuộc về phiên CŨ, bỏ đi (guard §3.3 kế hoạch v3).
+  if (callState.danhBo) return { action: "none" };
+  if (session.requestNo !== requestNoAtStart) {
+    log.info(`[danh_bo][verify] Bỏ kết quả phiên #${requestNoAtStart} (đã sang phiên #${session.requestNo}).`);
+    return { action: "none" };
+  }
+  // [fix 26/07/2026 đợt 3] Khách đọc THÊM số trong lúc trọng tài chạy → phán quyết
+  // này dựa trên dữ liệu CŨ, áp lên trạng thái MỚI là sai. Cuộc rtc_u2_E5hhmAHq:
+  // trọng tài chạy với 4 số, lúc trả kết quả phiên đã có 8 số, code vẫn reset phiên.
+  if (session.digits !== digitsAtStart) {
+    log.info(`[danh_bo][verify] Bỏ kết quả cũ (${digitsAtStart.length} số) — khách đã đọc thêm (${session.digits.length} số).`);
+    return { action: "none" };
+  }
+
+  // ── Nhánh 1: lượt đơn ra 11 số VÀ tồn tại trong hệ thống → tin transcript ──
+  // (transcript > suy luận; lại đã có API bảo chứng). Đây cũng là nhánh khi
+  // trọng tài đồng ý — kết quả như nhau nên không cần tách.
+  if (txSingle && txExists) {
+    callState.danhBo = { value: txSingle, confirmed: false };
+    callState._danhBoResolvedBy = "transcript_11";
+    // Khách tự đọc thẳng, không qua suy luận của trọng tài → KHÔNG áp gate
+    // xác nhận lời nói (gate chỉ dành cho số do trọng tài SUY RA).
+    callState._danhBoNeedsVerbalYes = false;
+    const arbSame = normalizeDanhBo(verdict?.ma_danh_bo) === txSingle;
+    log.info(`[danh_bo][verify] Chốt "${txSingle}" từ transcript (API OK, trọng tài ${arbSame ? "đồng ý" : "khác/không có"}).`);
+    callState._logger?.addEvent?.("danh_bo_verified",
+      `transcript_11 "${txSingle}" — API OK, trọng tài ${arbSame ? "đồng ý" : "khác/không có"}`);
+    const payload = confirmRequestResponse(txSingle, callState);
+    return { action: "confirm", value: txSingle, by: "transcript_11", prompt: _docChoKhach(payload), payload };
+  }
+
+  // ── Nhánh 2: transcript không tồn tại trong API (hoặc không có lượt đơn 11 số)
+  // → dùng ứng viên của trọng tài (tryProposeArbiterCandidate tự verify API +
+  //   đặt gate `_danhBoNeedsVerbalYes`).
   const resp = await tryProposeArbiterCandidate(verdict, callState);
   if (resp) {
-    try { return JSON.parse(resp).doc_cho_khach || null; } catch { return null; }
+    const value = callState.danhBo?.value || null;
+    callState._danhBoResolvedBy = "arbiter";
+    log.info(`[danh_bo][verify] Chốt "${value}" từ trọng tài gpt-5.1.`);
+    callState._logger?.addEvent?.("danh_bo_verified", `arbiter "${value}"`);
+    return { action: "confirm", value, by: "arbiter", prompt: _docChoKhach(resp), payload: resp };
   }
-  // Đã gom nhiều nhịp mà gpt-5.1 vẫn không ghép nổi 11 số tin cậy → mời BẤM PHÍM
-  // (đọc trực tiếp, không phụ thuộc model có gọi tool hay không).
-  if (callState._danhBoAssembleTries >= 3 && !callState._danhBoDtmfInvited) {
-    try { return JSON.parse(danhBoDtmfInviteResponse(callState)).doc_cho_khach || null; } catch { return null; }
+
+  // ── Nhánh 3: cả hai kênh đều không ra ứng viên hợp lệ → mời đọc lại / leo thang ──
+  if (txSingle && !txExists) {
+    log.warn(`[danh_bo][verify] "${txSingle}" nghe đủ 11 số nhưng KHÔNG có trong hệ thống — không chốt bừa.`);
+    callState._logger?.addEvent?.("danh_bo_not_found", `${txSingle} — 11 số nhưng không tồn tại`);
   }
-  return null;
+  const out = danhBoReReadOrEscalate(callState, session.digits.length);
+  const action = callState._danhBoDtmfInvited ? "dtmf" : "reread";
+  return { action, prompt: _docChoKhach(out), payload: out };
+}
+
+/** Bóc `doc_cho_khach` khỏi payload JSON của các hàm dựng câu thoại. */
+function _docChoKhach(payloadJson) {
+  try { return JSON.parse(payloadJson).doc_cho_khach || null; } catch { return null; }
+}
+
+// ─── [2.1 — 26/07/2026] PHÁT HIỆN MODEL BỊA SỐ ───────────────────────────────
+// `ma_danh_bo` là trường `required` trong schema 5 tool tra cứu → structured
+// output BUỘC model phải điền một giá trị kể cả khi nó chưa nghe được gì. Cuộc
+// rtc_u2_E5eDfB96UnJE6iDWfPbRX: khách mới nói "xem giúp anh tiền nước tháng này",
+// chưa đọc số nào, model gọi get_payment_status({"ma_danh_bo":"725625"}).
+//
+// Ta GIỮ trường này (nó là nguồn nghe thứ hai cho trọng tài — `_danhBoReads` đã
+// chết từ 23/07 khi gỡ tool confirm_danh_bo), nhưng lọc số bịa ở đây.
+
+/** Khoảng cách Levenshtein (chỉ dùng cho chuỗi số ngắn ≤ 20 ký tự). */
+function _levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,                                  // xoá
+        cur[j - 1] + 1,                               // thêm
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1) // thay
+      );
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/**
+ * Phân loại dãy số model truyền vào, đối chiếu với số khách THỰC SỰ đã đọc
+ * trong LƯỢT YÊU CẦU hiện tại (biến 2).
+ *
+ *  R1 — phiên chưa có chữ số nào            → BỊA (bắt trọn ca "725625")
+ *  R2 — arg là substring của phiên          → nghe đúng
+ *  R3 — Levenshtein ≤ max(1, ⌊len*0.2⌋)     → nghe lệch (chấp nhận làm quan sát)
+ *  R4 — còn lại                             → BỊA
+ *
+ * @returns {{verdict:"empty"|"nghe_dung"|"nghe_lech"|"bia", rule?:string, distance?:number}}
+ */
+export function classifyModelArg(arg, sessionDigits) {
+  const a = String(arg || "");
+  const s = String(sessionDigits || "");
+  if (!a) return { verdict: "empty" };
+  if (!s) return { verdict: "bia", rule: "R1" };
+  if (s.includes(a)) return { verdict: "nghe_dung", rule: "R2" };
+
+  const nguong = Math.max(1, Math.floor(a.length * 0.2));
+  let best = Infinity;
+  for (const len of [a.length - 1, a.length, a.length + 1]) {
+    if (len <= 0 || len > s.length) continue;
+    for (let i = 0; i + len <= s.length; i++) {
+      const d = _levenshtein(a, s.substr(i, len));
+      if (d < best) best = d;
+      if (best === 0) break;
+    }
+  }
+  if (best <= nguong) return { verdict: "nghe_lech", rule: "R3", distance: best };
+  return { verdict: "bia", rule: "R4", distance: Number.isFinite(best) ? best : null };
+}
+
+/**
+ * [2.2] Ghi nhận dãy model nghe được. BỊA → bỏ hoàn toàn (không vào `_danhBoReads`,
+ * không đếm, không tra cứu). Còn lại → đưa vào kho quan sát cho trọng tài.
+ */
+function noteModelHeardDanhBo(argModel, callState = {}) {
+  if (!argModel) return;
+  const s = ensureDanhBoSession(callState);
+  const c = classifyModelArg(argModel, s.digits);
+
+  if (c.verdict === "bia") {
+    callState._hallucinationCount = (callState._hallucinationCount || 0) + 1;
+    log.warn(`[danh_bo] Model BỊA số "${argModel}" (${c.rule}${c.distance != null ? `, d=${c.distance}` : ""}) — bỏ qua.`);
+    callState._logger?.addEvent?.("danh_bo_arg_hallucinated",
+      `${argModel} (${c.rule}${c.distance != null ? `, d=${c.distance}` : ""}) — lần ${callState._hallucinationCount}`);
+    return;
+  }
+
+  const reads = (callState._danhBoReads ??= []);
+  reads.push(argModel);
+  while (reads.length > 20) reads.shift();
+  log.debug(`[danh_bo] Ghi nhận bản nghe model "${argModel}" (${c.verdict}/${c.rule}).`);
 }
 
 /** session-ws gọi khi khách PHỦ ĐỊNH số đang chờ xác nhận: đẩy vào rejected +
  *  xoá để co-pilot / model được đề xuất dãy khác. */
 export function noteDanhBoRejected(callState = {}) {
   rejectStoredDanhBo(callState);
+}
+
+/**
+ * [1.8] Câu mời BẤM PHÍM để session-ws phát trực tiếp (watchdog / leo thang),
+ * không cần đi qua một tool call nào.
+ */
+export function danhBoDtmfInvitePrompt(callState = {}) {
+  return _docChoKhach(danhBoDtmfInviteResponse(callState));
 }
 
 /**
@@ -632,19 +815,25 @@ export function noteDanhBoRejected(callState = {}) {
 // confirm_danh_bo (đã gỡ). Nguyên tắc: KHÔNG tin "tai" model (arg ma_danh_bo hay
 // sai/thiếu); ưu tiên transcript; số chỉ được TRA CỨU sau khi khách xác nhận LỜI
 // NÓI (session-ws bắt "đúng" → danhBo.confirmed=true). Thu số nhiều hơi + trọng
-// tài do proactiveAssembleDanhBo (session-ws) lo; hết lượt → DTMF → chuyển máy.
+// tài do verifyDanhBoFromSession (session-ws gọi ở đường nền) lo; hết lượt → DTMF → chuyển máy.
+// [1.3 — 26/07/2026] MỨC B: hàm này giờ là một CỔNG KHÔNG CHẶN. Nó chỉ đọc
+// trạng thái hiện tại và trả lời ngay (mục tiêu ≤ 2s). Việc gom số, gọi trọng
+// tài và đọc lại xác nhận do ĐƯỜNG NỀN lo (session-ws → verifyDanhBoFromSession),
+// nơi CODE tự phát lời qua `_speakVerbatim` — cùng mô hình đã chứng minh hiệu quả
+// ở luồng DTMF.
 async function resolveDanhBo(rawArg, callState = {}) {
   const stored = callState.danhBo;
-  const txDanhBo = latestTranscriptDanhBo(callState); // lượt transcript đơn = 11 số
+  const session = ensureDanhBoSession(callState);
+  const txSession = latestSessionDanhBo(callState); // lượt đơn 11 số TRONG phiên hiện tại
 
   // ── Đã có số ĐÃ XÁC NHẬN ──────────────────────────────────────────────────
   if (stored?.value && stored.confirmed) {
     // Khách đọc MỘT dãy 11 số MỚI khác hẳn → đổi danh bộ → xác nhận lại số mới.
-    if (txDanhBo && txDanhBo !== stored.value) {
-      console.warn(`[danh_bo] Khách đọc danh bộ MỚI "${txDanhBo}" khác số đã xác nhận "${stored.value}" → xác nhận lại.`);
-      callState.danhBo = { value: txDanhBo, confirmed: false };
+    if (txSession && txSession !== stored.value) {
+      log.warn(`[danh_bo] Khách đọc danh bộ MỚI "${txSession}" khác số đã xác nhận "${stored.value}" → xác nhận lại.`);
+      callState.danhBo = { value: txSession, confirmed: false };
       callState._danhBoNeedsVerbalYes = false;
-      return { ok: false, error: confirmRequestResponse(txDanhBo, callState) };
+      return { ok: false, error: confirmRequestResponse(txSession, callState) };
     }
     callState._danhBoLastPrompt = null; // đã chốt — tắt cơ chế re-assert
     return { ok: true, value: stored.value };
@@ -658,84 +847,48 @@ async function resolveDanhBo(rawArg, callState = {}) {
   }
 
   // ── Chưa có số ────────────────────────────────────────────────────────────
-  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT) → tin ngay, không ép xác nhận.
+  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT) → tin ngay, không ép xác nhận
+  // (số này không đi qua "tai" model nên không sợ nghe sai).
   const argModel = normalizeDanhBo(rawArg);
   if (argModel.length === DANH_BO_LENGTH &&
     Array.isArray(callState.knownDanhBo) && callState.knownDanhBo.includes(argModel)) {
     callState.danhBo = { value: argModel, confirmed: true };
+    callState._logger?.markDanhBoResolved?.("known_tel", argModel);
     return { ok: true, value: argModel };
   }
 
-  // Chưa nghe khách đọc số nào → xin số ngay (chưa cần chờ).
-  if ((callState._danhBoTranscripts || []).length === 0 && !argModel) {
+  // [2.2] Arg của model CHỈ là một quan sát cho trọng tài — không bao giờ được
+  // dùng để tra cứu hay để đếm đủ/thiếu (nguyên tắc §1.1 kế hoạch v3).
+  noteModelHeardDanhBo(argModel, callState);
+
+  // [2.3] Model bịa số ≥2 lần = nó đã mất ngữ cảnh; nghe tiếp chỉ tốn thời gian
+  // của khách → chuyển thẳng sang bấm phím (đường chắc chắn nhất).
+  //
+  // ĐIỀU KIỆN: khách phải đã TỪNG đọc số trong cuộc gọi này. Model rất hay bắn
+  // liên tiếp nhiều tool call ngay khi khách chưa kịp nói gì — nếu leo thang
+  // luôn thì khách vừa nghe "cho em xin mã danh bộ" đã bị chuyển sang "vui lòng
+  // bấm phím", cụt lủn và chưa cho khách một cơ hội nào để đọc.
+  const khachDaTungDocSo = (callState._danhBoTranscripts || []).length > 0;
+  if ((callState._hallucinationCount || 0) >= 2 && khachDaTungDocSo && !callState._danhBoDtmfInvited) {
+    log.warn(`[danh_bo] Model bịa số ${callState._hallucinationCount} lần → mời bấm phím DTMF.`);
+    return { ok: false, error: danhBoDtmfInviteResponse(callState) };
+  }
+
+  // ── Quyết định theo BIẾN 2 (phiên đọc hiện tại), KHÔNG chờ ────────────────
+  const daNghe = session.digits.length;
+
+  // Chưa nghe khách đọc số nào trong phiên này → xin số ngay.
+  if (daNghe === 0) {
     return { ok: false, error: invalidDanhBoResponse(0, callState) };
   }
 
-  // Tổng số chữ số đang có: max(arg model, ghép mọi lượt transcript).
-  const digitsAvailable = () => {
-    const txConcat = (callState._danhBoTranscripts || []).map((t) => normalizeDanhBo(t.text)).join("");
-    return Math.max(txConcat.length, normalizeDanhBo(rawArg).length);
-  };
-
-  // Leo thang khi CHƯA đủ số: mời đọc lại (còn lượt) → DTMF → chuyển máy/tạo phiếu.
-  const notEnough = (heardLen) => {
-    callState._danhBoResolveTries = (callState._danhBoResolveTries || 0) + 1;
-    let rr;
-    if (callState._danhBoDtmfInvited) rr = danhBoEscalationResponse(callState);
-    else if (callState._danhBoResolveTries >= DANH_BO_MAX_READS) rr = danhBoDtmfInviteResponse(callState);
-    else rr = invalidDanhBoResponse(heardLen, callState);
-    callState._danhBoLastResolveResp = rr;
-    return { ok: false, error: rr };
-  };
-
-  // Cache chống gọi trùng khi model gọi tool nhiều lần trên CÙNG trạng thái vào.
-  const entrySig = `${(callState._danhBoTranscripts || []).length}|${argModel}`;
-  if (callState._danhBoLastResolveSig === entrySig && callState._danhBoLastResolveResp) {
-    return { ok: false, error: callState._danhBoLastResolveResp };
+  // Đang gom dở → trả NGAY, để đường nền tiếp tục gom.
+  if (daNghe < DANH_BO_LENGTH) {
+    return { ok: false, error: dangGomSoResponse(daNghe) };
   }
 
-  // ── CHỜ đủ 11 số rồi mới chạy trọng tài / phát lời ────────────────────────
-  // [fix 25/07/2026] Nếu CẢ arg model LẪN transcript đều < 11 số (đếm thô) → KHOAN
-  // phát lời, chờ khách đọc tiếp (khách hay đọc tách nhiều hơi). Poll tối đa
-  // DANH_BO_WAIT_MS; đủ 11 số thì chạy trọng tài NGAY. Hết giờ vẫn thiếu thì VẪN
-  // chạy trọng tài lần chót (bên dưới), chỉ mời đọc lại khi trọng tài cũng thiếu.
-  const DANH_BO_WAIT_MS = Number(process.env.DANH_BO_WAIT_MS || 15000);
-  const DANH_BO_POLL_MS = 700;
-  let waited = 0;
-  while (digitsAvailable() < DANH_BO_LENGTH && waited < DANH_BO_WAIT_MS) {
-    await _sleep(DANH_BO_POLL_MS);
-    waited += DANH_BO_POLL_MS;
-  }
-  if (digitsAvailable() < DANH_BO_LENGTH) {
-    // [fix 25/07/2026] Hết giờ chờ mà ĐẾM THÔ vẫn thiếu → VẪN thử trọng tài lần
-    // chót: gpt-5.1 có thể ghép / đọc chữ số tiếng Việt mà đếm thô bỏ sót
-    // ("hai mươi hai" = 22, "lăm" = 5...). Chỉ khi trọng tài CŨNG không ra đủ 11
-    // số mới phát lời mời khách cung cấp lại số (nhánh cuối).
-    console.log(`[danh_bo] Chờ ${waited}ms, đếm thô mới ${digitsAvailable()} số → vẫn thử trọng tài lần chót.`);
-  }
-
-  // ── GỌI TRỌNG TÀI gpt-5.1 ON-DEMAND (dù đủ số hay đã hết giờ chờ) ─────────
-  callState._danhBoLastResolveSig = `${(callState._danhBoTranscripts || []).length}|${argModel}`;
-  const verdict = await runDanhBoArbiter(callState, { waitTranscriptMs: 0 });
-  // tryProposeArbiterCandidate CHỈ chốt khi ứng viên ĐỦ 11 số + đủ tin cậy + tồn tại API.
-  const resp = await tryProposeArbiterCandidate(verdict, callState);
-  if (resp) {
-    callState._danhBoLastResolveResp = resp;
-    return { ok: false, error: resp };
-  }
-
-  // Trọng tài KHÔNG ra đủ 11 số tin cậy → transcript đơn = 11 số (chưa bị bác) đọc lại.
-  const txNow = latestTranscriptDanhBo(callState);
-  if (txNow && !(callState._danhBoRejected || []).includes(txNow)) {
-    callState.danhBo = { value: txNow, confirmed: false };
-    callState._danhBoNeedsVerbalYes = false;
-    const r = confirmRequestResponse(txNow, callState);
-    callState._danhBoLastResolveResp = r;
-    return { ok: false, error: r };
-  }
-
-  // Cả trọng tài lẫn transcript đều chưa đủ 11 số → mời khách cung cấp lại số.
-  return notEnough(digitsAvailable() >= DANH_BO_LENGTH ? 0 : digitsAvailable());
+  // Đủ hoặc thừa số → đường nền đang xác minh (API + gpt-5.1), trả câu chờ ngắn.
+  return { ok: false, error: dangXacMinhResponse() };
 }
 
 // function normalizeDanhBo(raw) {
@@ -797,10 +950,7 @@ function prevPeriod() {
  * để model phân biệt CUSTOMER_NOT_FOUND (đọc lại danh bộ) vs INVOICE/PRODUCTION_NOT_FOUND (kỳ chưa có).
  */
 async function fetchBilling(ma_danh_bo, ky, nam, callState) {
-  console.log("[fetchBilling] ma_danh_bo", ma_danh_bo);
-  console.log("[fetchBilling] ky", ky);
-  console.log("[fetchBilling] nam", nam);
-  console.log("[fetchBilling] callState._danhBoTranscripts : ", callState._danhBoTranscripts);
+  log.debug(`[fetchBilling] ma_danh_bo=${ma_danh_bo} ky=${ky} nam=${nam}`);
   const rs = await resolveDanhBo(ma_danh_bo, callState);
   if (!rs.ok) return { ok: false, error: rs.error };
 
@@ -828,8 +978,13 @@ async function fetchBilling(ma_danh_bo, ky, nam, callState) {
       }),
     };
   }
-  // ma_danh_bo: rs.value,
-  return { ok: true, rows: Array.isArray(r.data) ? r.data : [] };
+  // [fix 26/07/2026 — cuộc rtc_u1_E5hSj6jwK5jeMHvCZV7yx] Dòng này TỪNG bị comment
+  // nên `f.ma_danh_bo` là undefined, các handler dựng câu "Mã danh bộ undefined,
+  // Kỳ 7/2026: 18 m³...". Model đọc thấy chữ "undefined" liền KẾT LUẬN là tra cứu
+  // hỏng, rồi nói với khách "hệ thống vẫn trả về mã danh bộ không đúng nên em chưa
+  // thể đọc số khối nước" — MẶC DÙ tool đã trả success kèm dữ liệu thật. Khách bấm
+  // DTMF đúng 2 lần, xác nhận 2 lần, vẫn bị bảo là sai số rồi cúp máy.
+  return { ok: true, ma_danh_bo: rs.value, rows: Array.isArray(r.data) ? r.data : [] };
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -1445,7 +1600,7 @@ export async function dispatchTool(name, args, callState = {}) {
   try {
     switch (name) {
       // [23/07/2026] confirm_danh_bo GỠ khỏi TOOLS — model không còn tự quản danh
-      // bộ; thu-xác nhận do CODE lo (resolveDanhBo + proactiveAssembleDanhBo + DTMF).
+      // bộ; thu-xác nhận do CODE lo (resolveDanhBo + verifyDanhBoFromSession + DTMF).
       case "get_bill": return await handleGetBill(args, callState);
       case "get_water_usage": return await handleGetWaterUsage(args, callState);
       case "get_payment_status": return await handleGetPaymentStatus(args, callState);

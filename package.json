@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node test_case/danh_bo_20260726.test.mjs && node test_case/danh_bo_verify_flow.test.mjs && node test_case/speak_verbatim.test.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

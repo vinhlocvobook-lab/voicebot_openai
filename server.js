@@ -13,10 +13,11 @@
 import "dotenv/config";
 import express from "express";
 import { acceptCall, rejectCall, referCall, hangupCall } from "./src/call-manager.js";
-import { openSessionWebSocket } from "./src/session-ws.js";
+import { openSessionWebSocket, flushAllSessions, activeSessionCount } from "./src/session-ws.js";
 import { verifyWebhookSignature } from "./src/webhook-verify.js";
 import { log } from "./src/logger.js";
 import { getThongTinKhachHang } from "./src/api.js";
+import { closeDb } from "./src/db.js";
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -233,10 +234,40 @@ app.listen(PORT, () => {
 });
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
-process.on("SIGTERM", () => {
-  log.info("[Server] SIGTERM nhận – đang tắt...");
+// [0.1 — 26/07/2026] TRƯỚC ĐÂY: SIGTERM gọi thẳng process.exit(0) và KHÔNG có
+// handler SIGINT → nhấn Ctrl+C giữa cuộc gọi là mất trắng conversation_summary
+// (cuộc rtc_u2_E5eDfB96UnJE6iDWfPbRX ngày 26/07 không có file để phân tích).
+// Giờ: chặn thoát, flush mọi phiên đang mở (tối đa 5s), đóng DB, rồi mới exit.
+const SHUTDOWN_FLUSH_TIMEOUT_MS = 5000;
+let _shuttingDown = false;
+
+async function _gracefulShutdown(signal) {
+  // Nhấn Ctrl+C lần 2 → thoát ngay, không bắt người dùng chờ.
+  if (_shuttingDown) {
+    log.warn(`[Server] ${signal} lần 2 – thoát ngay.`);
+    process.exit(1);
+  }
+  _shuttingDown = true;
+
+  const n = activeSessionCount();
+  log.info(`[Server] ${signal} nhận – đang tắt... (${n} phiên đang mở)`);
+  try {
+    if (n > 0) {
+      await flushAllSessions(SHUTDOWN_FLUSH_TIMEOUT_MS);
+      log.info(`[Server] Đã flush log ${n} phiên.`);
+    }
+  } catch (err) {
+    log.error("[Server] Lỗi khi flush log lúc tắt:", err?.message || err);
+  }
+  try {
+    await closeDb();
+  } catch { /* đóng DB lỗi không được chặn việc thoát */ }
+  log.info("[Server] Tắt hoàn tất.");
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", () => { _gracefulShutdown("SIGTERM"); });
+process.on("SIGINT", () => { _gracefulShutdown("SIGINT"); });
 
 // ─── Lưới an toàn: không để lỗi async sót lại làm sập server giữa cuộc gọi ──────
 process.on("unhandledRejection", (reason) => {
@@ -244,4 +275,8 @@ process.on("unhandledRejection", (reason) => {
 });
 process.on("uncaughtException", (err) => {
   log.error("[Server] uncaughtException:", err?.message || err);
+  // [0.1] Lỗi không bắt được thường đi kèm tiến trình sắp chết — cố flush log
+  // các cuộc gọi đang dở trước khi mất trắng. Không exit (giữ hành vi cũ:
+  // không sập server giữa cuộc gọi).
+  flushAllSessions(SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => { });
 });

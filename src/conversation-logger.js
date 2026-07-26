@@ -80,6 +80,38 @@ export class ConversationLogger {
     };
     this._transcriptionModel = null;  // model transcription thực tế (từ acceptParams)
     this._summaryUsage = null;        // usage từ gpt-4o-mini summary call
+
+    // ── [0.3 — 26/07/2026] Đo lường bước lấy mã danh bộ ─────────────────────
+    // Mọi fix danh bộ từ 18/07 đến nay đều dựa trên MỘT cuộc gọi mẫu, không ai
+    // biết tỉ lệ thành công thật là bao nhiêu và fix mới có làm hồi quy fix cũ
+    // không. Các trường dưới đây là số nền để đối chiếu giữa các đợt sửa.
+    this._danhBo = {
+      resolvedBy:   null,  // transcript_11 | dtmf | arbiter | known_tel | history_tel | null
+      value:        null,  // dãy đã chốt (nếu có)
+      requestCount: 0,     // số lần YÊU CẦU khách đọc (= _danhBoSession.requestNo)
+      startedAt:    null,  // ms — lần đầu bot xin mã danh bộ
+      confirmedAt:  null,  // ms — lúc khách xác nhận xong
+    };
+  }
+
+  // ── [0.3] Đo lường bước danh bộ ─────────────────────────────────────────────
+
+  /** Đánh dấu mốc bắt đầu bước lấy danh bộ (chỉ ghi nhận lần đầu). */
+  markDanhBoStarted() {
+    if (this._danhBo.startedAt == null) this._danhBo.startedAt = Date.now();
+  }
+
+  /** Ghi số lượt đã yêu cầu khách đọc lại (lấy từ _danhBoSession.requestNo). */
+  setDanhBoRequestCount(n) {
+    this._danhBo.requestCount = Number(n) || 0;
+  }
+
+  /** Chốt: danh bộ đã được xác nhận, ghi lại nguồn nào giải được. */
+  markDanhBoResolved(resolvedBy, value) {
+    this._danhBo.resolvedBy  = resolvedBy || null;
+    this._danhBo.value       = value || null;
+    this._danhBo.confirmedAt = Date.now();
+    this.addEvent("danh_bo_resolved", `${resolvedBy} → ${value}`);
   }
 
   // ── Transcript ──────────────────────────────────────────────────────────────
@@ -311,6 +343,20 @@ export class ConversationLogger {
         emptyTranscriptCount:   this.events.filter((e) => e.stage === "empty_transcript").length,
         cancelledResponseCount: this.events.filter((e) => /^response_(cancelled|failed|incomplete)$/.test(e.stage)).length,
         promptEchoCount:        this.events.filter((e) => e.stage === "transcript_prompt_echo").length,
+
+        // [0.3 — 26/07/2026] Chỉ số bước lấy mã danh bộ. Dùng để so sánh giữa
+        // các đợt sửa: danh_bo_resolved_by = null nghĩa là cuộc gọi KẾT THÚC mà
+        // chưa lấy được mã (chính là ca hỏng cần đếm).
+        danh_bo_resolved_by:   this._danhBo.resolvedBy,
+        danh_bo_value:         this._danhBo.value,
+        danh_bo_request_count: this._danhBo.requestCount,
+        danh_bo_seconds:       (this._danhBo.startedAt && this._danhBo.confirmedAt)
+          ? Math.round((this._danhBo.confirmedAt - this._danhBo.startedAt) / 1000)
+          : null,
+        // Số lần model bịa số: ở tham số tool (§4.1) + số bot đọc ra loa (§4.4).
+        hallucination_count:
+          this.events.filter((e) => e.stage === "danh_bo_arg_hallucinated").length +
+          this.events.filter((e) => e.stage === "bot_hallucinated_digits").length,
       },
 
       // ── 3. Token usage & chi phí cuộc gọi ─────────────────────────────────

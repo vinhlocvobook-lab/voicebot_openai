@@ -3,12 +3,15 @@
  * TRỌNG TÀI mã danh bộ: gom mọi quan sát nhiễu về CÙNG một mã danh bộ rồi nhờ
  * model mạnh (mặc định gpt-5.1) suy ra dãy 11 số khả dĩ nhất.
  * [fix 19/07/2026 v2] Chạy như CO-PILOT NGẦM ngay từ lượt đọc ĐẦU TIÊN (song
- * song lúc bot đọc lại số cho khách) — xem handleConfirmDanhBo trong tools.js.
+ * song lúc bot đọc lại số cho khách) — xem verifyDanhBoFromSession trong tools.js.
  *
  * Nguồn quan sát (mỗi lần khách đọc có tới 2 "tai" nghe độc lập):
- *   1. reads       — dãy số model realtime (mini) nghe được, truyền vào confirm_danh_bo.
- *   2. transcripts — transcript các lượt khách đọc số (gpt-4o-mini-transcribe),
- *                    do session-ws.js buffer vào callState._danhBoTranscripts.
+ *   1. reads       — dãy số model realtime nghe được qua tham số `ma_danh_bo` của các
+ *                    tool tra cứu, ĐÃ lọc bỏ số bịa (classifyModelArg trong tools.js).
+ *   2. transcripts — transcript các lượt khách đọc số, do session-ws.js buffer vào
+ *                    callState._danhBoTranscripts (biến 1 — TOÀN cuộc gọi).
+ *   2b. latestTranscripts — transcript của LẦN ĐỌC MỚI NHẤT (callState._danhBoSession,
+ *                    biến 2 — MỘT lượt yêu cầu). Ưu tiên cao nhất khi suy luận.
  *   3. knownDanhBo — danh bộ đã đăng ký theo SĐT gọi đến (gợi ý mạnh, không ép).
  *   4. rejected    — các dãy bot ĐÃ đọc lại và bị khách BÁO SAI (đáp án đúng
  *                    chắc chắn khác các dãy này ở ít nhất một vị trí).
@@ -23,7 +26,7 @@ import { log } from "./logger.js";
 const ARBITER_MODEL = process.env.DANH_BO_ARBITER_MODEL || "gpt-5.1";
 // [fix 19/07/2026 v3] 12s → 20s: gpt-5.1 reasoning với nhiều transcript có thể
 // >12s (đã timeout 2 lần cuộc E3KbgngzfpyMMwworgeXs). An toàn vì trọng tài giờ
-// LUÔN chạy NỀN (không chặn bot đọc lại) — xem handleConfirmDanhBo/proactiveAssembleDanhBo.
+// LUÔN chạy NỀN (không chặn function_call_output) — xem verifyDanhBoFromSession.
 const ARBITER_TIMEOUT_MS = Number(process.env.DANH_BO_ARBITER_TIMEOUT_MS || 20000);
 // [fix 19/07/2026] gpt-5.1 là reasoning model — mặc định có thể "suy nghĩ" nhiều
 // giây trước khi trả lời, mà bước này chạy GIỮA cuộc gọi thoại (khách đang chờ
@@ -63,22 +66,35 @@ const VERDICT_SCHEMA = {
 /**
  * @param {object} p
  * @param {string[]} p.reads        Các dãy số model đã nghe (theo thứ tự thời gian).
- * @param {string[]} p.transcripts  Transcript các lượt khách đọc số.
+ * @param {string[]} p.transcripts  Transcript các lượt khách đọc số (TOÀN cuộc gọi).
+ * @param {string[]} p.latestTranscripts [1.7 — 26/07/2026] Transcript của LẦN ĐỌC
+ *   MỚI NHẤT (từ `_danhBoSession.turns`) — khách vừa được yêu cầu đọc TRỌN VẸN mã.
  * @param {string[]} p.knownDanhBo  Danh bộ đăng ký theo SĐT người gọi.
  * @param {string[]} p.rejected     Các dãy đã đọc lại cho khách và bị khách BÁO SAI.
  * @returns {Promise<{ma_danh_bo:string|null, do_tin_cay:number, ly_do:string}|null>}
  */
-export async function arbitrateDanhBo({ reads = [], transcripts = [], knownDanhBo = [], rejected = [] } = {}) {
-  if (reads.length === 0 && transcripts.length === 0) return null;
+export async function arbitrateDanhBo({
+  reads = [], transcripts = [], latestTranscripts = [], knownDanhBo = [], rejected = [],
+} = {}) {
+  if (reads.length === 0 && transcripts.length === 0 && latestTranscripts.length === 0) return null;
+
+  // [1.7] Tách LẦN ĐỌC MỚI NHẤT khỏi các lần trước. Cuộc rtc_u2_E5eDfB96UnJE6iDWfPbRX:
+  // trọng tài nhận một cục 31 chữ số trộn 5 lượt rác của nhiều lần đọc khác nhau →
+  // từ chối (rất đúng đắn — dữ liệu VÀO mới là thứ sai). Khi tách ra, lần đọc mới
+  // nhất chỉ chứa đúng "22023251775" và bài toán trở nên tầm thường.
+  const _truoc = transcripts.filter((t) => !latestTranscripts.includes(t));
 
   const prompt = `Bạn là chuyên gia phân tích lỗi nhận dạng giọng nói (ASR) tiếng Việt cho tổng đài cấp nước.
 Khách hàng đang đọc MÃ DANH BỘ gồm ĐÚNG 11 CHỮ SỐ qua điện thoại. Có nhiều "bản nghe" nhiễu về CÙNG một mã, từ 2 hệ thống nghe độc lập:
 
+=== LẦN ĐỌC MỚI NHẤT (khách vừa được yêu cầu đọc TRỌN VẸN mã — ƯU TIÊN CAO NHẤT) ===
+${latestTranscripts.length ? latestTranscripts.map((t, i) => `Lượt ${i + 1}: "${t}"`).join("\n") : "(không có)"}
+
+=== CÁC LẦN ĐỌC TRƯỚC ĐÓ (mỗi lần khách được mời đọc TRỌN VẸN cùng MỘT mã — hãy đối chiếu THEO VỊ TRÍ) ===
+${_truoc.length ? _truoc.map((t, i) => `Lượt ${i + 1}: "${t}"`).join("\n") : "(không có)"}
+
 === BẢN NGHE CỦA MODEL THOẠI (kém tin cậy hơn, hay rơi mất số đầu, chép sai số) ===
 ${reads.length ? reads.map((r, i) => `Lần ${i + 1}: "${r}" (${r.length} số)`).join("\n") : "(không có)"}
-
-=== TRANSCRIPT CÁC LƯỢT KHÁCH ĐỌC SỐ (model phiên âm riêng, thường chính xác hơn; khách có thể đọc tách nhiều hơi — các lượt LIỀN NHAU có thể là các PHẦN nối tiếp của cùng một mã) ===
-${transcripts.length ? transcripts.map((t, i) => `Lượt ${i + 1}: "${t}"`).join("\n") : "(không có)"}
 
 === DANH BỘ ĐÃ ĐĂNG KÝ THEO SỐ ĐIỆN THOẠI NGƯỜI GỌI (gợi ý mạnh nếu khớp gần đúng với bản nghe, nhưng khách CÓ THỂ hỏi cho danh bộ khác) ===
 ${knownDanhBo.length ? knownDanhBo.join(", ") : "(không có)"}
@@ -87,17 +103,26 @@ ${knownDanhBo.length ? knownDanhBo.join(", ") : "(không có)"}
 ${rejected.length ? rejected.join(", ") : "(không có)"}
 
 Nhiệm vụ: suy ra dãy 11 chữ số KHẢ DĨ NHẤT mà khách muốn đọc.
-Lưu ý khi phân tích:
+
+QUAN TRỌNG — cách các lần đọc liên hệ với nhau:
+- MỌI lần đọc ở trên đều là khách đọc CÙNG MỘT mã danh bộ, mỗi lần đọc TRỌN VẸN từ đầu. Chúng KHÔNG phải các phần nối tiếp của nhau.
+- Vì vậy hãy coi đây là bài toán BỎ PHIẾU THEO TỪNG VỊ TRÍ: căn các lần đọc lại với nhau rồi chọn chữ số xuất hiện nhiều nhất ở mỗi vị trí.
+- Ví dụ: lần 1 "22023251775", lần 2 "22023251175", lần 3 "22023257775" → vị trí 1-8 và 10-11 mọi lần đều khớp; chỉ vị trí 9 lệch (7/1/7) → chọn 7 → 22023251775... (áp dụng tương tự cho từng vị trí).
+- Trong MỘT lần đọc, khách có thể ngắt thành 2-3 hơi (các lượt liền nhau của cùng lần đọc đó) → ghép chúng lại trước, rồi mới đem so với các lần đọc khác.
+- Một lần đọc bị thiếu số (khách đọc dở, bị ngắt giữa chừng) vẫn dùng được: căn phần khớp được vào đúng vị trí, đừng loại bỏ cả lần đọc đó.
+
+Lưu ý khác khi phân tích:
+- Nếu LẦN ĐỌC MỚI NHẤT tự nó đã ra đúng 11 số và khớp với đa số các lần trước thì LẤY LUÔN.
 - Chuyển lời đọc tiếng Việt thành chữ số: "hai hai không hai ba hai" = 220232; "hai mươi hai" = 22; "lăm" = 5; "mốt" = 1; "tư" = 4.
-- Khách hay đọc tách 2-3 hơi: ghép các lượt transcript liền nhau nếu tổng vừa đủ 11 số.
-- Bản nghe của model thoại hay RƠI MẤT các số ĐẦU và chép sai từng số — dùng transcript làm trục chính, bản nghe model để đối chiếu.
-- Nếu các nguồn mâu thuẫn từng vị trí, ưu tiên: transcript > danh bộ đăng ký khớp gần đúng > bản nghe model.
-- KHÔNG bịa: nếu dữ liệu không đủ để tự tin ghép ra 11 số, trả do_tin_cay thấp.
+- Lỗi ASR thường gặp: rơi mất chữ số ĐẦU hoặc CUỐI, nhân đôi một chữ số, nghe nhầm 1↔7, 3↔2, 5↔9. Ưu tiên phương án giải thích được nhiều lần đọc nhất bằng ÍT lỗi nhất.
+- Bản nghe của model thoại kém tin cậy nhất — chỉ dùng để phá thế hoà khi các lần đọc mâu thuẫn ngang nhau.
+- Nếu các nguồn mâu thuẫn từng vị trí, ưu tiên: đa số các lần đọc > lần đọc mới nhất > danh bộ đăng ký khớp gần đúng > bản nghe model.
+- KHÔNG bịa: nếu dữ liệu không đủ để tự tin ghép ra 11 số, trả do_tin_cay thấp. Nhưng nếu có MỘT phương án nổi trội hơn hẳn các phương án khác thì cứ trả về kèm độ tin cậy vừa phải — hệ thống sẽ tự đối chiếu với cơ sở dữ liệu trước khi dùng.
 
 Trả về DUY NHẤT JSON:
 {"ma_danh_bo": "chuỗi 11 chữ số hoặc null nếu không suy ra được", "do_tin_cay": 0.0-1.0, "ly_do": "giải thích ngắn cách ghép"}`;
 
-  console.log("prompt_gpt_5.1:", prompt);
+  log.debug(`[Arbiter] prompt:\n${prompt}`);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ARBITER_TIMEOUT_MS);
   try {
@@ -123,9 +148,8 @@ Trả về DUY NHẤT JSON:
     }
 
     const data = await res.json();
-    console.log("data_gpt_5.1:", data);
     const content = data.choices?.[0]?.message?.content;
-    console.log("content_gpt_5.1:", content);
+    log.debug(`[Arbiter] raw content: ${content}`);
     if (!content) return null;
     const out = JSON.parse(content);
     log.info(

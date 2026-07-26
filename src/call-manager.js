@@ -57,12 +57,12 @@ export async function acceptCall(callId, customerContext = "") {
   };
 
   log.info(`[CallMgr] Accepting call ${callId}`);
-  console.log("[acceptCall]", {
-    BASE,
-    callId,
-    authHeaders,
-    body: JSON.stringify(body)
-  })
+  // console.log("[acceptCall]", {
+  //   BASE,
+  //   callId,
+  //   authHeaders,
+  //   body: JSON.stringify(body)
+  // })
   const res = await fetch(`${BASE}/${callId}/accept`, {
     method: "POST",
     headers: authHeaders(),
