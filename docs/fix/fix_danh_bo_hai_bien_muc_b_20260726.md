@@ -107,7 +107,8 @@ Lớp 2 (`_checkBotSpokenDigits`): bóc mọi cụm ≥4 chữ số trong lời 
 ### 6. Nới VAD giai đoạn đọc số (`session-ws.js`)
 
 `_setVadMode('digits'|'normal')` gửi `session.update` giữa cuộc gọi.
-Chế độ `digits`: `server_vad`, `silence_duration_ms: 2000`, `threshold: 0.6`, `prefix_padding_ms: 500`.
+Chế độ `digits`: `server_vad`, `silence_duration_ms: 2000`, `threshold: 0.6`, `prefix_padding_ms: 500`,
+và từ đợt 5 là `create_response: false` (mức C — model bị khoá, code phát mọi câu).
 
 `semantic_vad` chốt lượt theo ngữ nghĩa nên mỗi hơi đọc số trông như một lượt hoàn chỉnh — đó là lý do
 log có 6 lượt transcript rời rạc cho cùng một mã.
@@ -156,6 +157,7 @@ trọng tài cũng chuyển sang logger có level.
 | `DANH_BO_VAD_SILENCE_MS` | 2000 | `silence_duration_ms` khi đang đọc số |
 | `DANH_BO_VAD_THRESHOLD` | 0.6 | `threshold` khi đang đọc số |
 | `DANH_BO_VAD_RESTORE_MS` | 90000 | Tự trả VAD về `semantic_vad` |
+| `DANH_BO_MUTE_WATCHDOG_MS` | 15000 | Lưới an toàn chống bot câm (mức C) |
 
 Đã bỏ: `DANH_BO_WAIT_MS`.
 
@@ -169,8 +171,9 @@ trọng tài cũng chuyển sang logger có level.
 (đọc tách 3 hơi, không reset phiên giữa chừng, không hướng dẫn "đọc tiếp", bỏ phán quyết lỗi thời).
 
 `test_case/speak_verbatim.test.mjs` — 7 test cho cơ chế kiểm chứng lời bot (đợt 4).
+`test_case/muc_c_khong_cam.test.mjs` — 14 test bảng quyết định chống bot câm (đợt 5).
 
-Tổng **37 test**, chạy bằng `npm test`.
+Tổng **51 test**, chạy bằng `npm test`.
 
 Kịch bản chính: khách đọc tách 3 hơi (13 số) → trọng tài từ chối → mời đọc lại → khách đọc liền
 `22023251775` → **chốt đúng**. Đây chính là cuộc gọi mà code cũ làm hỏng.
@@ -381,6 +384,81 @@ khách quay lại đọc số thì gom tiếp bình thường; watchdog 90 giây
 Thêm `test_case/speak_verbatim.test.mjs` — 7 test cho logic so khớp, trong đó có test tái hiện đúng
 lỗi thật: câu chờ *"Dạ, em ghi nhận rồi ạ…"* phải bị nhận là **không khớp** với câu xác nhận chứa
 dãy `22023251775`.
+
+---
+
+## Đợt 5 — MỨC C: khoá model trong giai đoạn thu mã danh bộ
+
+### Vì sao chuyển sang mức C
+
+Bốn đợt trước, lỗi cứ dịch dần về cuối chuỗi: *không xử lý dữ liệu* → *xử lý sai* → *xử lý đúng nhưng
+nói sai*. Đợt 4 dừng ở chỗ **code chốt đúng mã trong 5 giây nhưng bot đọc nhầm câu cũ**, và cách chữa
+là đi kiểm chứng-rồi-gửi-lại.
+
+Chừng nào model còn được tự nói giữa lúc thu số thì còn phải chạy theo sau nó. Mức C cắt gốc:
+**model không được nói, code phát mọi câu.**
+
+### Thay đổi
+
+Chế độ `digits` giờ dùng `create_response: false`:
+
+```js
+turn_detection: {
+  type: "server_vad", threshold: 0.6, prefix_padding_ms: 500,
+  silence_duration_ms: 2000,
+  create_response: false,      // ← MỨC C: model KHÔNG tự sinh response
+  interrupt_response: true,
+}
+```
+
+Audio vẫn được commit và transcribe bình thường (biến 1 + biến 2 vẫn đầy đủ), chỉ là model không nói.
+
+**Lợi ích ngay lập tức:**
+
+- Không còn `function_call_output` cạnh tranh với câu code muốn đọc → hết lỗi Đ4.1.
+- Model không gọi tool trong giai đoạn này → **không còn `ma_danh_bo` bịa** (lỗi Đ2 biến mất tận gốc).
+- Nhiễu/tạp âm không kích hoạt model → hết phantom turn trong lúc khách đọc số.
+
+### Cái giá: code phải chịu trách nhiệm phát MỌI câu
+
+Rủi ro lớn nhất là **bot câm** — tệ hơn cả trả lời sai. Ba lớp bảo vệ:
+
+**1. Bảng quyết định — mọi lượt khách nói phải rơi vào đúng một nhánh CÓ phát lời:**
+
+| Lượt khách | Nhánh | Ai phát lời |
+|---|---|---|
+| Đọc số | `GOM_SO` | Đường nền (`verifyDanhBoFromSession` → `_speakVerbatim`) |
+| "đúng rồi" (đang chờ xác nhận) | `XAC_NHAN` | `_requestModelReply` → model đi tra cứu |
+| "sai rồi" (đang chờ xác nhận) | `PHU_DINH` | `_maybeVerifyDanhBo` → đề xuất dãy khác |
+| Chuyện khác / "vâng" ngoài ngữ cảnh | `DOI_CHU_DE` | Mở khoá + `_requestModelReply` |
+
+Hàm mới `_requestModelReply(lyDo, instructions?)` — nhờ model tự trả lời một lượt (không ép đọc
+nguyên văn), có retry khi đang có response chạy.
+
+Kẽ hở đã bịt: *"vâng"/"ừ"* khi **không** có ứng viên nào đang chờ. Trước đây không nhánh nào chạy →
+khách phải chờ tới lưới an toàn. Giờ từ khẳng định/phủ định chỉ có nghĩa khi `_dangChoXacNhan`.
+
+**2. Lưới an toàn chống câm** (`_armMuteWatchdog`, `DANH_BO_MUTE_WATCHDOG_MS` = 15000): sau mỗi lượt
+khách nói, nếu quá 15 giây mà bot chưa nói gì (và không đang xác minh, không đang chờ `_expectedSpeak`)
+→ **mở khoá model** + tạo response. Ghi event `mute_watchdog` để đếm số lần lọt lưới.
+
+**3. Các lối thoát cụ thể** (đã có từ đợt 3, vẫn giữ): khách xác nhận · DTMF đủ số · mời bấm phím ·
+`end_call` · `transfer_to_agent` · watchdog VAD 90s · dọn timer khi WS đóng.
+
+### Test
+
+`test_case/muc_c_khong_cam.test.mjs` — 14 test duyệt bảng quyết định với mọi loại lượt khách nói,
+khẳng định không lượt nào rơi vào im lặng.
+
+### Cần theo dõi kỹ trên production
+
+1. **`mute_watchdog` trong log** — mỗi lần xuất hiện là một nhánh code chưa phát lời, cần bịt riêng.
+2. **`speak_verbatim_mismatch`** — nếu về 0 thì cơ chế kiểm chứng của đợt 4 đã thành dư thừa (giữ lại
+   làm lưới an toàn).
+3. **Khách ngắt lời bot** giữa lúc bot đọc lại 11 số — `interrupt_response: true` vẫn bật, cần xem
+   trải nghiệm có mượt không.
+4. Nếu thấy bot phản ứng chậm ở đầu giai đoạn thu số, cân nhắc chỉ khoá model **sau** khi khách bắt đầu
+   đọc chữ số đầu tiên, thay vì ngay khi bot vừa hỏi xin mã.
 
 ---
 

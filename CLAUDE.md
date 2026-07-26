@@ -11,7 +11,7 @@ Voice Bot CSKH Cấp nước Trung An — trợ lý tiếng Việt trả lời c
 Node >= 18, ESM (`"type": "module"`). Deps: `express`, `ws`, `dotenv`.
 
 Entry point: **`server.js`**. Chạy: `npm start` / `npm run dev`. Health: `GET /health`.
-Test: `npm test` (2 file `.test.mjs` trong `test_case/`, thuần logic + giả lập `fetch`, không cần
+Test: `npm test` (4 file `.test.mjs` trong `test_case/`, thuần logic + giả lập `fetch`, không cần
 `.env`/mạng). Các file còn lại trong `test_case/`, `test_cases_Excel/` là kịch bản thủ công.
 Cần `.env` (xem `.env.example`); thiếu `OPENAI_API_KEY` server không chạy.
 
@@ -66,6 +66,14 @@ Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
 - **VAD đổi theo giai đoạn**: đang đọc số → `server_vad` `silence_duration_ms: 2000`
   (semantic_vad chốt lượt theo ngữ nghĩa nên cắt vụn từng hơi đọc số); chốt xong →
   `semantic_vad`. Phải trả về ở MỌI nhánh thoát + watchdog 90s.
+- **MỨC C — model bị KHOÁ trong giai đoạn thu số** (`create_response: false`).
+  Audio vẫn transcribe, chỉ là model không tự nói → hết cảnh model bịa số/đọc nhầm
+  câu. Đổi lại CODE phải phát MỌI câu: mỗi lượt khách nói phải rơi vào đúng một
+  nhánh có phát lời (gom số / xác nhận / phủ định / đổi chủ đề), xem bảng quyết
+  định trong `session-ws.js`. `_requestModelReply()` để nhờ model tự trả lời.
+  Lưới an toàn `_armMuteWatchdog` (15s) mở khoá nếu bot lỡ im lặng — mỗi event
+  `mute_watchdog` trong log là một nhánh code còn thiếu, phải bịt riêng.
+  **Bot câm tệ hơn bot trả lời sai.**
 - **Gate xác nhận lời nói**: `danhBo.confirmed` chỉ được đặt bởi LƯỢT KHÁCH THẬT
   chứa từ khẳng định (`session-ws.js`). Model gọi thẳng tool tra cứu KHÔNG tính là
   bằng chứng đồng ý. Hỏng chỗ này = bot đọc thông tin người khác cho khách nghe.

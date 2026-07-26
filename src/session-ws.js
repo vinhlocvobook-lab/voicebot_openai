@@ -351,6 +351,36 @@ export function openSessionWebSocket(callId, callOps) {
   // chưa hề đọc số nào). Mức B đã xử lý phần lớn nguyên nhân (model không còn bị
   // bỏ đói 21 giây); lớp này là lưới an toàn + số liệu đo lường.
   /**
+   * [MỨC C — đợt 5] Nhờ model tự trả lời một lượt (KHÔNG ép đọc nguyên văn).
+   *
+   * Bắt buộc phải có: ở chế độ `digits`, `create_response: false` nên model sẽ
+   * KHÔNG tự đáp bất cứ điều gì. Mỗi khi khách nói một câu mà model cần trả lời
+   * (hỏi chuyện khác, xác nhận xong...) thì CODE phải chủ động tạo response,
+   * nếu không bot sẽ im lặng — lỗi nặng hơn cả việc trả lời sai.
+   */
+  const _requestModelReply = (lyDo, instructions = null, attempt = 0) => {
+    if (_hungUp || _transferred) return;
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (_responseActive) {
+      // Đang nói dở → chờ xong rồi tạo, đừng để câu của khách rơi vào im lặng.
+      if (attempt < 5) setTimeout(() => _requestModelReply(lyDo, instructions, attempt + 1), 1200);
+      else logger.addEvent("model_reply_dropped", `${lyDo} — response active quá lâu`);
+      return;
+    }
+    try {
+      _pendingCodeResponse = true;
+      ws.send(JSON.stringify({
+        type: "response.create",
+        response: instructions ? { instructions } : {},
+      }));
+      logger.addEvent("response_create_sent", `model_reply: ${lyDo}`);
+      log.info(`[WS][${callId}] Nhờ model trả lời — ${lyDo}`);
+    } catch (e) {
+      log.warn(`[WS][${callId}] không gửi được response.create (model_reply ${lyDo}): `, e.message);
+    }
+  };
+
+  /**
    * [đợt 4] Đối chiếu lời bot vừa nói với câu code đã yêu cầu đọc. Lệch → gửi lại
    * (tối đa 2 lần). Đây là lớp bảo đảm KHÔNG phụ thuộc việc model tuân thủ prompt.
    */
@@ -439,7 +469,18 @@ export function openSessionWebSocket(callId, callOps) {
         threshold: _VAD_DIGITS_THRESHOLD, // giữ giá trị đã hiệu chỉnh ở fix 08/07
         prefix_padding_ms: 500,           // không mất các chữ số đầu
         silence_duration_ms: _VAD_DIGITS_SILENCE_MS, // cho khách ngừng giữa các hơi
-        create_response: true,
+        // ── MỨC C (26/07/2026 đợt 5) ────────────────────────────────────────
+        // Model KHÔNG được tự sinh response trong lúc khách đọc số. Audio vẫn
+        // được commit và transcribe bình thường, chỉ là model không nói.
+        // Toàn bộ lời thoại giai đoạn này do CODE phát qua `_speakVerbatim`.
+        //
+        // Vì sao cần: 4 đợt sửa trước, lỗi cứ dịch dần về cuối chuỗi và đợt 4 dừng
+        // ở chỗ "code chốt đúng mã trong 5 giây nhưng bot đọc nhầm câu cũ". Chừng
+        // nào model còn được tự nói giữa lúc thu số thì còn phải đi kiểm chứng và
+        // gửi lại. Khoá hẳn thì vấn đề biến mất — đổi lại code phải chịu trách
+        // nhiệm phát MỌI câu (xem các lối thoát bên dưới).
+        // Lợi ích phụ: nhiễu/tạp âm không còn kích hoạt model trong giai đoạn này.
+        create_response: false,
         interrupt_response: true,
       }
       : {
@@ -471,6 +512,33 @@ export function openSessionWebSocket(callId, callOps) {
         _setVadMode("normal");
       }, _VAD_RESTORE_MS);
     }
+  };
+
+  // ── [MỨC C — đợt 5] LƯỚI AN TOÀN CHỐNG BOT CÂM ────────────────────────────
+  // Rủi ro lớn nhất của mức C: model bị khoá mà code lại quên phát lời ở một
+  // nhánh nào đó → khách nói xong rồi ngồi nghe im lặng tới lúc cúp máy.
+  // Lưới này không thay thế các lối thoát cụ thể, nó chỉ bắt trường hợp lọt lưới.
+  const _MUTE_WATCHDOG_MS = Number(process.env.DANH_BO_MUTE_WATCHDOG_MS || 15000);
+  let _lastCustomerTurnAt = 0;
+  let _lastBotSpeakAt = 0;
+  let _muteWatchdogTimer = null;
+
+  const _armMuteWatchdog = () => {
+    clearTimeout(_muteWatchdogTimer);
+    _muteWatchdogTimer = setTimeout(() => {
+      if (_hungUp || _transferred) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (_vadMode !== "digits") return;          // model không bị khoá → không lo
+      if (_responseActive) return;                // bot đang nói
+      if (_lastBotSpeakAt >= _lastCustomerTurnAt) return; // bot đã đáp lượt này rồi
+      // Đang xác minh (API + gpt-5.1) → câu trả lời sắp tới, gia hạn thêm một nhịp.
+      if (_toolCallState._danhBoVerifyRunning || _expectedSpeak) { _armMuteWatchdog(); return; }
+
+      log.error(`[WS][${callId}] LƯỚI AN TOÀN: bot im lặng > ${_MUTE_WATCHDOG_MS}ms sau khi khách nói — mở khoá model.`);
+      logger.addEvent("mute_watchdog", `bot im lặng > ${_MUTE_WATCHDOG_MS}ms — mở khoá model`);
+      _setVadMode("normal");
+      _requestModelReply("lưới an toàn: bot im lặng quá lâu sau khi khách nói");
+    }, _MUTE_WATCHDOG_MS);
   };
 
   // ── [1.8] Watchdog tổng cho bước lấy danh bộ ──────────────────────────────
@@ -918,27 +986,47 @@ export function openSessionWebSocket(callId, callOps) {
         if (khText && !_isPromptEcho) {
           log.info(`[WS][${callId}] [KH nói]: ${khText}`);
           logger.addCustomerTurn(khText);
+          _lastCustomerTurnAt = Date.now();
+          _armMuteWatchdog(); // [MỨC C] mọi lượt khách nói đều phải có hồi đáp
           _unansweredRealTurn = true; // [fix 18/07/2026 v2] khách vừa nói thật — chưa được trả lời
 
           // [1.1 — 26/07/2026] Ghi lượt có chữ số vào CẢ HAI biến tích luỹ
           // (biến 1 = kho quan sát toàn cuộc gọi cho trọng tài; biến 2 = phiên
           // đọc hiện tại, dùng để đếm đủ/thiếu) rồi kích hoạt ĐƯỜNG NỀN.
-          if (_looksLikeDigitTurn(khText)) {
+          // [MỨC C — đợt 5] Xác định trước lượt này SẼ được xử lý bằng cách nào.
+          // Ở chế độ digits model bị khoá, nên mọi lượt khách nói phải rơi vào
+          // ĐÚNG MỘT nhánh có phát lời — nếu không, bot im lặng.
+          // Từ khẳng định/phủ định chỉ có nghĩa khi ĐANG có ứng viên chờ xác nhận;
+          // ngoài ngữ cảnh đó ("vâng", "ừ") thì coi như khách nói chuyện bình thường.
+          const _dangChoXacNhan = !!(_toolCallState.danhBo && !_toolCallState.danhBo.confirmed);
+          const _seXuLyXacNhan = _dangChoXacNhan && _isAffirmative(khText);
+          const _seXuLyPhuDinh = _dangChoXacNhan && _PHU_DINH_RE.test(khText);
+          // Câu xác nhận/phủ định KHÔNG được tính là lượt đọc số, dù lẫn từ nghe
+          // giống chữ số ("Dạ không, không phải, không đúng" → 3 chữ "không").
+          const _laLuotDocSo = !_seXuLyXacNhan && !_seXuLyPhuDinh && _looksLikeDigitTurn(khText);
+
+          if (_laLuotDocSo) {
             const _s = noteDanhBoTranscript(_toolCallState, khText);
             log.info(`[WS][${callId}] [danh_bo] phiên #${_s.requestNo}: ${_s.digits.length}/11 số (+"${khText}")`);
             _armDanhBoWatchdog();
             _maybeVerifyDanhBo();
-          } else if (_toolCallState._danhBoVerifyTimer && !_isAffirmative(khText) && !_PHU_DINH_RE.test(khText)) {
-            // [fix 26/07/2026 đợt 4] Khách nói chuyện KHÁC giữa lúc đang thu số
-            // (cuộc rtc_u1_E5iAEYIr6WXOZvgtds2e5: đang đọc dở thì hỏi "cho tôi hỏi
-            // về thủ tục sang tên đồng hồ nước") → HOÃN đường nền, để model trả lời
-            // câu hỏi của khách. Trước đây hẹn giờ vẫn nổ và chen ngang bằng câu
-            // "đọc lại đầy đủ 11 số" — khách hỏi một đằng, bot đáp một nẻo.
-            // Không xoá số đã gom: khách quay lại đọc số thì gom tiếp bình thường.
+          } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits") {
+            // [MỨC C — đợt 5] Khách nói chuyện KHÁC giữa lúc đang thu số (cuộc
+            // rtc_u1_E5iAEYIr6WXOZvgtds2e5: đang đọc dở thì hỏi "cho tôi hỏi về
+            // thủ tục sang tên đồng hồ nước").
+            //
+            // Ở chế độ digits model bị KHOÁ (`create_response: false`) nên nếu code
+            // không làm gì thì bot IM LẶNG hoàn toàn — tệ hơn cả trả lời sai. Phải:
+            //   1. hoãn đường nền (đừng chen ngang bằng "đọc lại 11 số"),
+            //   2. MỞ LẠI cho model nói,
+            //   3. chủ động tạo response để model trả lời đúng câu khách vừa hỏi.
+            // KHÔNG xoá số đã gom — khách quay lại đọc số thì gom tiếp bình thường.
             clearTimeout(_toolCallState._danhBoVerifyTimer);
             _toolCallState._danhBoVerifyTimer = null;
             logger.addEvent("danh_bo_hoan_vi_doi_chu_de", khText.slice(0, 80));
-            log.info(`[WS][${callId}] Hoãn thu danh bộ — khách đang nói chuyện khác: "${khText.slice(0, 60)}"`);
+            log.info(`[WS][${callId}] Hoãn thu danh bộ — khách nói chuyện khác: "${khText.slice(0, 60)}"`);
+            _setVadMode("normal");
+            _requestModelReply("khách hỏi chuyện khác giữa lúc thu danh bộ");
           }
 
           // [fix 23/07/2026] XÁC NHẬN LỜI NÓI universal: bất kỳ ứng viên danh bộ
@@ -946,7 +1034,7 @@ export function openSessionWebSocket(callId, callOps) {
           // chốt confirmed=true. Đây là DẤU HIỆU DUY NHẤT cho phép tra cứu
           // (không tin việc model tự gọi tool). Xóa buffer transcript để lần đọc
           // số MỚI sau (đổi danh bộ) không bị dính số cũ.
-          if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed && _isAffirmative(khText)) {
+          if (_seXuLyXacNhan) {
             _toolCallState._danhBoNeedsVerbalYes = false;
             _toolCallState.danhBo.confirmed = true;
             // [1.1] KHÔNG xoá biến 1 nữa. Trước đây phải xoá vì mọi thứ đều ghép
@@ -966,13 +1054,20 @@ export function openSessionWebSocket(callId, callOps) {
             logger.markDanhBoResolved(_toolCallState._danhBoResolvedBy || "unknown", _toolCallState.danhBo.value);
             logger.addEvent("danh_bo_verbal_confirm", khText);
             log.info(`[WS][${callId}] danh_bo_verbal_confirm: ${khText} → ${_toolCallState.danhBo.value}`);
+            // [MỨC C — đợt 5] Lượt "đúng rồi" này được commit khi model còn đang bị
+            // khoá → sẽ KHÔNG có response nào được sinh ra. Không tự tạo thì bot câm
+            // ngay sau khi khách xác nhận. Nhờ model đi tra cứu luôn.
+            _requestModelReply("khách đã xác nhận mã danh bộ",
+              "Quý Khách vừa xác nhận mã danh bộ là ĐÚNG. Gọi NGAY tool tra cứu mà Quý Khách cần " +
+              "(get_bill / get_payment_status / get_water_usage / get_outages / create_ticket...). " +
+              "KHÔNG hỏi lại số, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.");
           }
 
           // [fix 23/07/2026] Khách PHỦ ĐỊNH số đang chờ xác nhận → BÁC ngay ứng
           // viên (mọi ứng viên chưa confirmed, không chỉ ứng viên trọng tài) để
           // đường nền được đề xuất dãy KHÁC ở lượt kế (danh bộ cũ vào
           // _danhBoRejected, trọng tài né).
-          if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed && _PHU_DINH_RE.test(khText)) {
+          if (_seXuLyPhuDinh) {
             _toolCallState._danhBoCustomerSaidNo = true;
             logger.addEvent("danh_bo_customer_said_no", khText);
             log.info(`[WS][${callId}] danh_bo_customer_said_no: ${khText}`);
@@ -1043,6 +1138,7 @@ export function openSessionWebSocket(callId, callOps) {
             const txt = aiPart.transcript.trim();
             log.info(`[WS][${callId}][AI nói]: ${txt}`);
             logger.flushAI(txt);
+            _lastBotSpeakAt = Date.now(); // [MỨC C] mốc cho lưới an toàn chống câm
             _checkBotSpokenDigits(txt);   // [2.4] bot có đọc số lạ ra loa không
             _checkExpectedSpeak(txt);     // [đợt 4] bot có đọc ĐÚNG câu code yêu cầu không
           }
@@ -1122,6 +1218,7 @@ export function openSessionWebSocket(callId, callOps) {
     // (cuộc rtc_u2_E5hhmAHqS8cDGvUnCph0x: watchdog nổ 43 giây sau khi WS đóng).
     clearTimeout(_toolCallState._danhBoVerifyTimer);
     clearTimeout(_vadRestoreTimer);
+    clearTimeout(_muteWatchdogTimer);
     _clearDanhBoWatchdog();
     logger.addEvent("ws_close", `${code} ${reason?.toString() || ""}`.trim());
     await _saveOnce(`ws_close ${code} `);
