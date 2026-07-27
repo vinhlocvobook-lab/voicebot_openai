@@ -74,6 +74,12 @@ Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
   Lưới an toàn `_armMuteWatchdog` (15s) mở khoá nếu bot lỡ im lặng — mỗi event
   `mute_watchdog` trong log là một nhánh code còn thiếu, phải bịt riêng.
   **Bot câm tệ hơn bot trả lời sai.**
+- **`message` của tool NẰM LẠI VĨNH VIỄN trong hội thoại** (nó là nội dung
+  `function_call_output`). TUYỆT ĐỐI không đặt mệnh lệnh kiểu 'Đọc NGUYÊN VĂN
+  doc_cho_khach' vào đó — model sẽ bám vào ở mọi lượt sau, kể cả khi code đã
+  gửi `instructions` mới (cuộc `rtc_u2_E66xM4TYW8qxz07ijdLzB`). `message` chỉ
+  MÔ TẢ TRẠNG THÁI; việc ép đọc nguyên văn đặt ở `instructions` của
+  `response.create` — chỉ hiệu lực cho đúng response đó rồi biến mất.
 - **Gate xác nhận lời nói**: `danhBo.confirmed` chỉ được đặt bởi LƯỢT KHÁCH THẬT
   chứa từ khẳng định (`session-ws.js`). Model gọi thẳng tool tra cứu KHÔNG tính là
   bằng chứng đồng ý. Hỏng chỗ này = bot đọc thông tin người khác cho khách nghe.

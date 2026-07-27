@@ -256,9 +256,14 @@ export function openSessionWebSocket(callId, callOps) {
     try {
       _pendingCodeResponse = true;
       // "BỎ QUA mọi hướng dẫn trước đó" để câu này thắng chỉ dẫn tồn dư của tool output.
+      // [fix 27/07/2026 đợt 7] Câu KHÔNG chứa chữ số → cấm hẳn model đọc số trong
+      // response này. Cuộc rtc_u1_E66uZSbb8P6ZJF6VVLKr6: response tạo ra để đọc câu
+      // chờ ("Dạ, em ghi nhận rồi ạ") lại bị model dùng để đọc "220223251" ra loa.
+      const _cauCoSo = /^[\d|]+$/.test(_speakCore(text));
       const instructions =
         "BỎ QUA mọi hướng dẫn đọc trước đó trong hội thoại. NGAY BÂY GIỜ chỉ đọc CHÍNH XÁC " +
-        "từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, rồi DỪNG: \"" + text + "\"";
+        "từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, rồi DỪNG: \"" + text + "\"" +
+        (_cauCoSo ? "" : " TUYỆT ĐỐI không đọc thêm bất kỳ chữ số nào ngoài đoạn trên.");
       log.debug(`[WS][${callId}] _speakVerbatim(${tag}, lần ${attempt}): ${text}`);
       ws.send(JSON.stringify({
         type: "response.create",
@@ -917,16 +922,44 @@ export function openSessionWebSocket(callId, callOps) {
             _kq.moi_bam_phim || _kq.cho_khach_xac_nhan || _kq.da_sai_nhieu_lan
           ));
 
-          logger.addEvent("response_create_sent",
-            `tool_result: ${_tenTool}${_camGoiTool ? " (tool_choice=none)" : ""}`);
-          log.debug(`[WS][${callId}] response.create sau tool: ${_instructions}`);
-          _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
-          ws.send(JSON.stringify({
-            type: "response.create",
-            response: _camGoiTool
-              ? { instructions: _instructions, tool_choice: "none" }
-              : { instructions: _instructions },
-          }));
+          const _guiCauTool = () => {
+            if (_hungUp || _transferred) return;
+            if (ws.readyState !== WebSocket.OPEN) return;
+            logger.addEvent("response_create_sent",
+              `tool_result: ${_tenTool}${_camGoiTool ? " (tool_choice=none)" : ""}`);
+            log.debug(`[WS][${callId}] response.create sau tool: ${_instructions}`);
+            _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
+            ws.send(JSON.stringify({
+              type: "response.create",
+              response: _camGoiTool
+                ? { instructions: _instructions, tool_choice: "none" }
+                : { instructions: _instructions },
+            }));
+          };
+
+          if (_camGoiTool) {
+            // [fix 27/07/2026 đợt 7] Hoãn một nhịp rồi KIỂM TRA LẠI trước khi phát.
+            // Model gọi tool NGAY khi nghe audio, còn transcript về trễ ~0,2s. Cuộc
+            // rtc_u2_E66xM4TYW8qxz07ijdLzB: tool trả "cho em xin mã danh bộ" lúc
+            // 11:10:51,3 — đúng 0,2 giây sau khách đã đọc XONG cả 11 số, vậy mà
+            // 11:10:53,2 bot vẫn đọc câu xin số. Câu đã lỗi thời thì bỏ, đừng nói.
+            setTimeout(() => {
+              const _soDaCo = danhBoSessionDigits(_toolCallState);
+              const _daCoUngVien = !!_toolCallState.danhBo;
+              const _loiThoi = _daCoUngVien
+                || (_kq.invalid_danh_bo && _soDaCo > 0)
+                || (_kq.dang_gom_so && _soDaCo >= 11);
+              if (_loiThoi) {
+                logger.addEvent("tool_prompt_bo_qua",
+                  `${_tenTool}: câu đã lỗi thời (đã nghe ${_soDaCo}/11, ứng viên=${_daCoUngVien})`);
+                log.info(`[WS][${callId}] Bỏ câu tool đã lỗi thời — khách đã đọc ${_soDaCo}/11 số.`);
+                return;
+              }
+              _guiCauTool();
+            }, Number(process.env.DANH_BO_TOOL_PROMPT_DELAY_MS || 900));
+          } else {
+            _guiCauTool();
+          }
         }
         break;
       }

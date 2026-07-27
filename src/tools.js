@@ -258,6 +258,15 @@ function latestSessionDanhBo(callState = {}) {
  * model tự bịa hội thoại, không gọi tool nữa, khách cúp máy.
  * session-ws.js dùng câu lưu ở đây để kéo cuộc gọi về đúng bước sau khi hủy.
  */
+// [fix 27/07/2026 đợt 7] `message` NẰM LẠI VĨNH VIỄN trong hội thoại (nó là
+// nội dung của function_call_output). Nếu nó chứa mệnh lệnh 'Đọc NGUYÊN VĂN
+// doc_cho_khach' thì model sẽ bám vào đó ở MỌI lượt sau — cuộc
+// rtc_u2_E66xM4TYW8qxz07ijdLzB: code đã chốt đúng mã, gửi câu đọc lại xác nhận,
+// nhưng model vẫn lặp lại 'cần mã danh bộ chính xác, đọc lại giúp em' 3 lượt liền
+// rồi khách cúp máy. Cuộc rtc_u1_E66uZSbb8P6ZJF6VVLKr6 (KHÔNG có tool call nào
+// trong giai đoạn thu số) thì đọc đúng câu xác nhận ngay lần đầu.
+// → `message` chỉ MÔ TẢ TRẠNG THÁI. Việc ép đọc nguyên văn đặt ở `instructions`
+//   của response.create (chỉ có hiệu lực cho ĐÚNG response đó).
 function danhBoPayload(callState, obj) {
   callState._danhBoLastPrompt = obj.doc_cho_khach || null;
   return JSON.stringify(obj);
@@ -274,8 +283,8 @@ function danhBoEscalationResponse(callState) {
       `Để Quý Khách khỏi mất thời gian, em chuyển máy sang tổng đài viên hỗ trợ trực tiếp, ` +
       `hoặc em ghi nhận lại để nhân viên gọi lại cho Quý Khách. Quý Khách chọn giúp em cách nào ạ?`,
     message:
-      `Đã nhiều lần không nhận được mã danh bộ. KHÔNG tra cứu. ` +
-      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách chọn. ` +
+      `Đã nhiều lần không nhận được mã danh bộ. KHÔNG tra cứu, KHÔNG tự đọc/đoán chữ số nào. ` +
+      `Hệ thống TỰ phát câu thoại của bước này. ` +
       `Khách chọn chuyển máy → gọi transfer_to_agent. ` +
       `Khách muốn nhân viên gọi lại → gọi create_ticket. ` +
       `Khách vẫn muốn đọc lại số → gọi lại hàm tra cứu với ma_danh_bo = dãy mới nghe được.`,
@@ -301,8 +310,8 @@ function invalidDanhBoResponse(length, callState = {}) {
         `Dạ, Quý Khách cho em xin mã danh bộ gồm ${DANH_BO_LENGTH} chữ số, ` +
         `đọc chậm từng chữ số giúp em ạ.`,
       message:
-        `Chưa có mã danh bộ. Đọc NGUYÊN VĂN "doc_cho_khach" để xin mã danh bộ rồi DỪNG chờ khách. ` +
-        `TUYỆT ĐỐI không tự đọc/tự đoán bất kỳ chữ số nào. Hệ thống tự gom số và xác nhận.`,
+        `Chưa có mã danh bộ — đang chờ khách đọc. TUYỆT ĐỐI không tự đọc/tự đoán bất kỳ chữ số ` +
+        `nào. Hệ thống TỰ gom số, TỰ phát câu thoại và TỰ xác nhận với khách.`,
     });
   }
 
@@ -321,8 +330,8 @@ function invalidDanhBoResponse(length, callState = {}) {
         `${docSoLuong(DANH_BO_LENGTH)} chữ số ạ. Quý Khách vui lòng đọc lại một lần nữa, ` +
         `chậm và rõ từng chữ số giúp em ạ.`,
       message:
-        `Nghe được ${length} số (NHIỀU HƠN ${DANH_BO_LENGTH}) — lẫn nhiễu. Đọc NGUYÊN VĂN ` +
-        `"doc_cho_khach" rồi DỪNG chờ khách. TUYỆT ĐỐI không tự đọc/tự đoán chữ số nào.`,
+        `Nghe được ${length} số (NHIỀU HƠN ${DANH_BO_LENGTH}) — lẫn nhiễu, đang chờ khách đọc lại. ` +
+        `TUYỆT ĐỐI không tự đọc/tự đoán chữ số nào. Hệ thống TỰ phát câu thoại của bước này.`,
     });
   }
 
@@ -336,8 +345,8 @@ function invalidDanhBoResponse(length, callState = {}) {
       `${docSoLuong(DANH_BO_LENGTH)} số ạ. Quý Khách đọc lại đầy đủ, ` +
       `chậm từng chữ số giúp em ạ.`,
     message:
-      `Nghe chưa đủ ${DANH_BO_LENGTH} số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
-      `TUYỆT ĐỐI không tự đọc/tự đoán chữ số nào. Hệ thống tự gom số và xác nhận.`,
+      `Nghe chưa đủ ${DANH_BO_LENGTH} số — đang chờ khách đọc lại. TUYỆT ĐỐI không tự đọc/tự ` +
+      `đoán chữ số nào. Hệ thống TỰ gom số, TỰ phát câu thoại và TỰ xác nhận với khách.`,
   });
 }
 
@@ -351,10 +360,9 @@ function dangXacMinhResponse() {
     dang_xac_minh: true,
     doc_cho_khach: `Dạ, em ghi nhận rồi ạ, Quý Khách chờ em một chút.`,
     message:
-      `Hệ thống đã nhận đủ số và ĐANG XÁC MINH. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG. ` +
-      `TUYỆT ĐỐI không đọc lại chữ số nào. Đây là câu TẠM THỜI, chỉ đọc MỘT LẦN — ngay sau đó ` +
-      `hệ thống sẽ gửi câu đọc lại mã cho khách xác nhận; khi đó phải đọc câu MỚI NHẤT và ` +
-      `TUYỆT ĐỐI không lặp lại câu chờ này.`,
+      `Hệ thống đã nhận đủ số và ĐANG XÁC MINH. TUYỆT ĐỐI không đọc/không đoán chữ số nào. ` +
+      `Hệ thống sẽ TỰ đọc mã cho khách xác nhận ngay sau đây — model không cần và không được ` +
+      `nhắc lại yêu cầu đọc số.`,
   });
 }
 
@@ -377,11 +385,9 @@ function dangGomSoResponse(daNghe) {
     doc_cho_khach: `Dạ, em đang nghe ạ.`,
     message:
       `Hệ thống ĐANG GOM số (${daNghe}/${DANH_BO_LENGTH}) — khách có thể còn đang đọc dở. ` +
-      `Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG, chờ khách đọc xong. TUYỆT ĐỐI không đọc lại ` +
-      `chữ số nào, KHÔNG hỏi khách đọc tiếp từ số nào, KHÔNG bảo khách đọc lại. ` +
-      `Đây là câu TẠM THỜI, chỉ đọc MỘT LẦN: nếu ngay sau đó hệ thống yêu cầu đọc câu khác, ` +
-      `phải đọc câu MỚI NHẤT và TUYỆT ĐỐI không lặp lại câu này. Khách hỏi chuyện KHÁC ` +
-      `(thủ tục, khiếu nại...) thì trả lời câu hỏi đó bình thường.`,
+      `TUYỆT ĐỐI không đọc/không đoán chữ số nào, KHÔNG hỏi khách đọc tiếp từ số nào, ` +
+      `KHÔNG bảo khách đọc lại. Hệ thống TỰ phát mọi câu thoại của bước này. ` +
+      `Khách hỏi chuyện KHÁC (thủ tục, khiếu nại...) thì trả lời câu hỏi đó bình thường.`,
   });
 }
 
@@ -409,7 +415,7 @@ function confirmRequestResponse(normalized, callState = {}) {
       `Dạ, em đọc lại mã danh bộ để Quý Khách kiểm tra: ${danhBoSpoken(normalized)}. ` +
       `Quý Khách xác nhận giúp em có đúng không ạ?`,
     message:
-      `Đã ghi nhận đủ ${DANH_BO_LENGTH} chữ số. Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách. ` +
+      `Đã ghi nhận đủ ${DANH_BO_LENGTH} chữ số, hệ thống TỰ đọc lại cho khách xác nhận. ` +
       `Khách xác nhận ĐÚNG → gọi lại hàm tra cứu khách cần, KHÔNG cần đọc số ` +
       `(hệ thống tự dùng số đã xác nhận). Khách báo SAI hoặc đọc dãy khác → CHỜ, ` +
       `hệ thống tự xử lý ở lượt sau; đừng tự bịa số, đừng tự đọc lại.`,
@@ -584,8 +590,8 @@ function danhBoDtmfInviteResponse(callState) {
       `điện thoại giúp em; nếu lỡ bấm nhầm, Quý Khách bấm phím SAO để nhập lại từ đầu ạ. ` +
       `Trường hợp không tiện bấm phím, Quý Khách nói "chuyển máy" để gặp tổng đài viên hỗ trợ ạ.`,
     message:
-      `Đã hết lượt đọc bằng giọng nói — chuyển sang BẤM PHÍM. Đọc NGUYÊN VĂN "doc_cho_khach" ` +
-      `rồi DỪNG chờ. Hệ thống TỰ ĐỘNG ghi nhận phím bấm — TUYỆT ĐỐI không tự đọc/đoán số từ ` +
+      `Đã hết lượt đọc bằng giọng nói — chuyển sang BẤM PHÍM. Hệ thống TỰ phát câu thoại và ` +
+      `TỰ ĐỘNG ghi nhận phím bấm — TUYỆT ĐỐI không tự đọc/đoán số từ ` +
       `tiếng bấm phím. Khách muốn chuyển máy → transfer_to_agent. Khách muốn nhân viên gọi lại → create_ticket.`,
   });
 }

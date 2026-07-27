@@ -286,6 +286,33 @@ await test("khách đọc thêm trong lúc trọng tài chạy → bỏ phán qu
   assert.equal(ensureDanhBoSession(cs).requestNo, 1, "không được reset phiên vì kết quả cũ");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Chỉ dẫn tồn dư] cuộc rtc_u2_E66xM4TYW8qxz07ijdLzB");
+
+await test("`message` của luồng danh bộ KHÔNG được ra lệnh đọc nguyên văn", async () => {
+  // `message` nằm lại VĨNH VIỄN trong hội thoại (nội dung function_call_output).
+  // Nếu nó chứa 'Đọc NGUYÊN VĂN "doc_cho_khach"' thì model bám vào đó ở MỌI lượt
+  // sau: cuộc E66xM4TY đã chốt đúng mã, code gửi câu đọc lại xác nhận, model vẫn
+  // đòi khách "đọc lại mã danh bộ" 3 lượt liền rồi khách cúp máy.
+  // Cuộc E66uZSbb (không có tool call nào trong giai đoạn thu số) thì đọc đúng ngay.
+  const cs = { _logger: _logStub };
+  const cacPayload = [];
+
+  cacPayload.push(JSON.parse(await dispatchTool("get_bill", { ma_danh_bo: "" }, cs)));   // xin số
+  noteDanhBoTranscript(cs, "2202");
+  cacPayload.push(JSON.parse(await dispatchTool("get_bill", { ma_danh_bo: "2202" }, cs))); // đang gom
+  noteDanhBoTranscript(cs, "3251775");
+  cacPayload.push(JSON.parse(await dispatchTool("get_bill", { ma_danh_bo: "" }, cs)));   // đang xác minh
+
+  for (const p of cacPayload) {
+    assert.ok(p.message, "payload nào cũng phải có message");
+    assert.ok(!/đọc nguyên văn/i.test(p.message),
+      `message KHÔNG được ra lệnh đọc nguyên văn (nó tồn dư mãi trong hội thoại): "${p.message}"`);
+    assert.ok(/hệ thống (sẽ )?tự/i.test(p.message),
+      `message phải nói rõ hệ thống tự phát câu thoại: "${p.message}"`);
+  }
+});
+
 await test("guard: dãy khách đã BÁO SAI không được đề xuất lại", async () => {
   const cs = { _danhBoRejected: [DANH_BO_DUNG] };
   noteDanhBoTranscript(cs, DANH_BO_DUNG);

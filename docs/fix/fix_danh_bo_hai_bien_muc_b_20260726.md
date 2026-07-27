@@ -173,7 +173,7 @@ trọng tài cũng chuyển sang logger có level.
 `test_case/speak_verbatim.test.mjs` — 7 test cho cơ chế kiểm chứng lời bot (đợt 4).
 `test_case/muc_c_khong_cam.test.mjs` — 14 test bảng quyết định chống bot câm (đợt 5).
 
-Tổng **53 test**, chạy bằng `npm test`.
+Tổng **54 test**, chạy bằng `npm test`.
 
 Kịch bản chính: khách đọc tách 3 hơi (13 số) → trọng tài từ chối → mời đọc lại → khách đọc liền
 `22023251775` → **chốt đúng**. Đây chính là cuộc gọi mà code cũ làm hỏng.
@@ -523,6 +523,83 @@ khẳng định về `ma_danh_bo` — handler đã bỏ đọc lại mã trong m
 vẫn phải trả `ma_danh_bo` để chuỗi `"Mã danh bộ undefined"` không quay lại.
 
 Tổng **53 test**.
+
+---
+
+## Đợt 7 — hai cuộc test 27/07 11:07 và 11:10: **cuộc gọi thành công đầu tiên**
+
+Lần đầu có một cuộc **chạy trọn vẹn**, và cặp cuộc gọi này chỉ ra thủ phạm cuối cùng rất rõ vì chúng
+chỉ khác nhau đúng một điểm.
+
+### Cuộc `rtc_u1_E66uZSbb8P6ZJF6VVLKr6` — THÀNH CÔNG ✅
+
+```
+11:08:12  "2202 3251"    → 8/11, VAD→digits, log xác nhận create_response=false
+11:08:16  "Bảy bảy lăm"  → 11/11
+11:08:23  Trọng tài 0.9 + API OK → chốt 22023251775
+11:08:26  bot ĐỌC ĐÚNG câu xác nhận
+11:08:55  "Đúng rồi" → tra cứu → 309.700đ, 18 m³, trả lời tiếp câu hỏi sản lượng
+```
+
+Đặc điểm: **không có tool call nào trong giai đoạn thu số** (mức C chặn được).
+
+### Cuộc `rtc_u2_E66xM4TYW8qxz07ijdLzB` — HỎNG ❌
+
+```
+11:10:51.3  model gọi tool số BỊA → code chặn (R1) → trả invalid_danh_bo
+            → message chứa 'Đọc NGUYÊN VĂN "doc_cho_khach"' = "cho em xin mã danh bộ"
+11:10:51.5  (0,2s sau) khách đã đọc XONG 11 số
+11:10:53.2  bot vẫn đọc "cho em xin mã danh bộ..."          ← câu ĐÃ LỖI THỜI
+11:10:55.4  Trọng tài 0.94 + API OK → chốt 22023251775
+11:10:58.9  model bám chỉ dẫn CŨ → đòi khách đọc lại, 3 lượt liền → khách cúp máy
+```
+
+Đặc điểm: **có đúng một tool call** trước đó. Đó là toàn bộ khác biệt.
+
+### Đ7.1 — `message` của tool nằm lại VĨNH VIỄN trong hội thoại ⚠️ gốc thật sự
+
+`message` là nội dung của `function_call_output` — nó **ở lại trong hội thoại mãi mãi**. Khi nó chứa
+mệnh lệnh *'Đọc NGUYÊN VĂN "doc_cho_khach" rồi DỪNG chờ khách'*, model bám vào đó ở **mọi lượt sau**,
+kể cả khi code đã gửi `instructions` mới.
+
+Đợt 4 chữa bằng kiểm-chứng-rồi-gửi-lại, đợt 5 khoá model, đợt 6 cấm gọi tool — nhưng đều không đụng
+tới cái gốc: **mệnh lệnh vẫn nằm đó**.
+
+**Sửa:** `message` của mọi payload luồng danh bộ chỉ **mô tả trạng thái**, tuyệt đối không ra lệnh đọc
+nguyên văn. Việc ép đọc đặt ở `instructions` của `response.create` — chỉ có hiệu lực cho đúng response
+đó rồi biến mất.
+
+| Trước | Sau |
+|---|---|
+| *"Chưa có mã danh bộ. **Đọc NGUYÊN VĂN "doc_cho_khach"** để xin mã rồi DỪNG…"* | *"Chưa có mã danh bộ — đang chờ khách đọc. **Hệ thống TỰ gom số, TỰ phát câu thoại và TỰ xác nhận**…"* |
+
+Có test chặn hồi quy: mọi payload danh bộ phải **không** chứa "đọc nguyên văn" và phải nói rõ "hệ thống
+(sẽ) tự".
+
+### Đ7.2 — Câu tool phát ra sau khi khách đã đọc xong
+
+Model gọi tool **ngay khi nghe audio**, còn transcript về trễ ~0,2 giây. Nên câu *"cho em xin mã danh
+bộ"* được phát khi khách đã đọc xong cả 11 số.
+
+**Sửa:** hoãn câu thoại của luồng danh bộ `DANH_BO_TOOL_PROMPT_DELAY_MS` = 900ms rồi **kiểm tra lại**;
+nếu đã lỗi thời (đã có ứng viên, hoặc `invalid_danh_bo` mà phiên đã có số, hoặc `dang_gom_so` mà đã đủ
+11 số) → **bỏ hẳn câu đó**, ghi event `tool_prompt_bo_qua`.
+
+### Đ7.3 — Câu không chứa số thì cấm model đọc số
+
+Cuộc thành công vẫn có một vết: response tạo ra để đọc câu chờ *"Dạ, em ghi nhận rồi ạ"* bị model dùng
+để đọc `220223251` ra loa (`_checkBotSpokenDigits` bắt được và nói đè).
+
+**Sửa:** `_speakVerbatim` tự phát hiện câu không chứa chữ số → thêm *"TUYỆT ĐỐI không đọc thêm bất kỳ
+chữ số nào ngoài đoạn trên"* vào instructions.
+
+### Biến môi trường
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `DANH_BO_TOOL_PROMPT_DELAY_MS` | 900 | Hoãn rồi kiểm tra lại trước khi phát câu thoại của tool |
+
+Tổng **54 test**.
 
 ---
 
