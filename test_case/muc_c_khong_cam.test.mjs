@@ -22,13 +22,14 @@ const _looksLikeDigitTurn = (t) => {
 const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bừ\b|\bừm\b|\bờ\b|\bok\b|\boke\b|\bđược\b|yes)/i;
 const _PHU_DINH_RE = /(không đúng|chưa đúng|sai rồi|\bsai\b|chưa phải|không phải)/i;
 const _isAffirmative = (t) => (_PHU_DINH_RE.test(String(t)) ? false : _KHANG_DINH_RE.test(String(t)));
+const _XIN_NHAC_LAI_RE = /((đọc|nói|nhắc)\s+lại|chưa nghe rõ|nghe không rõ|không nghe rõ|nói gì)/i;
 
 /**
  * Trả về nhánh sẽ xử lý lượt khách nói. `"KHONG_AI_XU_LY"` = bot sẽ câm.
  * @param {string} khText
  * @param {{dangChoXacNhan:boolean, vadMode:"digits"|"normal"}} state
  */
-function nhanhXuLy(khText, { dangChoXacNhan, vadMode }) {
+function nhanhXuLy(khText, { dangChoXacNhan, vadMode, coCauDangCho = true }) {
   const seXuLyXacNhan = dangChoXacNhan && _isAffirmative(khText);
   const seXuLyPhuDinh = dangChoXacNhan && _PHU_DINH_RE.test(khText);
   const laLuotDocSo = !seXuLyXacNhan && !seXuLyPhuDinh && _looksLikeDigitTurn(khText);
@@ -36,11 +37,12 @@ function nhanhXuLy(khText, { dangChoXacNhan, vadMode }) {
   if (laLuotDocSo) return "GOM_SO";                       // đường nền sẽ phát lời
   if (seXuLyXacNhan) return "XAC_NHAN";                   // → _requestModelReply
   if (seXuLyPhuDinh) return "PHU_DINH";                   // → _maybeVerifyDanhBo phát lời
+  if (_XIN_NHAC_LAI_RE.test(khText) && coCauDangCho) return "NHAC_LAI"; // → đọc lại câu đang chờ
   if (vadMode === "digits") return "DOI_CHU_DE";          // → mở khoá + _requestModelReply
   return "MODEL_TU_TRA_LOI";                              // model chưa bị khoá
 }
 
-const CO_PHAT_LOI = new Set(["GOM_SO", "XAC_NHAN", "PHU_DINH", "DOI_CHU_DE", "MODEL_TU_TRA_LOI"]);
+const CO_PHAT_LOI = new Set(["GOM_SO", "XAC_NHAN", "PHU_DINH", "NHAC_LAI", "DOI_CHU_DE", "MODEL_TU_TRA_LOI"]);
 
 let passed = 0;
 const test = (ten, fn) => {
@@ -81,6 +83,19 @@ test("phủ định lẫn nhiều chữ 'không' KHÔNG bị nhầm thành lư�
   assert.equal(_looksLikeDigitTurn(cau), true, "bộ lọc thô vẫn khớp — đó là lý do cần guard");
   assert.equal(nhanhXuLy(cau, { dangChoXacNhan: true, vadMode: "digits" }), "PHU_DINH",
     "guard phải chặn, không được đẩy câu phủ định vào kho quan sát danh bộ");
+});
+
+test("'Đọc lại đi' là xin nhắc lại, KHÔNG phải đổi chủ đề", () => {
+  // Cuộc rtc_u2_E66X1bhQIrBrwtqeHkOau: câu này bị xếp vào "đổi chủ đề" nên code
+  // nhờ model tự trả lời, model lại nói câu chờ cũ → bế tắc rồi khách cúp máy.
+  assert.equal(nhanhXuLy("Đọc lại đi.", { dangChoXacNhan: false, vadMode: "digits" }), "NHAC_LAI");
+  assert.equal(nhanhXuLy("Em nói lại giúp anh", { dangChoXacNhan: false, vadMode: "digits" }), "NHAC_LAI");
+  assert.equal(nhanhXuLy("Anh chưa nghe rõ", { dangChoXacNhan: false, vadMode: "digits" }), "NHAC_LAI");
+});
+
+test("xin nhắc lại khi CHƯA có câu nào đang chờ → về nhánh đổi chủ đề", () => {
+  assert.equal(nhanhXuLy("Đọc lại đi.", { dangChoXacNhan: false, vadMode: "digits", coCauDangCho: false }),
+    "DOI_CHU_DE");
 });
 
 test("khi model CHƯA bị khoá thì câu ngoài luồng để model tự trả lời", () => {

@@ -173,7 +173,7 @@ trọng tài cũng chuyển sang logger có level.
 `test_case/speak_verbatim.test.mjs` — 7 test cho cơ chế kiểm chứng lời bot (đợt 4).
 `test_case/muc_c_khong_cam.test.mjs` — 14 test bảng quyết định chống bot câm (đợt 5).
 
-Tổng **51 test**, chạy bằng `npm test`.
+Tổng **53 test**, chạy bằng `npm test`.
 
 Kịch bản chính: khách đọc tách 3 hơi (13 số) → trọng tài từ chối → mời đọc lại → khách đọc liền
 `22023251775` → **chốt đúng**. Đây chính là cuộc gọi mà code cũ làm hỏng.
@@ -459,6 +459,70 @@ khẳng định không lượt nào rơi vào im lặng.
    trải nghiệm có mượt không.
 4. Nếu thấy bot phản ứng chậm ở đầu giai đoạn thu số, cân nhắc chỉ khoá model **sau** khi khách bắt đầu
    đọc chữ số đầu tiên, thay vì ngay khi bot vừa hỏi xin mã.
+
+---
+
+## Đợt 6 — sửa theo cuộc test `rtc_u2_E66X1bhQIrBrwtqeHkOau` (27/07 10:43)
+
+Cuộc đầu tiên chạy mức C. Kết quả: **mức C gần như không có tác dụng** — model vẫn nói, vẫn gọi tool
+trong giai đoạn thu số. Nhưng nguyên nhân không nằm ở `create_response: false`, mà ở **chính response
+do code tạo ra**.
+
+```
+10:43:40.5  KH "2202"       → VAD → digits (create_response:false đã gửi)
+10:43:45.2  KH "3251 775"   → 11/11 số
+10:43:46.8  code gửi _speakVerbatim(câu chờ)                  ← response DO CODE tạo
+10:43:48.8  AI "Ok, em sẽ kiểm tra hóa đơn..."                ← model nói câu của nó
+10:43:48.8  get_bill({"ma_danh_bo":"3251802"})                ← BỊA, code chặn đúng
+10:43:48.9  get_bill({"ma_danh_bo":"3251775"})                ← tool THỨ HAI cùng response
+            → code gửi 2 response.create → conversation_already_has_active_response
+10:43:54.9  Trọng tài 0.78 + API OK → CHỐT ĐÚNG 22023251775
+10:43:57.8  bot nói lung tung 3 lượt liền → gửi lại 3 lần → bỏ cuộc
+10:44:54.9  KH "Đọc lại đi." → xếp nhầm vào "đổi chủ đề" → bế tắc → khách cúp máy
+```
+
+### Đ6.1 — Response do code tạo vẫn cho phép model gọi tool ⚠️ gốc của mọi thứ
+
+`create_response: false` chỉ chặn VAD tự tạo response. Nhưng `_speakVerbatim` **chủ động** gửi
+`response.create` — và trong response đó model được tự do gọi tool. Nó gọi `get_bill` hai lần với số
+bịa thay vì đọc câu được giao.
+
+**Sửa:** mọi response code tạo để ép đọc nguyên văn đều thêm `tool_choice: "none"`. Tương tự cho
+response đọc `doc_cho_khach` của các payload danh bộ (`dang_gom_so`, `dang_xac_minh`,
+`invalid_danh_bo`, `moi_bam_phim`, `cho_khach_xac_nhan`). Cắt hẳn vòng xoáy tool-call.
+
+### Đ6.2 — Một `response.done` chứa nhiều `function_call` → gửi nhiều `response.create`
+
+Vòng lặp xử lý tool gửi một `response.create` cho **mỗi** tool call. Model phát ra 2 `get_bill` trong
+cùng một response → cái thứ hai lỗi `conversation_already_has_active_response`, và cuộc gọi trượt dài
+từ đó.
+
+**Sửa:** gom kết quả trong vòng lặp, chỉ tạo **ĐÚNG MỘT** response sau khi xử lý xong toàn bộ
+`function_call` của `response.done` đó. (`function_call_output` vẫn gửi đủ một cái cho mỗi `call_id`.)
+
+### Đ6.3 — Không có cách nào biết `create_response` có hiệu lực
+
+Log chỉ ghi `session.updated OK`, nên khi model vẫn nói thì không phân biệt được "OpenAI bỏ qua tham
+số" với "code tự tạo response". **Sửa:** log cấu hình VAD **thật sự đang áp dụng** lấy từ
+`event.session.audio.input.turn_detection`:
+
+```
+session.updated OK — VAD đang áp dụng: server_vad create_response=false silence=2000 eagerness=-
+```
+
+### Đ6.4 — "Đọc lại đi" bị xếp vào "đổi chủ đề"
+
+Khách xin nghe lại mã, code lại nhờ model tự trả lời → model nói câu chờ cũ → bế tắc. **Sửa:** thêm
+nhánh `NHAC_LAI` — khớp *"đọc/nói/nhắc lại"*, *"chưa nghe rõ"* → code **đọc lại đúng
+`_danhBoLastPrompt`**, không hỏi model. Code đã có sẵn câu cần đọc, không lý gì phải nhờ model.
+
+### Test
+
+`muc_c_khong_cam.test.mjs` thêm nhánh `NHAC_LAI` (2 test). `danh_bo_verify_flow.test.mjs` nới lại
+khẳng định về `ma_danh_bo` — handler đã bỏ đọc lại mã trong mỗi câu trả lời, nhưng `fetchBilling`
+vẫn phải trả `ma_danh_bo` để chuỗi `"Mã danh bộ undefined"` không quay lại.
+
+Tổng **53 test**.
 
 ---
 

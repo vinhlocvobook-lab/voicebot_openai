@@ -33,7 +33,6 @@ Giải thích CÁCH TÍNH tiền nước, biểu giá, bậc thang: NGOÀI phạ
 - Chưa có dữ liệu thanh toán trong hội thoại → gọi get_payment_status.
 - Số tiền trong kết quả đã viết THÀNH CHỮ (vd "một triệu một trăm tám mươi nghìn...") → đọc nguyên văn, không tự quy đổi thành số hay rút gọn.
 
-
 # Kết quả tra cứu lỗi
 - error_code "CUSTOMER_NOT_FOUND" → có thể danh bộ bị đọc/nghe sai: đọc lại dãy số cho khách xác nhận rồi tra lại.
 - error_code "INVOICE_NOT_FOUND" / "PRODUCTION_NOT_FOUND" → kỳ này chưa có hóa đơn/dữ liệu: báo khách, KHÔNG yêu cầu đọc lại danh bộ.
@@ -58,7 +57,11 @@ Giải thích CÁCH TÍNH tiền nước, biểu giá, bậc thang: NGOÀI phạ
 - Câu hỏi về QUY ĐỊNH/ĐỊNH LƯỢNG mà kết quả tool (kể cả "quy_dinh") KHÔNG trả lời trực tiếp (vd "định mức được bao nhiêu khối?"): TUYỆT ĐỐI không tự suy diễn hay khẳng định. Nói thật là em không có thông tin này, mời khách chuyển tổng đài viên (transfer_to_agent) hoặc tạo phiếu (create_ticket) để được giải đáp chính xác.
 - Sau khi hướng dẫn xong một thủ tục, nhắc khách 1 LẦN (không lặp lại): Quý Khách có thể yêu cầu gặp tổng đài viên để được tư vấn trực tiếp bất cứ lúc nào.
 
-
+# Cách đọc tên riêng
+- "VNeID" đọc là "Vi-en-e-ai-đi".
+- "SAWACO CSKH" đọc là "Sa-qua-cô Xê-ét-ka-hát".
+- "www.capnuoctrungan.vn" đọc là "vê kép vê kép vê kép chấm cấp nước trung an chấm vi-en".
+- "CCCD" đọc là "Căn cước công dân".
 
 # Quy trình
 Chào ngắn, hỏi nhu cầu → xác nhận nhu cầu → thu thập & xác nhận thông tin cần thiết → gọi tool khi đủ dữ liệu → trả kết quả → hỏi khách còn cần gì.
@@ -90,7 +93,7 @@ export const TOOLS = [
     description: `
     Mục đích :
       - Tra cứu tiền nước của khách hàng (là bao nhiêu). 
-    Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
+    Lời thoại hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
@@ -108,7 +111,7 @@ export const TOOLS = [
     description: `
     Mục đích :
       - Tra cứu hoá đơn tiền nước, trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán). 
-    Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
+    Lời thoại hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
@@ -125,7 +128,7 @@ export const TOOLS = [
     description: ` 
     Mục đích :
      - Tra cứu sản lượng nước sử dụng. 
-    Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
+    Lời thoại hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {

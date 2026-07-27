@@ -998,13 +998,15 @@ async function handleGetBill({ ma_danh_bo, ky, nam }, callState) {
   //     : `, chưa thanh toán`;
   //   return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
   // });
-  console.log("[handleGetBill] f", f);
+  console.log("[handleGetBill] f=", f);
+  console.log("f.ma_danh_bo", f.ma_danh_bo);
   const parts = f.rows.map((d) => {
     const tt = d.TrangThaiThanhToan === "Đã thanh toán"
       ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
       : `, chưa thanh toán`;
-    return `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
+    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
   });
+
   return JSON.stringify({
     success: true,
     message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu hóa đơn.",
@@ -1015,8 +1017,9 @@ async function handleGetBill({ ma_danh_bo, ky, nam }, callState) {
 async function handleGetWaterUsage({ ma_danh_bo, ky, nam }, callState) {
   const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
+  console.log("[handleGetBill] f=", f);
   const parts = f.rows.map(
-    (d) => `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
+    (d) => ` Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
   );
   return JSON.stringify({
     success: true,
@@ -1028,12 +1031,13 @@ async function handleGetWaterUsage({ ma_danh_bo, ky, nam }, callState) {
 async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }, callState) {
   const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
+  console.log("[handleGetBill] f=", f);
   // KHÔNG đọc DonViThanhToan cho khách (mã nội bộ như "GDGV", chưa có bảng map).
   const parts = f.rows.map((d) => {
     if (d.TrangThaiThanhToan === "Đã thanh toán") {
-      return `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}, số tiền ${docTienVN(d.TongTien)}`;
+      return `Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}, số tiền ${docTienVN(d.TongTien)}`;
     }
-    return `Mã danh bộ ${f.ma_danh_bo}, Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${docTienVN(d.TongTien)}`;
+    return `Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${docTienVN(d.TongTien)}`;
   });
   return JSON.stringify({
     success: true,

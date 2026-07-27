@@ -148,6 +148,8 @@ export function openSessionWebSocket(callId, callOps) {
   // resolveDanhBo (tools.js) chặn tra cứu tới khi cờ này được gỡ ở đây.
   const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bừ\b|\bừm\b|\bờ\b|\bok\b|\boke\b|\bđược\b|yes)/i;
   const _PHU_DINH_RE = /(không đúng|chưa đúng|sai rồi|\bsai\b|chưa phải|không phải)/i;
+  // [fix 27/07/2026] Khách xin nghe LẠI câu bot vừa nói (không phải đổi chủ đề).
+  const _XIN_NHAC_LAI_RE = /((đọc|nói|nhắc)\s+lại|chưa nghe rõ|nghe không rõ|không nghe rõ|nói gì)/i;
   const _isAffirmative = (t) => {
     const s = String(t);
     if (_PHU_DINH_RE.test(s)) return false;
@@ -260,7 +262,11 @@ export function openSessionWebSocket(callId, callOps) {
       log.debug(`[WS][${callId}] _speakVerbatim(${tag}, lần ${attempt}): ${text}`);
       ws.send(JSON.stringify({
         type: "response.create",
-        response: { instructions },
+        // [fix 27/07/2026] `tool_choice: "none"`: đây là câu code ép đọc nguyên
+        // văn, model TUYỆT ĐỐI không được nhân dịp này gọi tool (cuộc
+        // rtc_u2_E66X1bhQIrBrwtqeHkOau: response đọc câu chờ lại sinh ra 2 lần
+        // gọi get_bill với số bịa → vỡ cả cuộc gọi).
+        response: { instructions, tool_choice: "none" },
       }));
       logger.addEvent("response_create_sent", tag);
       // Câu quan trọng → theo dõi xem bot có đọc đúng không (xử lý ở conversation.item.done).
@@ -763,6 +769,10 @@ export function openSessionWebSocket(callId, callOps) {
         const output = event?.response?.output;
         if (!Array.isArray(output) || output.length === 0) break;
 
+        // [fix 27/07/2026] Một response.done có thể chứa NHIỀU function_call.
+        // Gom kết quả tool cuối cùng, chỉ tạo ĐÚNG MỘT response sau vòng lặp.
+        let _ketQuaToolCuoi = null;
+
         for (const item of output) {
           if (item?.type !== "function_call") continue;
 
@@ -879,18 +889,44 @@ export function openSessionWebSocket(callId, callOps) {
             if (result?.moi_bam_phim || result?.da_sai_nhieu_lan) _setVadMode("normal");
             else if (result?.invalid_danh_bo || result?.dang_gom_so || result?.dang_xac_minh) _armDanhBoWatchdog();
 
-            const _instructions = result?.doc_cho_khach
-              ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
-              "không tóm tắt, không diễn giải lại: \"" + result.doc_cho_khach + "\""
-              : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
-            logger.addEvent("response_create_sent", `tool_result: ${name}`);
-            console.log({ _instructions });
-            _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
-            ws.send(JSON.stringify({
-              type: "response.create",
-              response: { instructions: _instructions },
-            }));
+            // [fix 27/07/2026] KHÔNG gửi response.create ngay trong vòng lặp —
+            // xem giải thích ở khối "MỘT response.create cho CẢ response.done".
+            _ketQuaToolCuoi = { name, result };
           }
+        }
+
+        // ── [fix 27/07/2026] MỘT response.create cho CẢ response.done ────────
+        // Cuộc rtc_u2_E66X1bhQIrBrwtqeHkOau: model phát ra HAI function_call
+        // get_bill trong CÙNG một response. Vòng lặp gửi 2 `response.create` →
+        // cái thứ hai lỗi `conversation_already_has_active_response`, và cả cuộc
+        // gọi trượt dài từ đó (bot nói lung tung 3 lượt liền rồi khách cúp máy).
+        // Mỗi `response.done` chỉ được sinh ra ĐÚNG MỘT response mới.
+        if (_ketQuaToolCuoi && !_hungUp && !_transferred) {
+          const { name: _tenTool, result: _kq } = _ketQuaToolCuoi;
+          const _instructions = _kq?.doc_cho_khach
+            ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
+            "không tóm tắt, không diễn giải lại: \"" + _kq.doc_cho_khach + "\""
+            : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
+
+          // [fix 27/07/2026] Câu thoại CỐ ĐỊNH của luồng danh bộ → CẤM model gọi
+          // tool trong response này. Cùng cuộc gọi trên: response do code tạo để
+          // đọc câu chờ lại bị model dùng để gọi get_bill tiếp (với số bịa), tạo
+          // vòng xoáy tool-call. `tool_choice: "none"` cắt hẳn vòng xoáy đó.
+          const _camGoiTool = !!(_kq?.doc_cho_khach && (
+            _kq.dang_gom_so || _kq.dang_xac_minh || _kq.invalid_danh_bo ||
+            _kq.moi_bam_phim || _kq.cho_khach_xac_nhan || _kq.da_sai_nhieu_lan
+          ));
+
+          logger.addEvent("response_create_sent",
+            `tool_result: ${_tenTool}${_camGoiTool ? " (tool_choice=none)" : ""}`);
+          log.debug(`[WS][${callId}] response.create sau tool: ${_instructions}`);
+          _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
+          ws.send(JSON.stringify({
+            type: "response.create",
+            response: _camGoiTool
+              ? { instructions: _instructions, tool_choice: "none" }
+              : { instructions: _instructions },
+          }));
         }
         break;
       }
@@ -1010,6 +1046,16 @@ export function openSessionWebSocket(callId, callOps) {
             log.info(`[WS][${callId}] [danh_bo] phiên #${_s.requestNo}: ${_s.digits.length}/11 số (+"${khText}")`);
             _armDanhBoWatchdog();
             _maybeVerifyDanhBo();
+          } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh &&
+            _XIN_NHAC_LAI_RE.test(khText) && _toolCallState._danhBoLastPrompt) {
+            // [fix 27/07/2026] "Đọc lại đi", "nhắc lại giúp em", "chưa nghe rõ"…
+            // → khách muốn nghe LẠI đúng câu đang chờ, không phải đổi chủ đề.
+            // Cuộc rtc_u2_E66X1bhQIrBrwtqeHkOau: câu này bị xếp vào "đổi chủ đề"
+            // nên code nhờ model tự trả lời, model lại nói câu chờ cũ → bế tắc.
+            // Code có sẵn câu cần đọc, cứ đọc lại — không phải hỏi model.
+            logger.addEvent("danh_bo_doc_lai_theo_yeu_cau", khText.slice(0, 60));
+            log.info(`[WS][${callId}] Khách xin nhắc lại → đọc lại câu đang chờ.`);
+            _speakVerbatim(_toolCallState._danhBoLastPrompt, "danh_bo_nhac_lai", 0, { verify: true });
           } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits") {
             // [MỨC C — đợt 5] Khách nói chuyện KHÁC giữa lúc đang thu số (cuộc
             // rtc_u1_E5iAEYIr6WXOZvgtds2e5: đang đọc dở thì hỏi "cho tôi hỏi về
@@ -1200,11 +1246,20 @@ export function openSessionWebSocket(callId, callOps) {
         logger.addEvent("session_created", event.session?.id || null);
         break;
 
-      case "session.updated":
+      case "session.updated": {
         console.log("....session.updated....");
-        log.info(`[WS][${callId}]session.updated OK`);
-        logger.addEvent("session_updated", null);
+        // [fix 27/07/2026] Log cấu hình VAD OpenAI THẬT SỰ đang áp dụng. Cuộc
+        // rtc_u2_E66X1bhQIrBrwtqeHkOau: code báo "VAD → digits" nhưng model vẫn
+        // tự nói và tự gọi tool — không có cách nào biết `create_response: false`
+        // có hiệu lực hay bị bỏ qua, vì ta chỉ log "session.updated OK".
+        const _td = event.session?.audio?.input?.turn_detection ?? null;
+        const _tom = _td
+          ? `${_td.type} create_response=${_td.create_response} silence=${_td.silence_duration_ms ?? "-"} eagerness=${_td.eagerness ?? "-"}`
+          : "(không có turn_detection trong phản hồi)";
+        log.info(`[WS][${callId}]session.updated OK — VAD đang áp dụng: ${_tom}`);
+        logger.addEvent("session_updated", _tom);
         break;
+      }
 
       default:
         break;

@@ -25,9 +25,13 @@ export async function acceptCall(callId, customerContext = "") {
   // Giữ body tối giản giống Python example trong docs OpenAI.
   // Các config nâng cao (tools, voice, VAD, transcription) sẽ được gửi
   // qua session.update sau khi WebSocket kết nối thành công.
+  let context_chuacosodanhbo = `
+# Số Danh Bộ (ma_danh_bo)
+ Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`;
+
   const instructions = customerContext
-    ? `${SYSTEM_PROMPT}\n\n${customerContext}`
-    : SYSTEM_PROMPT;
+    ? `${SYSTEM_PROMPT}\n\n${customerContext}\n\n${context_chuacosodanhbo}`
+    : SYSTEM_PROMPT + "\n\n" + context_chuacosodanhbo;
 
   const body = {
     type: "realtime",

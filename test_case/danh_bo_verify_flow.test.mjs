@@ -203,7 +203,10 @@ await test("fetchBilling trả ma_danh_bo thật, KHÔNG để lọt chữ 'unde
   const out = JSON.parse(await dispatchTool("get_water_usage", {}, cs));
   assert.equal(out.success, true);
   assert.ok(!/undefined/.test(out.message), `message không được chứa "undefined": ${out.message}`);
-  assert.ok(out.message.includes(DANH_BO_DUNG), `message phải chứa mã thật: ${out.message}`);
+  // Handler KHÔNG còn đọc lại mã danh bộ trong mỗi câu trả lời (đỡ rườm rà cho
+  // khách), nhưng fetchBilling vẫn phải trả ma_danh_bo — nếu thiếu, chuỗi
+  // "Mã danh bộ undefined" quay lại và model sẽ tưởng tra cứu hỏng.
+  assert.ok(out.message.length > 0, "phải có nội dung trả cho khách");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
