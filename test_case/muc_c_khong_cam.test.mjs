@@ -29,7 +29,7 @@ const _XIN_NHAC_LAI_RE = /((đọc|nói|nhắc)\s+lại|chưa nghe rõ|nghe khô
  * @param {string} khText
  * @param {{dangChoXacNhan:boolean, vadMode:"digits"|"normal"}} state
  */
-function nhanhXuLy(khText, { dangChoXacNhan, vadMode, coCauDangCho = true }) {
+function nhanhXuLy(khText, { dangChoXacNhan, vadMode, coCauDangCho = true, dangXacMinh = false }) {
   const seXuLyXacNhan = dangChoXacNhan && _isAffirmative(khText);
   const seXuLyPhuDinh = dangChoXacNhan && _PHU_DINH_RE.test(khText);
   const laLuotDocSo = !seXuLyXacNhan && !seXuLyPhuDinh && _looksLikeDigitTurn(khText);
@@ -38,11 +38,13 @@ function nhanhXuLy(khText, { dangChoXacNhan, vadMode, coCauDangCho = true }) {
   if (seXuLyXacNhan) return "XAC_NHAN";                   // → _requestModelReply
   if (seXuLyPhuDinh) return "PHU_DINH";                   // → _maybeVerifyDanhBo phát lời
   if (_XIN_NHAC_LAI_RE.test(khText) && coCauDangCho) return "NHAC_LAI"; // → đọc lại câu đang chờ
+  // Đang xác minh / sắp đọc câu xác nhận → GIỮ KHOÁ, đường nền sẽ phát lời.
+  if (vadMode === "digits" && dangXacMinh) return "GIU_KHOA";
   if (vadMode === "digits") return "DOI_CHU_DE";          // → mở khoá + _requestModelReply
   return "MODEL_TU_TRA_LOI";                              // model chưa bị khoá
 }
 
-const CO_PHAT_LOI = new Set(["GOM_SO", "XAC_NHAN", "PHU_DINH", "NHAC_LAI", "DOI_CHU_DE", "MODEL_TU_TRA_LOI"]);
+const CO_PHAT_LOI = new Set(["GOM_SO", "XAC_NHAN", "PHU_DINH", "NHAC_LAI", "GIU_KHOA", "DOI_CHU_DE", "MODEL_TU_TRA_LOI"]);
 
 let passed = 0;
 const test = (ten, fn) => {
@@ -95,6 +97,17 @@ test("'Đọc lại đi' là xin nhắc lại, KHÔNG phải đổi chủ đề"
 
 test("xin nhắc lại khi CHƯA có câu nào đang chờ → về nhánh đổi chủ đề", () => {
   assert.equal(nhanhXuLy("Đọc lại đi.", { dangChoXacNhan: false, vadMode: "digits", coCauDangCho: false }),
+    "DOI_CHU_DE");
+});
+
+test("câu lạ chen vào lúc ĐANG XÁC MINH → GIỮ KHOÁ, không thả model ra", () => {
+  // Cuộc rtc_u2_E67HNE1dTVDUT80s4XixB: khách vừa đọc xong 11 số, đường nền đang
+  // chạy, lọt vào hai chữ "đồng hồ" → code mở khoá model → 2 giây sau trọng tài
+  // chốt đúng mã nhưng model đã được thả ra và nói "ví dụ: 22082351" → hỏng.
+  assert.equal(nhanhXuLy("đồng hồ", { dangChoXacNhan: false, vadMode: "digits", dangXacMinh: true }),
+    "GIU_KHOA");
+  // Không đang xác minh thì vẫn phải trả lời khách bình thường.
+  assert.equal(nhanhXuLy("đồng hồ", { dangChoXacNhan: false, vadMode: "digits", dangXacMinh: false }),
     "DOI_CHU_DE");
 });
 

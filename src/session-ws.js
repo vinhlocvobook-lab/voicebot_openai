@@ -162,31 +162,28 @@ export function openSessionWebSocket(callId, callOps) {
   // lượt liền, KHÔNG gọi confirm_danh_bo nữa, khách cúp máy.
   // → Sau khi hủy, nếu đang giữa luồng lấy mã danh bộ theo nhóm thì code tự
   // đọc lại ĐÚNG câu của bước hiện tại, kéo cuộc gọi về đúng nhịp state machine.
+  // [fix 27/07/2026 đợt 8] Đi qua `_speakVerbatim` thay vì tự gửi `response.create`.
+  // Bản cũ gửi thẳng nên đụng response đang chạy → `conversation_already_has_active_response`
+  // (cuộc rtc_u2_E67HNE1dTVDUT80s4XixB). `_speakVerbatim` có sẵn retry chờ
+  // `response.done`, kiểm tra `ws.readyState` và cấm gọi tool.
   const _reAssertDanhBoStep = (lyDo) => {
     const _prompt = _toolCallState._danhBoLastPrompt;
     if (!_prompt) return;
     if (_hungUp || _transferred) return;
+    // Đã có câu đang chờ kiểm chứng (vd câu đọc lại xác nhận vừa gửi) → ĐỪNG chen
+    // thêm response nữa, để cơ chế kiểm chứng của _speakVerbatim tự lo.
+    if (_expectedSpeak) {
+      logger.addEvent("danh_bo_step_reassert_bo_qua", `${lyDo} — đã có câu đang chờ kiểm chứng`);
+      return;
+    }
     setTimeout(() => {
-      if (_hungUp || _transferred || _responseActive) return;
+      if (_hungUp || _transferred) return;
       if (!_toolCallState._danhBoLastPrompt) return; // đã chốt danh bộ trong lúc chờ
-      try {
-        _pendingCodeResponse = true;
-        let instructions = "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, " +
-          "KHÔNG nhắc lại bất kỳ chữ số nào ngoài đoạn này: \"" + _prompt + "\"";
-        console.log("[_reAssertDanhBoStep]: lydo=", lyDo);
-        console.log("[_reAssertDanhBoStep]: instructions=", instructions);
-        ws.send(JSON.stringify({
-          type: "response.create",
-          response: {
-            instructions: instructions,
-          },
-        }));
-        logger.addEvent("danh_bo_step_reasserted", `${lyDo} — đọc lại bước đang chờ`);
-        console.log(`[${callId}]:`, "danh_bo_step_reasserted", lyDo);
-      } catch (e) {
-        log.warn(`[WS][${callId}] không gửi được response.create kéo lại bước danh bộ: `, e.message);
-      }
-    }, 900); // chờ cancel hoàn tất (response.done về) rồi mới tạo response mới
+      if (_expectedSpeak) return;
+      logger.addEvent("danh_bo_step_reasserted", `${lyDo} — đọc lại bước đang chờ`);
+      log.info(`[WS][${callId}] Đọc lại bước đang chờ — ${lyDo}`);
+      _speakVerbatim(_toolCallState._danhBoLastPrompt, "danh_bo_reassert", 0, { verify: true });
+    }, 900);
   };
 
   // [fix 19/07/2026 v2] Ép bot đọc NGUYÊN VĂN một câu do code tạo (dùng cho
@@ -246,6 +243,11 @@ export function openSessionWebSocket(callId, callOps) {
   };
 
   const _speakVerbatim = (text, tag, attempt = 0, opts = {}) => {
+    console.log("[_speakVerbatim]:text ", text);
+    console.log("[_speakVerbatim]:tag ", tag);
+    console.log("[_speakVerbatim]:attempt ", attempt);
+    console.log("[_speakVerbatim]:opts ", opts);
+
     if (_hungUp || _transferred) return;
     if (ws.readyState !== WebSocket.OPEN) return; // cuộc gọi đã kết thúc
     if (_responseActive) {
@@ -265,6 +267,8 @@ export function openSessionWebSocket(callId, callOps) {
         "từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, rồi DỪNG: \"" + text + "\"" +
         (_cauCoSo ? "" : " TUYỆT ĐỐI không đọc thêm bất kỳ chữ số nào ngoài đoạn trên.");
       log.debug(`[WS][${callId}] _speakVerbatim(${tag}, lần ${attempt}): ${text}`);
+
+      console.log("[_speakVerbatim]:instructions : ", instructions);
       ws.send(JSON.stringify({
         type: "response.create",
         // [fix 27/07/2026] `tool_choice: "none"`: đây là câu code ép đọc nguyên
@@ -1089,6 +1093,18 @@ export function openSessionWebSocket(callId, callOps) {
             logger.addEvent("danh_bo_doc_lai_theo_yeu_cau", khText.slice(0, 60));
             log.info(`[WS][${callId}] Khách xin nhắc lại → đọc lại câu đang chờ.`);
             _speakVerbatim(_toolCallState._danhBoLastPrompt, "danh_bo_nhac_lai", 0, { verify: true });
+          } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits" &&
+            (_toolCallState._danhBoVerifyRunning || _expectedSpeak ||
+              danhBoSessionDigits(_toolCallState) >= 11)) {
+            // [fix 27/07/2026 đợt 8] ĐANG XÁC MINH / SẮP ĐỌC CÂU XÁC NHẬN → GIỮ KHOÁ.
+            // Cuộc rtc_u2_E67HNE1dTVDUT80s4XixB: khách vừa đọc xong 11 số, đường nền
+            // đang chạy, thì lọt vào hai chữ "đồng hồ" (nhiều khả năng nhiễu). Code
+            // xếp vào "đổi chủ đề" → MỞ KHOÁ model → đúng 2 giây sau trọng tài chốt
+            // đúng mã, nhưng model đã được thả ra và nói "số danh bộ chưa rõ, ví dụ
+            // 22082351" → hỏng cả cuộc gọi.
+            // Không lo bot câm: đường nền chắc chắn sẽ phát câu xác nhận ngay sau đó.
+            logger.addEvent("danh_bo_giu_khoa_dang_xac_minh", khText.slice(0, 60));
+            log.info(`[WS][${callId}] Giữ khoá — đang xác minh, bỏ qua lượt "${khText.slice(0, 40)}"`);
           } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits") {
             // [MỨC C — đợt 5] Khách nói chuyện KHÁC giữa lúc đang thu số (cuộc
             // rtc_u1_E5iAEYIr6WXOZvgtds2e5: đang đọc dở thì hỏi "cho tôi hỏi về

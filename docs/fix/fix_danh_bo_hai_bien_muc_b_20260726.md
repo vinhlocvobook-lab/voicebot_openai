@@ -173,7 +173,7 @@ trọng tài cũng chuyển sang logger có level.
 `test_case/speak_verbatim.test.mjs` — 7 test cho cơ chế kiểm chứng lời bot (đợt 4).
 `test_case/muc_c_khong_cam.test.mjs` — 14 test bảng quyết định chống bot câm (đợt 5).
 
-Tổng **54 test**, chạy bằng `npm test`.
+Tổng **55 test**, chạy bằng `npm test`.
 
 Kịch bản chính: khách đọc tách 3 hơi (13 số) → trọng tài từ chối → mời đọc lại → khách đọc liền
 `22023251775` → **chốt đúng**. Đây chính là cuộc gọi mà code cũ làm hỏng.
@@ -600,6 +600,47 @@ chữ số nào ngoài đoạn trên"* vào instructions.
 | `DANH_BO_TOOL_PROMPT_DELAY_MS` | 900 | Hoãn rồi kiểm tra lại trước khi phát câu thoại của tool |
 
 Tổng **54 test**.
+
+---
+
+## Đợt 8 — hai cuộc test 27/07 11:30 và 15:08
+
+### Cuộc `rtc_u1_E6AgDPzLEhHjv9hbx0jOr` (15:08) — THÀNH CÔNG ✅
+
+Cuộc thành công thứ hai, và lần này **bot đọc đúng câu xác nhận ngay lần đầu** — không còn dòng
+`speak_verbatim_mismatch` nào. Việc gỡ mệnh lệnh "đọc nguyên văn" khỏi `message` (đợt 7) đã trúng đích.
+
+### Cuộc `rtc_u2_E67HNE1dTVDUT80s4XixB` (11:30) — HỎNG ❌
+
+```
+11:31:33.2  "Bảy bảy năm" → 11/11 số → đường nền BẮT ĐẦU xác minh
+11:31:36.9  "đồng hồ"  (2 chữ, nhiều khả năng nhiễu)
+            → xếp vào ĐỔI CHỦ ĐỀ → VAD→normal (MỞ KHOÁ model) + nhờ model trả lời
+11:31:39.1  Trọng tài 0.88 + API OK → chốt ĐÚNG 22023251775
+11:31:41.9  model (đã được thả) nói "số danh bộ chưa rõ… ví dụ: 22082351"
+11:31:43.0  _reAssertDanhBoStep gửi thêm response → conversation_already_has_active_response
+→ 3 lượt bot nói lung tung → khách cúp máy
+```
+
+### Đ8.1 — Câu lạ chen vào lúc đang xác minh làm mở khoá model quá sớm
+
+Nhánh "đổi chủ đề" của đợt 4 quá rộng: nó thả model ra **ngay cả khi đường nền sắp có câu trả lời**.
+Chỉ hai chữ nhiễu là đủ phá cả cuộc gọi đã gần thành công.
+
+**Sửa:** khi `_danhBoVerifyRunning`, hoặc đang chờ `_expectedSpeak`, hoặc phiên đã đủ 11 số →
+**GIỮ KHOÁ**, bỏ qua lượt đó (ghi event `danh_bo_giu_khoa_dang_xac_minh`). Không lo bot câm: đường nền
+chắc chắn phát câu xác nhận ngay sau đó.
+
+### Đ8.2 — `_reAssertDanhBoStep` tự gửi `response.create`
+
+Hàm này (có từ 18/07) gửi thẳng `response.create` nên đụng response đang chạy →
+`conversation_already_has_active_response`. **Sửa:** đi qua `_speakVerbatim` — đã có sẵn retry chờ
+`response.done`, kiểm tra `ws.readyState` và `tool_choice: "none"`. Đồng thời **bỏ qua hẳn** khi đang
+có `_expectedSpeak` (câu xác nhận vừa gửi), tránh hai cơ chế chen nhau.
+
+### Test
+
+Thêm nhánh `GIU_KHOA` vào bảng quyết định — tổng **55 test**.
 
 ---
 
