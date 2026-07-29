@@ -823,7 +823,7 @@ export function openSessionWebSocket(callId, callOps) {
             });
           }
 
-          console.log({ name, toolOutput: JSON.parse(toolOutput), callId });
+          console.log("[function_call_output]:", { name, toolOutput: JSON.parse(toolOutput), callId });
           // Luôn gửi function_call_output về OpenAI (mỗi call_id cần đúng 1 output)
           ws.send(
             JSON.stringify({
