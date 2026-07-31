@@ -410,6 +410,19 @@ export function openSessionWebSocket(callId, callOps) {
         _toolCallState._danhBoLastPrompt = r.prompt;
         logger.addEvent(`danh_bo_${r.action}`, r.value ? `${r.by}: ${r.value}` : r.prompt);
         log.info(`[WS][${callId}] danh_bo_${r.action}${r.value ? ` → ${r.value} (${r.by})` : ""}`);
+        // [fix 31/07/2026 đợt 9] Đã có ứng viên để đọc lại xác nhận → tắt watchdog
+        // 90s NGAY, đừng đợi tới lúc khách xác nhận bằng lời. Watchdog này đếm từ
+        // lần đầu _armDanhBoWatchdog() và KHÔNG tự gia hạn theo hoạt động sau đó
+        // (xem _armDanhBoWatchdog) — cuộc rtc_u2_E7YQCdKECKBoFNKzFMRpe: khách vừa
+        // đọc sạch 11 số, trọng tài vừa chốt xong (candidate_ready) thì ĐÚNG khoảnh
+        // khắc đó watchdog 90s (đếm từ rất lâu trước) hết hạn → bot vừa mời BẤM
+        // PHÍM xong lại quay ra đọc lại xác nhận bằng giọng nói, khách nghe rối.
+        // Đã có ứng viên nghĩa là hết lý do "không tìm ra được số nào" — tắt watchdog
+        // ở đây (CHỈ action==="confirm", KHÔNG áp cho "reread": mời đọc lại nghĩa
+        // là VẪN chưa có ứng viên, watchdog phải tiếp tục đếm). Nếu khách phủ
+        // định/đọc lại sau đó, lượt đọc số kế tiếp tự bật lại nó (_armDanhBoWatchdog
+        // không gia hạn khi đang chạy nhưng vẫn tự set lại từ null).
+        if (r.action === "confirm") _clearDanhBoWatchdog();
         // [migrate 30/07/2026] confirm_tool: CHỈ bước "đã có ứng viên, chờ xác
         // nhận" (action === "confirm") đổi cơ chế — mời đọc lại (action !==
         // "confirm", vẫn ở giai đoạn gom số thô) giữ nguyên `_speakVerbatim`.

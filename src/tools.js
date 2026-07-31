@@ -72,7 +72,7 @@ function _deAccent(s) {
 // Chữ số đọc bằng lời tiếng Việt (đã bỏ dấu) → chữ số.
 const _VI_DIGIT_WORDS = {
   khong: "0", linh: "0", le: "0",
-  mot: "1", hai: "2", hay: "2", ba: "3",
+  mot: "1", hai: "2", hay: "2", ba: "3", ban: "3",
   bon: "4", tu: "4", nam: "5", lam: "5",
   sau: "6", bay: "7", tam: "8", chin: "9",
 };
@@ -324,9 +324,15 @@ function invalidDanhBoResponse(length, callState = {}) {
       doc_cho_khach:
         `Dạ, Quý Khách cho em xin mã danh bộ gồm ${DANH_BO_LENGTH} chữ số, ` +
         `đọc chậm từng chữ số giúp em ạ.`,
+      // [fix 31/07/2026 đợt 10] Cùng lớp rủi ro với đợt 6 (dangXacMinhResponse):
+      // "TUYỆT ĐỐI không đọc/tự đoán" là mệnh lệnh tuyệt đối, mà message này NẰM
+      // LẠI VĨNH VIỄN trong hội thoại — có thể xung đột với yêu cầu đọc số ở bước
+      // xác nhận sau này. Đổi thành mô tả trạng thái + báo trước bước sau không bị
+      // ràng buộc bởi câu này.
       message:
-        `Chưa có mã danh bộ — đang chờ khách đọc. TUYỆT ĐỐI không tự đọc/tự đoán bất kỳ chữ số ` +
-        `nào. Hệ thống TỰ gom số, TỰ phát câu thoại và TỰ xác nhận với khách.`,
+        `Chưa có mã danh bộ — đang chờ khách đọc, hệ thống TỰ gom số và TỰ phát câu ` +
+        `thoại ở bước này. Lượt NÀY model không cần tự đọc/đoán số nào. Khi nào hệ ` +
+        `thống gửi yêu cầu đọc số riêng thì làm đúng yêu cầu đó, không bị câu này ràng buộc.`,
     });
   }
 
@@ -345,8 +351,10 @@ function invalidDanhBoResponse(length, callState = {}) {
         `${docSoLuong(DANH_BO_LENGTH)} chữ số ạ. Quý Khách vui lòng đọc lại một lần nữa, ` +
         `chậm và rõ từng chữ số giúp em ạ.`,
       message:
-        `Nghe được ${length} số (NHIỀU HƠN ${DANH_BO_LENGTH}) — lẫn nhiễu, đang chờ khách đọc lại. ` +
-        `TUYỆT ĐỐI không tự đọc/tự đoán chữ số nào. Hệ thống TỰ phát câu thoại của bước này.`,
+        `Nghe được ${length} số (NHIỀU HƠN ${DANH_BO_LENGTH}) — lẫn nhiễu, hệ thống đang tự ` +
+        `chờ khách đọc lại và tự phát câu thoại của bước này. Lượt NÀY model không cần tự ` +
+        `đọc/đoán số nào. Khi hệ thống gửi yêu cầu đọc số riêng thì mới đọc, không bị câu ` +
+        `này ràng buộc.`,
     });
   }
 
@@ -360,8 +368,9 @@ function invalidDanhBoResponse(length, callState = {}) {
       `${docSoLuong(DANH_BO_LENGTH)} số ạ. Quý Khách đọc lại đầy đủ, ` +
       `chậm từng chữ số giúp em ạ.`,
     message:
-      `Nghe chưa đủ ${DANH_BO_LENGTH} số — đang chờ khách đọc lại. TUYỆT ĐỐI không tự đọc/tự ` +
-      `đoán chữ số nào. Hệ thống TỰ gom số, TỰ phát câu thoại và TỰ xác nhận với khách.`,
+      `Nghe chưa đủ ${DANH_BO_LENGTH} số — hệ thống đang tự chờ khách đọc lại và tự phát ` +
+      `câu thoại. Lượt NÀY model không cần tự đọc/đoán số nào; khi hệ thống gửi yêu cầu ` +
+      `đọc số riêng thì mới đọc theo đúng yêu cầu đó, không bị câu này ràng buộc.`,
   });
 }
 
@@ -409,11 +418,17 @@ function dangGomSoResponse(daNghe) {
     da_nghe: daNghe,
     can: DANH_BO_LENGTH,
     doc_cho_khach: `Dạ, em đang nghe ạ.`,
+    // [fix 31/07/2026 đợt 10] Cùng lớp rủi ro với đợt 6 — message này tồn dư vĩnh
+    // viễn trong hội thoại và fire ở HẦU HẾT các lượt đọc số dở dang (nhiều hơn hẳn
+    // dang_xac_minh), nên mệnh lệnh tuyệt đối "không đọc số" càng dễ chồng chất và
+    // xung đột với yêu cầu đọc số ở bước xác nhận sau này. Đổi thành mô tả trạng
+    // thái + báo trước bước sau không bị ràng buộc.
     message:
-      `Hệ thống ĐANG GOM số (${daNghe}/${DANH_BO_LENGTH}) — khách có thể còn đang đọc dở. ` +
-      `TUYỆT ĐỐI không đọc/không đoán chữ số nào, KHÔNG hỏi khách đọc tiếp từ số nào, ` +
-      `KHÔNG bảo khách đọc lại. Hệ thống TỰ phát mọi câu thoại của bước này. ` +
-      `Khách hỏi chuyện KHÁC (thủ tục, khiếu nại...) thì trả lời câu hỏi đó bình thường.`,
+      `Hệ thống ĐANG GOM số (${daNghe}/${DANH_BO_LENGTH}) — khách có thể còn đang đọc dở, ` +
+      `hệ thống TỰ phát mọi câu thoại của bước này. Lượt NÀY model không cần tự đọc/đoán ` +
+      `số, không cần hỏi khách đọc tiếp từ đâu, không cần bảo khách đọc lại. Khách hỏi ` +
+      `chuyện KHÁC (thủ tục, khiếu nại...) thì trả lời bình thường. Khi hệ thống gửi yêu ` +
+      `cầu đọc số riêng thì mới đọc, không bị câu này ràng buộc.`,
   });
 }
 
@@ -731,10 +746,14 @@ function danhBoDtmfInviteResponse(callState) {
       `Quý Khách vui lòng BẤM ${docSoLuong(DANH_BO_LENGTH)} chữ số mã danh bộ trên bàn phím ` +
       `điện thoại giúp em; nếu lỡ bấm nhầm, Quý Khách bấm phím SAO để nhập lại từ đầu ạ. ` +
       `Trường hợp không tiện bấm phím, Quý Khách nói "chuyển máy" để gặp tổng đài viên hỗ trợ ạ.`,
+    // [fix 31/07/2026 đợt 10] Cùng lớp rủi ro — bỏ mệnh lệnh tuyệt đối, chỉ mô tả
+    // trạng thái để không xung đột với yêu cầu đọc số (đọc lại kết quả DTMF) sau này.
     message:
-      `Đã hết lượt đọc bằng giọng nói — chuyển sang BẤM PHÍM. Hệ thống TỰ phát câu thoại và ` +
-      `TỰ ĐỘNG ghi nhận phím bấm — TUYỆT ĐỐI không tự đọc/đoán số từ ` +
-      `tiếng bấm phím. Khách muốn chuyển máy → transfer_to_agent. Khách muốn nhân viên gọi lại → create_ticket.`,
+      `Đã hết lượt đọc bằng giọng nói — chuyển sang BẤM PHÍM. Hệ thống TỰ phát câu mời ` +
+      `bấm phím và TỰ ĐỘNG ghi nhận phím bấm. Lượt NÀY model không cần tự đọc/đoán số từ ` +
+      `tiếng bấm phím. Khách muốn chuyển máy → transfer_to_agent. Khách muốn nhân viên gọi ` +
+      `lại → create_ticket. Khi hệ thống gửi yêu cầu đọc số riêng thì mới đọc, không bị ` +
+      `câu này ràng buộc.`,
   });
 }
 

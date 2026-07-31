@@ -802,3 +802,103 @@ bộ test hiện tại; cần quan sát cuộc gọi thật tiếp theo để x�
   (bot vẫn không đọc lại đúng được bằng giọng nói) — nếu khách không tiện bấm
   phím, cuộc gọi vẫn phải dựa vào nhánh "chuyển máy" đã có sẵn trong lời mời
   DTMF.
+
+## Fix 31/07/2026 (đợt 9) — watchdog 90s hết hạn ĐÚNG lúc vừa chốt xong ứng viên
+
+Log nguồn: `rtc_u2_E7YQCdKECKBoFNKzFMRpe` (cuộc dài ~9 phút, khách đọc lại nhiều
+lần). Khách vừa đọc SẠCH đủ 11 số ("22.02.3251.775."), trọng tài gpt-5.1 vừa
+chốt xong candidate (confidence 0.9) — nhưng ĐÚNG khoảnh khắc đó, watchdog 90s
+(đã âm thầm đếm từ lần `_armDanhBoWatchdog()` ĐẦU TIÊN trong cuộc, gần 90s
+trước, và không tự gia hạn theo hoạt động sau đó) hết hạn → bot vừa mời khách
+BẤM PHÍM DTMF xong (do watchdog) lại NGAY LẬP TỨC quay ra đọc câu xác nhận
+bằng giọng nói (do `_maybeVerifyDanhBo` vừa chốt candidate) — khách nghe hai
+chỉ dẫn mâu thuẫn liên tiếp trong ~2 giây.
+
+**Gốc rễ**: `_armDanhBoWatchdog()` chỉ đặt hẹn giờ MỘT LẦN (guard chống gia
+hạn: `if (_toolCallState._danhBoWatchdogTimer) return;`), nên nó đếm 90s từ
+lần đọc số ĐẦU TIÊN trong cuộc, không phải từ hoạt động gần nhất. Với cuộc dài
+(nhiều vòng đọc lại), watchdog có thể hết hạn ngay giữa lúc hệ thống ĐANG xử lý
+bình thường — không phải lúc bế tắc thật.
+
+**Fix**: trong `_maybeVerifyDanhBo` (`src/session-ws.js`, nhánh
+`r.action === "confirm"`), gọi `_clearDanhBoWatchdog()` NGAY khi có ứng viên để
+đọc xác nhận — không đợi tới lúc khách xác nhận bằng lời mới tắt (trước đây chỉ
+tắt ở bước "khách xác nhận lời nói", muộn hơn). Có ứng viên nghĩa là hết lý do
+"không tìm ra được số nào" nên lưới an toàn "mời DTMF vì bế tắc" không còn cần
+thiết ở bước này nữa; nếu khách phủ định/đọc lại sau đó, lượt đọc số kế tiếp tự
+`_armDanhBoWatchdog()` lại bình thường (timer đã về `null`). KHÔNG áp dụng cho
+`action === "reread"` (mời đọc lại từ đầu) — lúc đó vẫn CHƯA có ứng viên, watchdog
+phải tiếp tục đếm.
+
+58/58 test đạt. Chưa có test tự động riêng (cần mock timer + closure
+`session-ws.js`) — cần xác nhận qua cuộc gọi thật tiếp theo.
+
+## Ghi nhận thêm (đợt log 31/07/2026, chưa sửa code — cần thêm bằng chứng)
+
+Từ cùng đợt log (4 cuộc: `rtc_u0_E7YKxAOGzSEj9kbH3LJXw`,
+`rtc_u2_E7YMI60rqOfanPdvrlkVv`, `rtc_u2_E7YOOfc34rq3Jy4RpaUie`,
+`rtc_u2_E7YQCdKECKBoFNKzFMRpe`):
+
+- **`rtc_u2_E7YOOfc34rq3Jy4RpaUie`**: bot đọc "775" thành "77 phẩy 5" (hiểu
+  nhầm 3 chữ số rời thành một số thập phân) — lặp lại y hệt ở lần gửi lại đầu
+  tiên, minh chứng thêm cho cơ chế "bỏ cuộc sớm khi lặp lỗi y hệt" (đợt 8) là
+  hướng đúng, không chỉ riêng cho lỗi "nhân đôi chữ số cuối". Retry cuối cùng
+  vẫn thành công nên chưa chặn được cuộc gọi.
+- **`rtc_u2_E7YQCdKECKBoFNKzFMRpe`**: quan sát thêm HAI `function_call`
+  `get_bill` với CÙNG `call_id` xuất hiện gần như đồng thời ở bước gom số đầu
+  cuộc, kèm một lỗi `conversation_already_has_active_response` ngay sau đó ở
+  bước `dang_gom_so`. Chưa đủ bằng chứng để kết luận đây là lỗi phía code (xử
+  lý trùng một `response.done`) hay hành vi phía OpenAI (phát hai function_call
+  cho cùng một lượt) — cần log thô đầy đủ (không chỉ transcript rút gọn) ở lần
+  tái hiện tiếp theo trước khi sửa.
+- Cuộc gọi kết thúc (khách cúp máy) ngay sau khi khách đọc lại số lần thứ 4 mà
+  KHÔNG nói "đúng/sai" — mã đã đúng trong hệ thống lúc đó nhưng chưa được xác
+  nhận bằng lời. Cân nhắc: sau N lần đọc lại liên tiếp không kèm khẳng định,
+  có nên chủ động hỏi thẳng "Quý Khách đọc xong chưa ạ, số vừa rồi có đúng
+  không?" thay vì chỉ lặp lại lời mời đọc — chưa triển khai, cần thêm log để
+  xác định N hợp lý.
+
+## Fix 31/07/2026 (đợt 10) — không được giữ tool call treo lại chờ gom đủ số
+
+Đề xuất từ chủ dự án khi xem log `get_bill({"ma_danh_bo":"2202"})` trả về
+`dang_gom_so` ngay dù mới nghe 4/11 số: "không nên trả lời tool ngay, nên nhớ
+`call_id`, đợi gom đủ số + có kết quả trọng tài gpt-5.1 rồi mới trả lời tool."
+
+**Đã giải thích và KHÔNG áp dụng** — đây đúng là anti-pattern đã bị cấm tường
+minh trong tài liệu dự án (mục "Bẫy & quy ước" của `CLAUDE.md`): *"KHÔNG để
+tool call treo quá ~2 giây. VAD vẫn sinh response trong lúc treo và model luôn
+lấp khoảng trống bằng nội dung bịa"* — sự cố gốc là cuộc
+`rtc_u2_E5eDfB96UnJE6iDWfPbRX`: tool treo 21s → bot tự bịa 2 số danh bộ đọc
+cho khách nghe 4 lần. Giữ `get_bill` treo tới khi gom đủ 11 số + trọng tài
+xong (có thể vài chục giây nếu khách đọc ngắt quãng) sẽ tái lập đúng lỗi đó ở
+tool khác.
+
+Thiết kế hiện tại đã đạt đúng mục tiêu (không lộ dữ liệu thật khi chưa đủ số)
+theo cách không treo: trả `dang_gom_so` NGAY (không có dữ liệu thật, chỉ có
+`doc_cho_khach: "Dạ, em đang nghe ạ."`) để đóng đúng hợp đồng API; việc gom đủ
+số + chờ trọng tài chạy ở đường nền (`_maybeVerifyDanhBo`), độc lập với tool
+call; khi trọng tài xong, CODE ép model đọc đúng câu xác nhận qua
+`_speakVerbatim` — không nhờ model tự nói, nên không cần tool call nào "chờ"
+cả. `resolveDanhBo` khi `danhBo.confirmed === true` dùng thẳng
+`callState.danhBo.value`, bỏ qua tham số model tự đưa vào tool call, nên các
+lượt gọi `get_bill` "hụt" (chưa đủ số) không có rủi ro sai dữ liệu.
+
+### Fix đi kèm (đợt 10) — dọn "TUYỆT ĐỐI không đọc số" tồn dư ở nhóm message còn lại
+
+Trong lúc trao đổi, chủ dự án chỉ thẳng vào `message` của `dangGomSoResponse`
+("Hệ thống ĐANG GOM số... TUYỆT ĐỐI không đọc/không đoán chữ số nào...") và
+yêu cầu điều chỉnh hợp lý hơn — đúng lớp rủi ro đã ghi nhận nhưng chưa sửa ở
+đợt 6 (khi đó chỉ sửa `dangXacMinhResponse`, các message còn lại bị gắn cờ
+"cùng lớp rủi ro, chưa đủ bằng chứng để ưu tiên"). Nay có bằng chứng trực tiếp
+nên sửa luôn CẢ NHÓM trong `src/tools.js` theo đúng khuôn mẫu đợt 6 (mô tả
+trạng thái + báo trước bước sau không bị ràng buộc, bỏ mệnh lệnh tuyệt đối):
+
+- `invalidDanhBoResponse` — cả 3 nhánh (`length === 0`, `length > DANH_BO_LENGTH`,
+  thiếu số).
+- `dangGomSoResponse` — message user chỉ trực tiếp, fire ở HẦU HẾT lượt đọc số
+  dở dang (tần suất cao hơn hẳn `dang_xac_minh`), nên rủi ro chồng chất lớn nhất.
+- `danhBoDtmfInviteResponse`.
+
+Test có sẵn `test_case/danh_bo_verify_flow.test.mjs` (nhóm "Chỉ dẫn tồn dư")
+đã tự động kiểm tra generic cho các payload này (không được chứa "đọc nguyên
+văn", phải chứa "hệ thống (sẽ) tự") — không cần thêm test riêng. 58/58 test đạt.
