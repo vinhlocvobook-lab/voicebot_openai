@@ -26,8 +26,8 @@ export async function acceptCall(callId, customerContext = "") {
   // Các config nâng cao (tools, voice, VAD, transcription) sẽ được gửi
   // qua session.update sau khi WebSocket kết nối thành công.
   let context_chuacosodanhbo = `
-# Số Danh Bộ (ma_danh_bo)
- Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`;
+# Số Danh Bộ
+ Lời thoại để hỏi số danh bộ (ma_danh_bo) khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra ạ"`;
 
   const instructions = customerContext
     ? `${SYSTEM_PROMPT}\n\n${customerContext}\n\n${context_chuacosodanhbo}`
@@ -35,7 +35,17 @@ export async function acceptCall(callId, customerContext = "") {
 
   const body = {
     type: "realtime",
-    model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2",
+    // [migrate 30/07/2026] gpt-realtime-1.5 → gpt-realtime-2.1-mini (xem
+    // docs/fix/fix_migrate_gpt_realtime_21_20260730.md). Model reasoning-capable
+    // mới đọc/hiểu tuân lệnh literal hơn hẳn — nhiều rule/workaround viết cho
+    // bản 1.5 (không có reasoning) có thể cần điều chỉnh dần, xem CLAUDE.md.
+    model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1-mini",
+    // [migrate 30/07/2026] Model 2.1.x hỗ trợ reasoning_effort điều chỉnh được.
+    // "low" là mức khuyến nghị của OpenAI cho voice agent CSKH (đủ suy luận cho
+    // tra cứu/điều phối tool, không cộng thêm độ trễ cảm nhận được). Tăng lên
+    // "medium" nếu thấy model quyết định tool/leo thang ẩu; xem
+    // docs/fix/fix_migrate_gpt_realtime_21_20260730.md.
+    reasoning: { effort: process.env.OPENAI_REALTIME_REASONING_EFFORT || "low" },
     instructions,
     tools: TOOLS,
     audio: {
@@ -56,6 +66,14 @@ export async function acceptCall(callId, customerContext = "") {
             + "toàn bộ bằng tiếng Việt. Có thể chứa mã danh bộ 11 chữ số, số tiền, "
             + "tên thủ tục: định mức nước, lắp đặt đồng hồ, sang tên, nâng dời đồng hồ.",
         },
+      },
+      // [migrate 30/07/2026] `voice` trước đây chỉ có mặt trong comment ở
+      // session-ws.js (chưa từng thật sự gửi cho OpenAI) → OPENAI_VOICE trong
+      // .env là config chết. Đường dẫn đúng theo API hiện hành:
+      // session.audio.output.voice (không đổi được giữa chừng phiên sau khi
+      // model đã phát audio ít nhất 1 lần).
+      output: {
+        voice: process.env.OPENAI_VOICE || "alloy",
       },
     },
   };

@@ -78,34 +78,19 @@ const _VI_DIGIT_WORDS = {
 };
 
 /**
- * Ghép chuỗi ĐỌC THÀNH CHỮ ("Hai - Hai - Không...") thành chữ số.
- * [fix 30/07/2026 — cuộc rtc_u1_E7JWxaN1u2ZbQG9SnKbwh] Bản cũ yêu cầu MỌI token
- * trong CẢ câu đều là chữ số — chỉ cần một từ khung câu bình thường xen vào
- * ("Số danh bộ LÀ hai hai không...") là bị bỏ TOÀN BỘ, dù khách đọc digit-word
- * đúng. Khách hầu như luôn kèm câu dẫn khi đọc số ("Số danh bộ là...", "...ạ"),
- * nên bản cũ gần như luôn thất bại với lối đọc tách chữ → session ghi "0/11"
- * dù khách đã đọc, kéo theo cả chuỗi hệ quả (model tự nghe đúng số nhưng bị
- * `classifyModelArg` coi là bịa vì baseline session rỗng, cuộc gọi rối loạn).
- * Sửa: tìm CHUỖI LIÊN TỤC DÀI NHẤT gồm toàn token chữ số (≥3 token liên tiếp —
- * cùng ngưỡng với `_DIGIT_WORD_RE` dùng để NHẬN DIỆN đây là lượt đọc số ở
- * `_looksLikeDigitTurn`, session-ws.js), bỏ qua từ khung câu ở đầu/cuối/xen
- * giữa. Vẫn giữ tinh thần chống ghép nhầm: câu bình thường lỡ có 1-2 từ trùng
- * số ("một chút") không đủ dài để tính là đọc số.
+ * Ghép chuỗi ĐỌC THÀNH CHỮ ("Hai - Hai - Không...") thành chữ số. CHỈ nhận khi
+ * MỌI token đều là chữ số đọc bằng lời — có 1 token lạ (câu chữ thường) → trả ""
+ * để không ghép nhầm số từ câu nói bình thường.
  */
 function viDigitsFromWords(raw) {
   const tokens = _deAccent(raw).split(/[^a-z]+/).filter(Boolean);
   if (tokens.length === 0) return "";
-  let best = "", cur = "";
+  let out = "";
   for (const t of tokens) {
-    if (t in _VI_DIGIT_WORDS) {
-      cur += _VI_DIGIT_WORDS[t];
-    } else {
-      if (cur.length > best.length) best = cur;
-      cur = "";
-    }
+    if (!(t in _VI_DIGIT_WORDS)) return "";
+    out += _VI_DIGIT_WORDS[t];
   }
-  if (cur.length > best.length) best = cur;
-  return best.length >= 3 ? best : "";
+  return out;
 }
 
 /**
@@ -374,21 +359,10 @@ function dangXacMinhResponse() {
     success: false,
     dang_xac_minh: true,
     doc_cho_khach: `Dạ, em ghi nhận rồi ạ, Quý Khách chờ em một chút.`,
-    // [fix 30/07/2026 đợt 6] Bản cũ viết "TUYỆT ĐỐI không đọc/không đoán chữ số
-    // nào" — một MỆNH LỆNH tuyệt đối, mà function_call_output này NẰM LẠI VĨNH
-    // VIỄN trong hội thoại (cùng lỗi đã ghi nhận với "doc_cho_khach là KỊCH BẢN,
-    // đừng đọc"). Ngay lượt SAU đó, code gửi response.create riêng bảo model đọc
-    // NGUYÊN VĂN câu xác nhận có kèm 11 chữ số — hai chỉ dẫn ("đừng bao giờ đọc
-    // số" vs "đọc câu này có số") cùng nằm trong context, gây giằng co. Cuộc
-    // rtc_u2_E7LLkANEJmyTSp0B3t5EP: model né tránh đọc số 3/3 lần, nói vòng vo
-    // "chưa thể đọc ra số tiền... liên hệ tổng đài viên" dù lúc đó get_bill CHƯA
-    // hề được gọi. Sửa: đổi mệnh lệnh tuyệt đối thành MÔ TẢ TRẠNG THÁI + báo
-    // trước rằng lượt SAU sẽ có yêu cầu đọc số riêng, không bị câu này ràng buộc.
     message:
-      `Hệ thống đã nhận đủ số và đang xác minh ở nền. Lượt NÀY model không cần tự ` +
-      `nói gì thêm về số — chỉ đợi. Bước KẾ TIẾP hệ thống sẽ tự gửi một yêu cầu ` +
-      `riêng kèm câu xác nhận có đọc số; lúc đó cứ đọc đúng câu được yêu cầu, ` +
-      `không bị ràng buộc bởi câu này nữa.`,
+      `Hệ thống đã nhận đủ số và ĐANG XÁC MINH. TUYỆT ĐỐI không đọc/không đoán chữ số nào. ` +
+      `Hệ thống sẽ TỰ đọc mã cho khách xác nhận ngay sau đây — model không cần và không được ` +
+      `nhắc lại yêu cầu đọc số.`,
   });
 }
 
@@ -433,13 +407,10 @@ function danhBoReReadOrEscalate(callState, heardLen) {
 }
 
 function confirmRequestResponse(normalized, callState = {}) {
-  const { vuotNguong } = danhBoConfirmSpamGate(callState, "dang_cho_xac_nhan");
   return danhBoPayload(callState, {
     success: true,
     cho_khach_xac_nhan: true,
     ma_danh_bo: normalized,
-    trang_thai_danh_bo: "dang_cho_xac_nhan",
-    ...(vuotNguong ? { _danhBoConfirmSpamEscalate: true } : {}),
     doc_cho_khach:
       `Dạ, em đọc lại mã danh bộ để Quý Khách kiểm tra: ${danhBoSpoken(normalized)}. ` +
       `Quý Khách xác nhận giúp em có đúng không ạ?`,
@@ -448,119 +419,6 @@ function confirmRequestResponse(normalized, callState = {}) {
       `Khách xác nhận ĐÚNG → gọi lại hàm tra cứu khách cần, KHÔNG cần đọc số ` +
       `(hệ thống tự dùng số đã xác nhận). Khách báo SAI hoặc đọc dãy khác → CHỜ, ` +
       `hệ thống tự xử lý ở lượt sau; đừng tự bịa số, đừng tự đọc lại.`,
-  });
-}
-
-// ─── [migrate 30/07/2026 — confirm_danh_bo] Trạng thái tường minh cho model ───
-// Field DUY NHẤT model cần đọc để biết đang ở đâu trong luồng danh bộ, thay vì tự
-// suy luận từ nhiều cờ rải rác (cho_khach_xac_nhan/success/...). Dùng cho
-// DANH_BO_MODE=confirm_tool (xem docs/fix/fix_migrate_gpt_realtime_21_20260730.md).
-//
-// "da_xac_nhan"/"dang_cho_xac_nhan" bám vào callState.danhBo — GIÁ TRỊ NÀY LUÔN
-// do CODE xác minh (API + trọng tài gpt-5.1), KHÔNG BAO GIỜ lấy từ arg model hay
-// từ việc model "nghĩ" số nào đúng. Cờ `confirmed` cũng CHỈ do session-ws.js set,
-// dựa trên regex bắt từ khẳng định trên TRANSCRIPT THẬT của khách — model gọi
-// tool này bao nhiêu lần, nói gì, đều không có quyền tự chốt xác nhận
-// (xem memory [[voicebot-danhbo-verbal-confirm-gate]]).
-function danhBoTrangThai(callState) {
-  const d = callState.danhBo;
-  if (!d?.value) return "chua_co";
-  return d.confirmed ? "da_xac_nhan" : "dang_cho_xac_nhan";
-}
-
-/**
- * [confirm_danh_bo] Gate chống model tự gọi lặp lại tool này (hoặc bất kỳ tool
- * nào rơi vào nhánh "đang chờ xác nhận" của resolveDanhBo) mà không có lượt
- * khách nào xen giữa — nếu không chặn, khách có thể nghe bot lặp lại CÙNG một
- * câu xác nhận vô hạn lần. Đây là trục lỗi KHÁC với requestNo/_danhBoProposeCount
- * (những bộ đếm đó đếm "khách đọc lại bao nhiêu lần", không bắt được "model tự
- * kích hoạt lại tool bao nhiêu lần"). So theo CHỮ KÝ (trạng thái + giá trị) chứ
- * không chỉ trạng thái, để không hiểu lầm "đề xuất ứng viên MỚI sau khi bị bác"
- * là một lần lặp lại.
- * @returns {{lapLai:boolean, vuotNguong:boolean}}
- */
-function danhBoConfirmSpamGate(callState, trangThaiMoi) {
-  const chuKy = `${trangThaiMoi}:${callState.danhBo?.value || ""}`;
-  const laLapLai = callState._danhBoConfirmLastSig === chuKy && !callState._danhBoConfirmNewTurnSince;
-  if (laLapLai) {
-    callState._danhBoConfirmSpamCount = (callState._danhBoConfirmSpamCount || 0) + 1;
-  } else {
-    callState._danhBoConfirmLastSig = chuKy;
-    callState._danhBoConfirmNewTurnSince = false;
-    callState._danhBoConfirmSpamCount = 0;
-  }
-  const nguong = Number(process.env.DANH_BO_CONFIRM_SPAM_MAX || 3);
-  const vuotNguong = laLapLai && callState._danhBoConfirmSpamCount >= nguong;
-  if (laLapLai) {
-    log.warn(`[danh_bo][confirm_spam] lặp lại "${chuKy}" lần ${callState._danhBoConfirmSpamCount}` +
-      `${vuotNguong ? " — VƯỢT NGƯỠNG, escalate" : ""}`);
-    callState._logger?.addEvent?.("danh_bo_confirm_spam",
-      `${chuKy} — lần ${callState._danhBoConfirmSpamCount}${vuotNguong ? " (escalate)" : ""}`);
-  }
-  return { lapLai: laLapLai, vuotNguong };
-}
-
-/** session-ws.js gọi mỗi khi có MỘT LƯỢT KHÁCH THẬT (không phải model tự gọi
- *  tool) để mở lại "cửa sổ" cho confirm_danh_bo báo lại — tránh coi lượt xác
- *  nhận/phủ định hợp lệ của khách như "model tự spam". */
-export function noteDanhBoConfirmNewTurn(callState = {}) {
-  callState._danhBoConfirmNewTurnSince = true;
-}
-
-/**
- * [confirm_danh_bo — MỚI, DANH_BO_MODE=confirm_tool] Model gọi tool này ở giai
- * đoạn XÁC NHẬN (sau khi code đã mở khoá create_response). Bỏ qua hoàn toàn mọi
- * arg — chỉ đọc callState.danhBo. Trả `action:"no_reply"` khi bị chặn bởi gate
- * chống spam để session-ws.js KHÔNG tạo response.create tiếp theo (khách không
- * nghe lặp lại); `_danhBoConfirmSpamEscalate` báo session-ws.js tự fallback.
- */
-function handleConfirmDanhBo(callState = {}) {
-  const trangThai = danhBoTrangThai(callState);
-  const { lapLai, vuotNguong } = danhBoConfirmSpamGate(callState, trangThai);
-
-  if (lapLai) {
-    return JSON.stringify({
-      action: "no_reply",
-      trang_thai_danh_bo: trangThai,
-      ma_danh_bo: callState.danhBo?.value || null,
-      ...(vuotNguong ? { _danhBoConfirmSpamEscalate: true } : {}),
-      message: "Đã báo trạng thái này rồi, chưa có gì mới — KHÔNG gọi lại tool này, " +
-        "chờ khách nói gì đó rồi hệ thống sẽ tự báo lại.",
-    });
-  }
-
-  if (trangThai === "chua_co") {
-    return JSON.stringify({
-      trang_thai_danh_bo: "chua_co",
-      ma_danh_bo: null,
-      message: "Hệ thống CHƯA xác định được mã danh bộ nào — KHÔNG gọi tool này lúc này, " +
-        "chờ hệ thống tự xử lý sau khi khách đọc số.",
-    });
-  }
-
-  if (trangThai === "da_xac_nhan") {
-    return JSON.stringify({
-      trang_thai_danh_bo: "da_xac_nhan",
-      ma_danh_bo: callState.danhBo.value,
-      message:
-        "Mã danh bộ ĐÃ ĐƯỢC KHÁCH XÁC NHẬN — dùng NGAY số này để gọi tool tra cứu khách cần " +
-        "(get_bill/get_payment_status/get_water_usage/get_outages/create_ticket...). " +
-        "KHÔNG hỏi lại, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo khác với số hệ thống đang giữ.",
-    });
-  }
-
-  // dang_cho_xac_nhan — model CHỈ đọc hộ câu hỏi, KHÔNG tự đánh giá đúng/sai và
-  // KHÔNG có quyền tự coi là đã xác nhận (xem ghi chú đầu file phần này).
-  return JSON.stringify({
-    trang_thai_danh_bo: "dang_cho_xac_nhan",
-    ma_danh_bo: callState.danhBo.value,
-    doc_cho_khach:
-      `Dạ, em đọc lại mã danh bộ để Quý Khách kiểm tra: ${danhBoSpoken(callState.danhBo.value)}. ` +
-      `Quý Khách xác nhận giúp em có đúng không ạ?`,
-    message:
-      "Mã danh bộ ĐANG CHỜ khách xác nhận bằng lời — đọc câu doc_cho_khach cho khách nghe. " +
-      "KHÔNG tự tra cứu, KHÔNG tự coi là đã xác nhận dù model 'nghĩ' số này đúng — chỉ hệ " +
-      "thống mới được đổi trạng thái này, dựa trên câu trả lời thật của khách.",
   });
 }
 
@@ -1818,13 +1676,8 @@ function handleWaitForUser() {
 export async function dispatchTool(name, args, callState = {}) {
   try {
     switch (name) {
-      // [23/07/2026] confirm_danh_bo cũ GỠ khỏi TOOLS (model không còn tự quản
-      // danh bộ; thu-xác nhận do CODE lo — resolveDanhBo + verifyDanhBoFromSession
-      // + DTMF). [migrate 30/07/2026] confirm_danh_bo MỚI đăng ký lại bên dưới,
-      // chỉ có hiệu lực làm đường chính khi DANH_BO_MODE=confirm_tool (session-ws.js
-      // ép tool_choice gọi đúng tool này ở đúng thời điểm) — bản chất khác hẳn tool
-      // cũ: KHÔNG tin arg model, chỉ đọc lại callState.danhBo đã được code xác minh.
-      case "confirm_danh_bo": return handleConfirmDanhBo(callState);
+      // [23/07/2026] confirm_danh_bo GỠ khỏi TOOLS — model không còn tự quản danh
+      // bộ; thu-xác nhận do CODE lo (resolveDanhBo + verifyDanhBoFromSession + DTMF).
       case "get_bill": return await handleGetBill(args, callState);
       case "get_water_usage": return await handleGetWaterUsage(args, callState);
       case "get_payment_status": return await handleGetPaymentStatus(args, callState);

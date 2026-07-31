@@ -75,7 +75,7 @@ globalThis.fetch = async (url, opts = {}) => {
   };
 };
 
-const { noteDanhBoTranscript, startDanhBoRequest, verifyDanhBoFromSession, ensureDanhBoSession, dispatchTool } =
+const { noteDanhBoTranscript, startDanhBoRequest, verifyDanhBoFromSession, ensureDanhBoSession, dispatchTool, noteDanhBoRejected } =
   await import("../src/tools.js");
 
 const _logStub = { addEvent() { }, markDanhBoStarted() { }, setDanhBoRequestCount() { }, markDanhBoResolved() { } };
@@ -356,6 +356,32 @@ await test("đang gom dở → tool trả dang_gom_so ngay, không hỏi lại t
   assert.ok(Date.now() - t0 < 2000, "không được chặn chờ khách đọc tiếp");
   assert.equal(r.dang_gom_so, true);
   assert.equal(r.da_nghe, 7);
+});
+
+await test("khách ĐỌC LẠI số trong lúc đang chờ xác nhận → mở phiên mới sạch, không tràn số", async () => {
+  // Cuộc rtc_u2_E7XpOB5fmY21Hm4L28mXW (31/07/2026): sau khi bot đọc lại mã để
+  // xác nhận, khách không nói "đúng/sai" mà tự đọc lại toàn bộ 11 số từ đầu.
+  // Trước fix, session-ws.js cộng dồn lượt đọc lại này vào `_danhBoSession` CŨ
+  // (chưa reset vì mới chuyển sang chờ xác nhận, không phải "mời đọc lại") →
+  // tràn số (12 cũ + 11 mới = 23/11), rồi mô phỏng lại đây bằng chính các hàm
+  // session-ws.js gọi khi coi đây là phủ định ngầm.
+  const cs = { _logger: _logStub };
+  startDanhBoRequest(cs, "bot xin mã");
+  noteDanhBoTranscript(cs, "Số danh bộ là 2202 3251 977."); // 11 số, ứng viên ban đầu
+  assert.equal(ensureDanhBoSession(cs).digits.length, 11);
+
+  // Có ứng viên đang chờ xác nhận (mô phỏng đường nền đã chốt + đang chờ khách).
+  cs.danhBo = { value: "22023251977", confirmed: false };
+
+  // Khách đọc lại toàn bộ số (không nói đúng/sai) → session-ws.js coi là phủ
+  // định ngầm: reject ứng viên cũ + mở phiên mới TRƯỚC khi ghi nhận lượt đọc.
+  noteDanhBoRejected(cs);
+  startDanhBoRequest(cs, "khách đọc lại trong lúc đang chờ xác nhận");
+  const s = noteDanhBoTranscript(cs, "Số danh bộ là 2202 3251 775.");
+
+  assert.equal(cs.danhBo, null, "ứng viên pending phải bị huỷ, không giữ lại số cũ");
+  assert.equal(s.digits, "22023251775", "phiên MỚI chỉ chứa số vừa đọc lại, không lẫn số cũ (tránh tràn 23/11)");
+  assert.equal(s.requestNo, 2, "phải tính là một lượt yêu cầu mới, đúng cảm nhận của khách");
 });
 
 console.log(`\nTổng cộng: ${passed} test đạt${process.exitCode ? " — CÓ TEST HỎNG" : ""}\n`);

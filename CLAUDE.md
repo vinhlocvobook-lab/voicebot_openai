@@ -10,6 +10,14 @@ Voice Bot CSKH Cấp nước Trung An — trợ lý tiếng Việt trả lời c
 *control plane* (webhook → accept call → WebSocket theo dõi sự kiện + function call).
 Node >= 18, ESM (`"type": "module"`). Deps: `express`, `ws`, `dotenv`.
 
+Model realtime mặc định: **`gpt-realtime-2.1-mini`** (migrate 30/07/2026 từ đời
+`gpt-realtime` cũ không có reasoning — xem
+`docs/fix/fix_migrate_gpt_realtime_21_20260730.md`). Model reasoning-capable tuân
+lệnh literal hơn hẳn bản cũ — nếu thấy một rule/workaround trong file này "có vẻ
+không cần thiết nữa", đọc doc migrate trước khi bỏ, vì phần lớn workaround (MỨC C,
+nới VAD, trọng tài gpt-5.1) vẫn được giữ làm lưới an toàn có chủ đích, không phải
+tàn dư quên dọn.
+
 Entry point: **`server.js`**. Chạy: `npm start` / `npm run dev`. Health: `GET /health`.
 Test: `npm test` (4 file `.test.mjs` trong `test_case/`, thuần logic + giả lập `fetch`, không cần
 `.env`/mạng). Các file còn lại trong `test_case/`, `test_cases_Excel/` là kịch bản thủ công.
@@ -35,11 +43,28 @@ Cần `.env` (xem `.env.example`); thiếu `OPENAI_API_KEY` server không chạy
 
 ### Function call (tools)
 
-Schema ở `system-prompt.js` (`TOOLS`), xử lý ở `tools.js` (11 tool):
+Schema ở `system-prompt.js` (`TOOLS`), xử lý ở `tools.js` (13 tool):
 
 Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
 `compare_usage`, `get_outages`, `create_ticket`, `get_procedure_info`,
 `check_missing_docs`: trả JSON cho AI đọc lại cho khách.
+
+`wait_for_user` (thêm 30/07/2026, pattern chính thức của OpenAI): tool no-op cho
+lượt audio không cần trả lời (im lặng/tạp âm/không hướng tới Trợ lý). Handler trả
+`action: "no_reply"` → `session-ws.js` KHÔNG tạo `response.create` sau đó, khác
+mọi tool khác.
+
+`confirm_danh_bo` (thêm 30/07/2026, chỉ có hiệu lực làm đường chính khi
+`DANH_BO_MODE=confirm_tool`): KHÁC HẲN tool `confirm_danh_bo` cũ đã gỡ 23/07 —
+tool cũ nhận dãy số từ model làm nguồn ghi nhận (rủi ro, đã bỏ); tool mới KHÔNG
+nhận tham số nào, chỉ đọc lại `callState.danhBo` (giá trị CODE đã xác minh qua
+API + trọng tài). Trả `trang_thai_danh_bo` (`chua_co`/`dang_cho_xac_nhan`/
+`da_xac_nhan`) + `ma_danh_bo` — field DUY NHẤT model cần tin, bỏ qua các lần gọi
+tool cũ hơn còn sót lại trong hội thoại. Có gate chống model tự gọi lặp lại
+không có lượt khách mới xen giữa (`DANH_BO_CONFIRM_SPAM_MAX`, mặc định 3) — vượt
+ngưỡng thì `session-ws.js` tự khoá lại + `_speakVerbatim` fallback, KHÔNG mời
+bấm DTMF (mã đã đúng, chỉ là model hỏi lặp — DTMF sai ngữ cảnh). Xem
+`docs/fix/fix_migrate_gpt_realtime_21_20260730.md` mục "confirm_tool".
 
 **Luồng mã danh bộ — CODE làm chủ, không nhờ model** (fix 26/07/2026, xem
 `docs/fix/fix_danh_bo_hai_bien_muc_b_20260726.md`):
@@ -74,6 +99,22 @@ Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
   Lưới an toàn `_armMuteWatchdog` (15s) mở khoá nếu bot lỡ im lặng — mỗi event
   `mute_watchdog` trong log là một nhánh code còn thiếu, phải bịt riêng.
   **Bot câm tệ hơn bot trả lời sai.**
+  **(migrate 30/07/2026)** Biến môi trường `DANH_BO_MODE=locked|unlocked|confirm_tool`
+  bật/tắt MỨC C: `locked` (mặc định) = hành vi trên trong CẢ giai đoạn gom số lẫn
+  xác nhận; `unlocked` (ĐÃ TEST THẬT 30/07 — THẤT BẠI, xem migration doc) = model
+  tự trả lời ở CẢ hai giai đoạn; `confirm_tool` (thử nghiệm mới, hẹp hơn) = giai
+  đoạn GOM SỐ vẫn khoá y hệt `locked`, CHỈ mở khoá ở giai đoạn XÁC NHẬN — model tự
+  đọc câu xác nhận qua tool `confirm_danh_bo` (ép bằng `tool_choice`, xem
+  `_openDanhBoConfirmTurn` trong `session-ws.js`) thay vì bị code ép đọc nguyên
+  văn. Mọi lưới an toàn (phát hiện số bịa, kiểm chứng câu nói, watchdog) vẫn chạy
+  ở cả ba chế độ. Xem `docs/fix/fix_migrate_gpt_realtime_21_20260730.md` trước
+  khi đổi mặc định.
+  **[FIX 30/07/2026]** Công thức `create_response` cho VAD "digits" từng viết
+  NGƯỢC dấu (`!_DANHBO_UNLOCKED` thay vì `_DANHBO_UNLOCKED`) — khiến `locked`
+  (mặc định) thực ra KHÔNG khoá gì trong giai đoạn gom số. Phát hiện khi wire
+  `confirm_tool`, đã sửa trong cùng đợt này. Chưa rõ mức ảnh hưởng thực tế tới
+  các cuộc gọi trước đó (response do CODE tự tạo qua `_speakVerbatim`/
+  `_requestModelReply` không phụ thuộc field này) — xem migration doc.
 - **`message` của tool NẰM LẠI VĨNH VIỄN trong hội thoại** (nó là nội dung
   `function_call_output`). TUYỆT ĐỐI không đặt mệnh lệnh kiểu 'Đọc NGUYÊN VĂN
   doc_cho_khach' vào đó — model sẽ bám vào ở mọi lượt sau, kể cả khi code đã
@@ -133,4 +174,6 @@ Entry point chính thức: `server.js`.
 
 Danh sách đầy đủ + mô tả: xem bảng trong [README.md](README.md#cấu-hình-env).
 Tối thiểu cần `OPENAI_API_KEY`; chuyển máy cần `AGENT_QUEUE_URI`; dữ liệu thật cần
-`TONGDAI_API_BASE`.
+`TONGDAI_API_BASE`. Migrate 30/07/2026 thêm `OPENAI_REALTIME_REASONING_EFFORT`
+(mặc định `low`) và `DANH_BO_MODE` (mặc định `locked`) — xem `.env.example` và
+`docs/fix/fix_migrate_gpt_realtime_21_20260730.md`.

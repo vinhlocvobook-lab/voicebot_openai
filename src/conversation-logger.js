@@ -272,7 +272,8 @@ export class ConversationLogger {
     const conversation = _buildConversation(this.transcript, this.toolCalls);
 
     // ── Tính chi phí ──────────────────────────────────────────────────────────
-    const realtimeModel      = this.model ?? process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-mini";
+    // [migrate 30/07/2026] Fallback cập nhật theo model mặc định mới của call-manager.js.
+    const realtimeModel      = this.model ?? process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1-mini";
     const summaryModel       = "gpt-4o-mini";
     const transcriptionModel = this._transcriptionModel ?? process.env.OPENAI_TRANSCRIPTION_MODEL ?? "gpt-4o-mini-transcribe";
 

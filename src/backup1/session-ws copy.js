@@ -13,16 +13,12 @@ import {
   dispatchTool,
   danhBoSpoken,
   noteDanhBoRejected,
-  startDanhBoRequest,
   // [1.1/1.4/1.5 — 26/07/2026] Hai biến tích luỹ + luồng xác minh chạy nền.
   noteDanhBoTranscript,
   danhBoSessionDigits,
   ensureDanhBoSession,
   verifyDanhBoFromSession,
   danhBoDtmfInvitePrompt,
-  // [migrate 30/07/2026 — DANH_BO_MODE=confirm_tool] mở lại "cửa sổ" cho phép
-  // confirm_danh_bo báo trạng thái mới mỗi khi có một lượt khách THẬT.
-  noteDanhBoConfirmNewTurn,
 } from "./tools.js";
 import { runWithApiTrace } from "./api-trace.js";
 import { log } from "./logger.js";
@@ -150,34 +146,14 @@ export function openSessionWebSocket(callId, callOps) {
   // đáng tin ở bước này, danh bộ do trọng tài đưa ra (callState._danhBoNeedsVerbalYes)
   // CHỈ được coi là đã xác nhận khi có MỘT LƯỢT KHÁCH THẬT chứa từ khẳng định —
   // resolveDanhBo (tools.js) chặn tra cứu tới khi cờ này được gỡ ở đây.
-  const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bok\b|\boke\b|\bđược\b|yes)/i;
-  // [fix 30/07/2026] Các từ đệm 1 âm tiết "ừ"/"ừm"/"ờ" TỪNG nằm trong
-  // _KHANG_DINH_RE bằng \b — nhưng \b của JS coi MỌI ký tự có dấu tiếng Việt là
-  // non-word, nên \bờ\b khớp NGAY CẢ khi "ờ" nằm giữa hai chữ cái ASCII của một
-  // từ khác hoàn toàn không liên quan (vd "dời" = d+ờ+i → \b khớp ở cả hai đầu
-  // "ờ", vì JS coi biên "w→non-w" và "non-w→w" đều là boundary). Cuộc
-  // rtc_u1_E7L7Y2XD6JGGx1oQkIjAj: khách nói "Mình muốn nâng dời đồng hồ." (xin
-  // dời đồng hồ nước, không liên quan xác nhận) nhưng bị chốt confirmed=true vì
-  // chữ "dời" chứa "ờ" — cùng rủi ro với "từ", "giờ", "chờ", "sợ", "gừng",
-  // "mừng"... đều là từ cực kỳ phổ biến. Sửa: chỉ coi "ừ"/"ừm"/"ờ" là xác nhận
-  // khi nó là CẢ MỘT TỪ riêng trong câu NGẮN (≤2 từ, bỏ dấu câu) — không phải
-  // khi khớp \b lẫn bên trong từ khác.
-  const _KHANG_DINH_TU_DON_RE = /^(ừ+|ừm|ờ+)$/i;
+  const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bừ\b|\bừm\b|\bờ\b|\bok\b|\boke\b|\bđược\b|yes)/i;
   const _PHU_DINH_RE = /(không đúng|chưa đúng|sai rồi|\bsai\b|chưa phải|không phải)/i;
   // [fix 27/07/2026] Khách xin nghe LẠI câu bot vừa nói (không phải đổi chủ đề).
   const _XIN_NHAC_LAI_RE = /((đọc|nói|nhắc)\s+lại|chưa nghe rõ|nghe không rõ|không nghe rõ|nói gì)/i;
   const _isAffirmative = (t) => {
-    const s = String(t).trim();
+    const s = String(t);
     if (_PHU_DINH_RE.test(s)) return false;
-    if (_KHANG_DINH_RE.test(s)) return true;
-    const _tokens = s
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    return _tokens.length > 0 && _tokens.length <= 2 &&
-      _tokens.some((tok) => _KHANG_DINH_TU_DON_RE.test(tok));
+    return _KHANG_DINH_RE.test(s);
   };
 
   // [fix 18/07/2026 v5] Cuộc E2yXyLXpaZz66DmCfxQBi: hủy response do prompt echo
@@ -284,10 +260,10 @@ export function openSessionWebSocket(callId, callOps) {
   let _verbatimSendingTimer = null;
 
   const _speakVerbatim = (text, tag, attempt = 0, opts = {}) => {
-    log.info("[_speakVerbatim]:text ", text);
-    log.info("[_speakVerbatim]:tag ", tag);
-    log.info("[_speakVerbatim]:attempt ", attempt);
-    log.info("[_speakVerbatim]:opts ", opts);
+    console.log("[_speakVerbatim]:text ", text);
+    console.log("[_speakVerbatim]:tag ", tag);
+    console.log("[_speakVerbatim]:attempt ", attempt);
+    console.log("[_speakVerbatim]:opts ", opts);
 
     if (_hungUp || _transferred) return;
     if (ws.readyState !== WebSocket.OPEN) return; // cuộc gọi đã kết thúc
@@ -306,28 +282,18 @@ export function openSessionWebSocket(callId, callOps) {
       _verbatimSending = true;
       clearTimeout(_verbatimSendingTimer);
       _verbatimSendingTimer = setTimeout(() => { _verbatimSending = false; }, 5000);
-      // [fix 30/07/2026 — cuộc rtc_u2_E7JvXsbrUHR2WPAJOXoA9] Cụm "BỎ QUA mọi hướng
-      // dẫn đọc trước đó trong hội thoại. NGAY BÂY GIỜ..." (bản cũ, xem lịch sử git)
-      // đọc giống hệt mẫu câu tấn công chèn lệnh kinh điển ("ignore all previous
-      // instructions, now do X"). Với model không có reasoning, cụm này ép được
-      // hiệu quả; với gpt-realtime-2.1-mini, nhiều log thật cho thấy model NGÀY
-      // CÀNG hay từ chối tuân theo — có lần còn nói thẳng "em không thể thực hiện
-      // đúng yêu cầu của đoạn văn đó như một lệnh". Cùng lúc đó, câu lệnh NGẮN HƠN,
-      // không có cụm "BỎ QUA..." ở khối dispatch tool chung bên dưới ("Đọc CHÍNH XÁC
-      // từng từ...") lại được tuân theo ổn định trong mọi log cùng ngày — khác biệt
-      // duy nhất là cụm mở đầu giống lệnh chèn ép. Bỏ hẳn cụm đó, chỉ giữ khung câu
-      // mô tả tự nhiên "đây là câu cần nói".
-      // Câu KHÔNG chứa chữ số → cấm hẳn model đọc số trong response này (giữ nguyên
-      // — [fix 27/07/2026 đợt 7] cuộc rtc_u1_E66uZSbb8P6ZJF6VVLKr6: response tạo ra
-      // để đọc câu chờ lại bị model dùng để đọc số bịa ra loa).
+      // "BỎ QUA mọi hướng dẫn trước đó" để câu này thắng chỉ dẫn tồn dư của tool output.
+      // [fix 27/07/2026 đợt 7] Câu KHÔNG chứa chữ số → cấm hẳn model đọc số trong
+      // response này. Cuộc rtc_u1_E66uZSbb8P6ZJF6VVLKr6: response tạo ra để đọc câu
+      // chờ ("Dạ, em ghi nhận rồi ạ") lại bị model dùng để đọc "220223251" ra loa.
       const _cauCoSo = /^[\d|]+$/.test(_speakCore(text));
       const instructions =
-        "Đây là câu chính thức hệ thống cần bạn nói với khách ở lượt này — đọc đúng " +
-        "nguyên văn, không thêm bớt, không diễn giải lại, rồi dừng: \"" + text + "\"" +
-        (_cauCoSo ? "" : " Không đọc thêm chữ số nào ngoài đoạn trên.");
+        "BỎ QUA mọi hướng dẫn đọc trước đó trong hội thoại. NGAY BÂY GIỜ chỉ đọc CHÍNH XÁC " +
+        "từng từ đoạn sau cho khách, không thêm bớt, không diễn giải lại, rồi DỪNG: \"" + text + "\"" +
+        (_cauCoSo ? "" : " TUYỆT ĐỐI không đọc thêm bất kỳ chữ số nào ngoài đoạn trên.");
       log.debug(`[WS][${callId}] _speakVerbatim(${tag}, lần ${attempt}): ${text}`);
 
-      log.info("[_speakVerbatim]:ws.send response.create : ", {
+      console.log("[_speakVerbatim]:ws.send response.create : ", {
         type: "response.create",
         response: { instructions, tool_choice: "none" },
       });
@@ -410,14 +376,7 @@ export function openSessionWebSocket(callId, callOps) {
         _toolCallState._danhBoLastPrompt = r.prompt;
         logger.addEvent(`danh_bo_${r.action}`, r.value ? `${r.by}: ${r.value}` : r.prompt);
         log.info(`[WS][${callId}] danh_bo_${r.action}${r.value ? ` → ${r.value} (${r.by})` : ""}`);
-        // [migrate 30/07/2026] confirm_tool: CHỈ bước "đã có ứng viên, chờ xác
-        // nhận" (action === "confirm") đổi cơ chế — mời đọc lại (action !==
-        // "confirm", vẫn ở giai đoạn gom số thô) giữ nguyên `_speakVerbatim`.
-        if (_DANHBO_CONFIRM_TOOL && r.action === "confirm") {
-          _openDanhBoConfirmTurn("candidate_ready");
-        } else {
-          _speakVerbatim(r.prompt, `danh_bo_${r.action}`, 0, { verify: true });
-        }
+        _speakVerbatim(r.prompt, `danh_bo_${r.action}`, 0, { verify: true });
       } catch (e) {
         log.warn(`[WS][${callId}] verifyDanhBoFromSession lỗi: `, e.message);
       } finally {
@@ -456,7 +415,7 @@ export function openSessionWebSocket(callId, callOps) {
     }
     try {
       _pendingCodeResponse = true;
-      log.info("[_requestModelReply]:ws.send : ", {
+      console.log("[_requestModelReply]:ws.send : ", {
         type: "response.create",
         response: instructions ? { instructions } : {},
       });
@@ -473,27 +432,6 @@ export function openSessionWebSocket(callId, callOps) {
   };
 
   /**
-   * [fix 31/07/2026] Khi bỏ cuộc (mismatch giveup) ở đúng bước ĐỌC LẠI XÁC NHẬN
-   * mã danh bộ, chủ động mời bấm phím NGAY thay vì để cuộc gọi treo chờ watchdog
-   * 90s. Cuộc rtc_u1_E7Y8JfPoOL8KgiX7EOOtY: bỏ cuộc lúc 10:24:34 nhưng phải đợi
-   * tới 10:25:43 (>1 phút chết) watchdog mới tự mời bấm phím — trong khi lúc đó
-   * hệ thống ĐÃ có sẵn ứng viên đúng (API + trọng tài đồng thuận), chỉ là BOT
-   * không đọc lại đúng được — không có lý do gì phải chờ thêm.
-   */
-  const _escalateDanhBoToDtmf = (lyDo) => {
-    if (_hungUp || _transferred) return;
-    if (_toolCallState.danhBo?.confirmed) return;
-    if (_toolCallState._danhBoDtmfInvited) return;
-    const prompt = danhBoDtmfInvitePrompt(_toolCallState);
-    if (!prompt) return;
-    _toolCallState._danhBoLastPrompt = prompt;
-    _setVadMode("normal");
-    logger.addEvent("danh_bo_confirm_giveup_dtmf", lyDo);
-    log.warn(`[WS][${callId}] ${lyDo} → mời bấm phím ngay, không chờ watchdog.`);
-    _speakVerbatim(prompt, "danh_bo_watchdog_dtmf", 0, { verify: true });
-  };
-
-  /**
    * [đợt 4] Đối chiếu lời bot vừa nói với câu code đã yêu cầu đọc. Lệch → gửi lại
    * (tối đa 2 lần). Đây là lớp bảo đảm KHÔNG phụ thuộc việc model tuân thủ prompt.
    */
@@ -507,35 +445,13 @@ export function openSessionWebSocket(callId, callOps) {
       _expectedSpeak = null; // bot đã đọc đúng
       return;
     }
-
-    // [fix 31/07/2026] Cuộc rtc_u1_E7Y8JfPoOL8KgiX7EOOtY: bot đọc SAI y hệt nhau
-    // ("...Bảy - Bảy - Bảy - Năm" — thừa đúng một chữ "Bảy" so với câu yêu cầu)
-    // ở CẢ 3 lần thử, kể cả sau khi gửi lại y nguyên instructions — cho thấy đây
-    // là lỗi phát âm số lặp (hai chữ số giống nhau liền kề) mang tính hệ thống
-    // của model cho đúng chuỗi này, không phải nhiễu ngẫu nhiên. Gửi lại y
-    // nguyên một lần nữa gần như chắc chắn ra lại đúng lỗi cũ — lãng phí thời
-    // gian của khách. Phát hiện: nếu lần lệch này GIỐNG HỆT lần lệch ngay trước
-    // (cùng dãy số bot vừa đọc) thì bỏ cuộc SỚM thay vì đợi đủ 3 lần.
-    const _spokenCoreNow = _speakCore(spoken);
-    const _lapLaiYHet = exp.lastSpokenCore && exp.lastSpokenCore === _spokenCoreNow;
-
-    if (exp.retries >= 2 || _lapLaiYHet) {
-      const _lyDoGiveup = _lapLaiYHet
-        ? `${exp.tag} — bot lặp lại y hệt lỗi cũ ("${spoken.slice(0, 60)}"), bỏ cuộc sớm`
-        : `${exp.tag} — bot nói khác 3 lần`;
-      logger.addEvent("speak_verbatim_mismatch_giveup", _lyDoGiveup);
-      log.error(`[WS][${callId}] Bot KHÔNG đọc được câu "${exp.tag}" — bỏ cuộc (${_lyDoGiveup}).`);
+    if (exp.retries >= 2) {
+      logger.addEvent("speak_verbatim_mismatch_giveup", `${exp.tag} — bot nói khác 3 lần`);
+      log.error(`[WS][${callId}] Bot KHÔNG đọc được câu "${exp.tag}" sau 3 lần — bỏ cuộc.`);
       _expectedSpeak = null;
-      // Chỉ leo thang DTMF khi bỏ cuộc đúng ở bước đọc lại xác nhận mã danh bộ —
-      // các câu ép đọc khác (chào, tạm biệt, chờ...) không liên quan tới DTMF.
-      if (exp.tag === "danh_bo_confirm" || exp.tag === "dtmf_danh_bo_confirm" ||
-        exp.tag === "danh_bo_reassert") {
-        _escalateDanhBoToDtmf(_lyDoGiveup);
-      }
       return;
     }
     exp.retries += 1;
-    exp.lastSpokenCore = _spokenCoreNow;
     logger.addEvent("speak_verbatim_mismatch", `${exp.tag} — bot nói "${spoken.slice(0, 60)}", gửi lại lần ${exp.retries}`);
     log.warn(`[WS][${callId}] Bot nói KHÁC câu yêu cầu (${exp.tag}) → gửi lại lần ${exp.retries}.`);
     const { text, tag } = exp;
@@ -603,13 +519,6 @@ export function openSessionWebSocket(callId, callOps) {
   // trong lúc khách đọc số. Mặc định "locked" (an toàn, đã kiểm chứng nhiều
   // cuộc gọi thật). Xem docs/fix/fix_migrate_gpt_realtime_21_20260730.md.
   const _DANHBO_UNLOCKED = String(process.env.DANH_BO_MODE || "locked").trim().toLowerCase() === "unlocked";
-  // [migrate 30/07/2026] Thử nghiệm THỨ HAI, khác hẳn "unlocked": giai đoạn GOM
-  // SỐ THÔ vẫn khoá y hệt "locked" (create_response:false, không đổi — đây không
-  // phải chỗ xung đột và vẫn cần chặn model đọc số bịa ra loa). CHỈ mở khoá ở
-  // giai đoạn XÁC NHẬN (đã có callState.danhBo.value) — model tự đọc câu xác
-  // nhận qua tool `confirm_danh_bo` mới, thay vì bị code ép đọc nguyên văn qua
-  // `_speakVerbatim`. Xem docs/fix/fix_migrate_gpt_realtime_21_20260730.md.
-  const _DANHBO_CONFIRM_TOOL = String(process.env.DANH_BO_MODE || "locked").trim().toLowerCase() === "confirm_tool";
   let _vadMode = "normal";
   let _vadRestoreTimer = null;
 
@@ -637,16 +546,7 @@ export function openSessionWebSocket(callId, callOps) {
         // [migrate 30/07/2026] DANH_BO_MODE=unlocked → true: model được tự trả
         // lời mỗi lượt (kể cả khi khách đang đọc số dở dang) — THỬ NGHIỆM, cần
         // tự kiểm chứng bằng cuộc gọi thật trước khi coi là mặc định.
-        // [FIX 30/07/2026 — phát hiện khi wire confirm_tool] Công thức cũ
-        // `!_DANHBO_UNLOCKED` bị NGƯỢC dấu so với đúng chú thích ngay phía trên:
-        // _DANHBO_UNLOCKED=false (locked, mặc định) → !false = TRUE → model
-        // KHÔNG bị khoá trong giai đoạn gom số dù DANH_BO_MODE=locked; ngược lại
-        // _DANHBO_UNLOCKED=true (unlocked) → !true = FALSE → model bị khoá đúng
-        // lúc lẽ ra phải được thả. Sửa thành so trực tiếp — không phủ định.
-        // "confirm_tool" (mode mới) cũng đi qua field này và cần y hệt "locked"
-        // (gom số vẫn khoá cứng, chỉ khác ở giai đoạn xác nhận — xem
-        // _openDanhBoConfirmTurn) nên _DANHBO_UNLOCKED=false cho cả hai là đúng.
-        create_response: _DANHBO_UNLOCKED,
+        create_response: !_DANHBO_UNLOCKED,
         interrupt_response: true,
       }
       : {
@@ -656,11 +556,11 @@ export function openSessionWebSocket(callId, callOps) {
         interrupt_response: true,
       };
     try {
-      log.info("[set_vad_mode]:ws.send : ", {
+      console.log("[set_vad_mode]:ws.send : ", {
         type: "session.update",
         session: { type: "realtime", audio: { input: { turn_detection: JSON.stringify(turn_detection, null, 2) } } },
       });
-      log.info("[set_vad_mode]: turn_detection : ", turn_detection);
+      console.log("[set_vad_mode]: turn_detection : ", turn_detection);
       ws.send(JSON.stringify({
         type: "session.update",
         session: { type: "realtime", audio: { input: { turn_detection } } },
@@ -685,55 +585,6 @@ export function openSessionWebSocket(callId, callOps) {
     }
   };
 
-  // ── [migrate 30/07/2026 — DANH_BO_MODE=confirm_tool] Mở lượt cho model tự gọi
-  // confirm_danh_bo ──────────────────────────────────────────────────────────
-  // KHÔNG có lượt audio nào của khách để bám vào ở đúng thời điểm này (khách đã
-  // đọc xong 11 số rồi im chờ, hoặc vừa nói "đúng" — cả hai đều xảy ra GIỮA hai
-  // lượt, không đồng bộ với VAD). Model chỉ được sinh phản hồi khi có lượt audio
-  // thật HOẶC code tự gửi response.create — nên "trả quyền cho model" ở bước
-  // này KHÔNG có nghĩa model tự quyết được KHI NÀO nói (code vẫn phải khơi mào),
-  // chỉ khác ở chỗ code không còn ép NÓI CHÍNH XÁC CÂU GÌ — ép bằng `tool_choice`
-  // gọi đúng hàm `confirm_danh_bo`, để model tự đọc kết quả theo giọng tự nhiên.
-  //
-  // Dùng LẠI đúng hàng đợi `_verbatimSending`/`_responseActive` của `_speakVerbatim`
-  // (race đã vá 30/07) — đây là cùng một hành động "code chủ động gửi
-  // response.create", không phải một đường gửi mới chưa qua kiểm chứng.
-  const _openDanhBoConfirmTurn = (lyDo, attempt = 0) => {
-    if (_hungUp || _transferred) return;
-    if (ws.readyState !== WebSocket.OPEN) return;
-    if (_responseActive || _verbatimSending) {
-      if (attempt < 8) setTimeout(() => _openDanhBoConfirmTurn(lyDo, attempt + 1), 1200);
-      else logger.addEvent("danh_bo_confirm_turn_dropped", `${lyDo} — response active quá lâu`);
-      return;
-    }
-    // Mở khoá CHỈ ở đây — giai đoạn gom số thô (`_armDanhBoWatchdog` gọi
-    // `_setVadMode("digits")`) không đổi, vẫn create_response:false như "locked".
-    _setVadMode("normal");
-    try {
-      _pendingCodeResponse = true;
-      _verbatimSending = true;
-      clearTimeout(_verbatimSendingTimer);
-      _verbatimSendingTimer = setTimeout(() => { _verbatimSending = false; }, 5000);
-      // [cần đối chiếu doc Realtime] Ép tool_choice gọi ĐÚNG một hàm cụ thể —
-      // dùng cơ chế API ép cấu trúc, không phụ thuộc việc model có tuân thủ
-      // hướng dẫn bằng lời hay không (bài học từ mọi lần mini "quên" chỉ dẫn cũ).
-      const response = {
-        instructions:
-          "Gọi NGAY tool confirm_danh_bo để lấy trạng thái mã danh bộ hiện tại, " +
-          "rồi xử lý đúng theo trường trang_thai_danh_bo trong kết quả trả về.",
-        tool_choice: { type: "function", name: "confirm_danh_bo" },
-      };
-      log.info("[_openDanhBoConfirmTurn]:ws.send response.create : ", { type: "response.create", response });
-      ws.send(JSON.stringify({ type: "response.create", response }));
-      logger.addEvent("danh_bo_confirm_turn_opened", lyDo);
-      log.info(`[WS][${callId}] Mở lượt confirm_danh_bo — ${lyDo}`);
-    } catch (e) {
-      _verbatimSending = false;
-      clearTimeout(_verbatimSendingTimer);
-      log.warn(`[WS][${callId}] không mở được lượt confirm_danh_bo (${lyDo}): `, e.message);
-    }
-  };
-
   // ── [MỨC C — đợt 5] LƯỚI AN TOÀN CHỐNG BOT CÂM ────────────────────────────
   // Rủi ro lớn nhất của mức C: model bị khoá mà code lại quên phát lời ở một
   // nhánh nào đó → khách nói xong rồi ngồi nghe im lặng tới lúc cúp máy.
@@ -744,7 +595,7 @@ export function openSessionWebSocket(callId, callOps) {
   let _muteWatchdogTimer = null;
 
   const _armMuteWatchdog = () => {
-    log.info("[armMuteWatchdog]");
+    console.log("[armMuteWatchdog]");
     clearTimeout(_muteWatchdogTimer);
     _muteWatchdogTimer = setTimeout(() => {
       if (_hungUp || _transferred) return;
@@ -772,7 +623,7 @@ export function openSessionWebSocket(callId, callOps) {
     _toolCallState._danhBoWatchdogTimer = null;
   };
   const _armDanhBoWatchdog = () => {
-    log.info("[armDanhBoWatchdog]");
+    console.log("[armDanhBoWatchdog]");
     // [3.2] Khách bắt đầu đọc số → nới VAD ngay (điểm vào của giai đoạn đọc số).
     if (!_toolCallState._danhBoDtmfInvited) _setVadMode("digits");
     if (_toolCallState._danhBoWatchdogTimer) return; // đã đặt rồi, không gia hạn
@@ -931,7 +782,7 @@ export function openSessionWebSocket(callId, callOps) {
       // Mỗi response được tạo (do VAD hoặc do code) — đối chiếu với
       // response_create_sent/greeting_sent để biết nguồn gốc từng response
       case "response.created":
-        log.info("....response.created....: AI bắt đầu sinh phản hồi, do VAD kích hoạt hoặc do code yêu cầu");
+        console.log("....response.created....: AI bắt đầu sinh phản hồi, do VAD kích hoạt hoặc do code yêu cầu");
         _responseActive = true;
         // [fix 30/07/2026] Server đã xác nhận có response đang chạy → đóng cửa
         // sổ race của _speakVerbatim (xem khai báo _verbatimSending) không cần
@@ -949,7 +800,7 @@ export function openSessionWebSocket(callId, callOps) {
         }
         logger.addEvent("response_created",
           `${event.response?.id ?? null} (trigger: ${_activeResponseTriggerItemId ?? "code"})`);
-        log.info("....response.created....: ", `trigger: ${_activeResponseTriggerItemId ?? "code"} ....................`);
+        console.log("....response.created....: ", `trigger: ${_activeResponseTriggerItemId ?? "code"} ....................`);
         break;
 
       // ── Response hoàn chỉnh → kiểm tra có function_call không ─────────────
@@ -957,11 +808,11 @@ export function openSessionWebSocket(callId, callOps) {
       // response.done → response.output[], lọc item.type === "function_call".
 
       case "response.done": {
-        log.info("....response.done....: AI đã nói xong trọn vẹn câu thoại hoặc bị ngắt/hủy");
+        console.log("....response.done....: AI đã nói xong trọn vẹn câu thoại hoặc bị ngắt/hủy");
         if (_pendingCodeResponse) {
-          log.info("[response.done]: Response do code tạo, đánh dấu đã hoàn thành ");
+          console.log("[response.done]: Response do code tạo, đánh dấu đã hoàn thành ");
         } else {
-          log.info("[response.done]: Response do VAD kích hoạt, đánh dấu đã hoàn thành ");
+          console.log("[response.done]: Response do VAD kích hoạt, đánh dấu đã hoàn thành ");
         }
         _responseActive = false;
         _activeResponseTriggerItemId = null; // [fix 18/07/2026] response xong → hết gắn với item nào
@@ -1001,9 +852,9 @@ export function openSessionWebSocket(callId, callOps) {
           const toolCallId = item.call_id;
           const name = item.name;
           const argsStr = item.arguments;
-          log.info("----------------------Tool calling -------------------------------");
-          log.info("function name = ", name);
-          log.info("function args = ", argsStr);
+          console.log("----------------------Tool calling -------------------------------");
+          console.log("function name = ", name);
+          console.log("function args = ", argsStr);
           log.info(`[WS][${callId}] Tool call: ${name}(${argsStr})`);
 
           let args = {};
@@ -1037,8 +888,8 @@ export function openSessionWebSocket(callId, callOps) {
             });
           }
 
-          log.info("[function_call_output]:", { name, toolOutput: JSON.parse(toolOutput), callId });
-          log.info("[ws.send : conversation.item.create]: item=", {
+          console.log("[function_call_output]:", { name, toolOutput: JSON.parse(toolOutput), callId });
+          console.log("[ws.send : conversation.item.create]: item=", {
             type: "function_call_output",
             call_id: toolCallId,
             output: toolOutput,
@@ -1087,7 +938,7 @@ export function openSessionWebSocket(callId, callOps) {
                   response: { instructions: _goodbyeInstruction },
                 }));
                 logger.addEvent("goodbye_forced", "end_call không kèm audio — code tự tạo câu tạm biệt");
-                log.info(`[${callId}]:`, "goodbye_forced", "end_call không kèm audio — code tự tạo câu tạm biệt");
+                console.log(`[${callId}]:`, "goodbye_forced", "end_call không kèm audio — code tự tạo câu tạm biệt");
                 _hangupDelay = 8000; // câu tạm biệt ~5-6s + latency tạo response
               }
               // Delay để AI kịp nói lời tạm biệt trước khi cúp máy
@@ -1104,23 +955,6 @@ export function openSessionWebSocket(callId, callOps) {
               await _handleTransfer(callId, callOps, result.ly_do);
             } else {
               logger.addEvent("transfer_duplicate_ignored", null);
-            }
-          } else if (result?._danhBoConfirmSpamEscalate) {
-            // [migrate 30/07/2026 — confirm_tool] Model (qua confirm_danh_bo HOẶC
-            // qua một tool dữ liệu rơi vào nhánh "đang chờ xác nhận" của
-            // resolveDanhBo) đã lặp lại CÙNG trạng thái quá ngưỡng, không có lượt
-            // khách nào xen giữa — dấu hiệu kẹt vòng lặp. Đây là trục lỗi KHÁC với
-            // requestNo/_danhBoProposeCount (những bộ đếm đó đếm "khách đọc lại
-            // bao nhiêu lần", không bắt được "model tự kích hoạt lại tool bao
-            // nhiêu lần"). KHÔNG để model tự do thêm — khoá lại và tự đọc câu xác
-            // nhận MỘT lần bằng cơ chế cũ đã kiểm chứng (không phải DTMF: mã ĐÃ
-            // ĐÚNG, chỉ là model cứ hỏi lại xác nhận — mời bấm phím ở đây sai
-            // ngữ cảnh, gây khó hiểu cho khách).
-            logger.addEvent("danh_bo_confirm_spam_escalate", `${name}`);
-            log.warn(`[WS][${callId}] confirm_danh_bo/resolveDanhBo lặp lại quá ngưỡng → fallback _speakVerbatim.`);
-            _setVadMode("digits");
-            if (_toolCallState._danhBoLastPrompt) {
-              _speakVerbatim(_toolCallState._danhBoLastPrompt, "danh_bo_confirm_spam_fallback", 0, { verify: true });
             }
           } else if (action === "no_reply") {
             // [migrate 30/07/2026] wait_for_user: model chủ động báo "không cần
@@ -1140,27 +974,9 @@ export function openSessionWebSocket(callId, callOps) {
             if (result?.moi_bam_phim || result?.da_sai_nhieu_lan) _setVadMode("normal");
             else if (result?.invalid_danh_bo || result?.dang_gom_so || result?.dang_xac_minh) _armDanhBoWatchdog();
 
-            // [fix 30/07/2026 — cuộc rtc_u0_E7JGG7YLOPmJfNx4alnIn] "dang_xac_minh" đã
-            // có nguồn nói RIÊNG, độc lập với khối "MỘT response.create cho CẢ
-            // response.done" bên dưới: `_maybeVerifyDanhBo` (đường nền) tự gọi
-            // `_speakVerbatim` để nói câu chờ + câu xác nhận khi xong, KHÔNG phụ
-            // thuộc việc có tool call nào đang chạy hay không. Nếu đường dispatch
-            // tool CHUNG này cũng tự tạo thêm MỘT response khác cho ĐÚNG trạng thái
-            // đó, hai nguồn giành nhau đúng một response slot → lỗi
-            // `conversation_already_has_active_response`, rồi hai tag khác nhau
-            // (`danh_bo_verify_filler`/`danh_bo_confirm`) cùng retry qua nhiều vòng,
-            // dội chỉ dẫn "BỎ QUA hết, chỉ nói đúng câu này" mâu thuẫn liên tiếp vào
-            // model khiến nó bỏ tuân thủ, nói linh tinh (thấy rõ trong cuộc trên).
-            // KHÔNG set _ketQuaToolCuoi cho trạng thái này — để _maybeVerifyDanhBo
-            // là nguồn DUY NHẤT quyết định nói gì/khi nào.
-            if (result?.dang_xac_minh) {
-              logger.addEvent("danh_bo_dang_xac_minh_bo_qua_response_chung",
-                "đã có _maybeVerifyDanhBo lo nói riêng ở đường nền, không tạo thêm response ở đây");
-            } else {
-              // [fix 27/07/2026] KHÔNG gửi response.create ngay trong vòng lặp —
-              // xem giải thích ở khối "MỘT response.create cho CẢ response.done".
-              _ketQuaToolCuoi = { name, result };
-            }
+            // [fix 27/07/2026] KHÔNG gửi response.create ngay trong vòng lặp —
+            // xem giải thích ở khối "MỘT response.create cho CẢ response.done".
+            _ketQuaToolCuoi = { name, result };
           }
         }
 
@@ -1172,30 +988,16 @@ export function openSessionWebSocket(callId, callOps) {
         // Mỗi `response.done` chỉ được sinh ra ĐÚNG MỘT response mới.
         if (_ketQuaToolCuoi && !_hungUp && !_transferred) {
           const { name: _tenTool, result: _kq } = _ketQuaToolCuoi;
-          // [migrate 30/07/2026] confirm_tool: đây là điểm ép-verbatim THỨ HAI
-          // trong file (khác `_speakVerbatim`) — MỌI tool có "doc_cho_khach" đều bị
-          // ép đọc nguyên văn ở đây, bất kể `_camGoiTool`/`tool_choice` gì. Nếu bỏ
-          // sót nhánh này thì việc loại trừ confirm_danh_bo khỏi `_camGoiTool` ở
-          // trên vô nghĩa — model vẫn bị ép đọc từng chữ y hệt mọi tool khác, thiết
-          // kế "để model tự đọc tự nhiên" coi như không có tác dụng gì.
-          const _instructions = _tenTool === "confirm_danh_bo"
-            ? "Xử lý đúng theo trường trang_thai_danh_bo trong kết quả tool vừa nhận. " +
-            "Nếu có doc_cho_khach thì tự nhiên nói lại ý đó cho khách (không cần đọc từng chữ)."
-            : _kq?.doc_cho_khach
-              ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
-              "không tóm tắt, không diễn giải lại: \"" + _kq.doc_cho_khach + "\""
-              : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
+          const _instructions = _kq?.doc_cho_khach
+            ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
+            "không tóm tắt, không diễn giải lại: \"" + _kq.doc_cho_khach + "\""
+            : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
 
           // [fix 27/07/2026] Câu thoại CỐ ĐỊNH của luồng danh bộ → CẤM model gọi
           // tool trong response này. Cùng cuộc gọi trên: response do code tạo để
           // đọc câu chờ lại bị model dùng để gọi get_bill tiếp (với số bịa), tạo
           // vòng xoáy tool-call. `tool_choice: "none"` cắt hẳn vòng xoáy đó.
-          // [migrate 30/07/2026] confirm_tool: loại trừ TƯỜNG MINH kết quả của
-          // chính confirm_danh_bo — nó không set các cờ cũ bên dưới nên vốn đã
-          // không rơi vào nhánh này, nhưng thêm điều kiện theo TÊN TOOL ở đây làm
-          // lưới phòng thủ, tránh một sửa đổi sau này vô tình tái lập đúng cổng ép
-          // verbatim mà cả thiết kế "tool riêng cho model" này muốn tránh.
-          const _camGoiTool = _tenTool !== "confirm_danh_bo" && !!(_kq?.doc_cho_khach && (
+          const _camGoiTool = !!(_kq?.doc_cho_khach && (
             _kq.dang_gom_so || _kq.dang_xac_minh || _kq.invalid_danh_bo ||
             _kq.moi_bam_phim || _kq.cho_khach_xac_nhan || _kq.da_sai_nhieu_lan
           ));
@@ -1208,7 +1010,7 @@ export function openSessionWebSocket(callId, callOps) {
             log.debug(`[WS][${callId}] response.create sau tool: ${_instructions}`);
             _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
 
-            log.info("[ws.send : response.create]: response=", {
+            console.log("[ws.send : response.create]: response=", {
               type: "response.create",
               response: _camGoiTool
                 ? { instructions: _instructions, tool_choice: "none" }
@@ -1256,9 +1058,9 @@ export function openSessionWebSocket(callId, callOps) {
       // qua "tai" model) nên KHÔNG cần gate xác nhận lời nói của trọng tài —
       // chỉ cần vòng xác nhận thường.
       case "input_audio_buffer.dtmf_event_received": {
-        log.info("....input_audio_buffer.dtmf_event_received....");
+        console.log("....input_audio_buffer.dtmf_event_received....");
         const digit = String(event.event ?? "").trim();
-        log.info("DTMF received:", digit);
+        console.log("DTMF received:", digit);
         logger.addEvent("dtmf_received", digit);
 
         const _now = Date.now();
@@ -1295,14 +1097,14 @@ export function openSessionWebSocket(callId, callOps) {
           `Quý Khách xác nhận giúp em có đúng không ạ?`;
         _toolCallState._danhBoLastPrompt = _dtmfPrompt;
         logger.addEvent("dtmf_danh_bo_complete", _dtmfValue);
-        log.info(`[${callId}]:`, "dtmf_danh_bo_complete", _dtmfValue);
+        console.log(`[${callId}]:`, "dtmf_danh_bo_complete", _dtmfValue);
         _speakVerbatim(_dtmfPrompt, "dtmf_danh_bo_confirm", 0, { verify: true });
         break;
       }
       // ── Transcription để log cuộc hội thoại ───────────────────────────────
       case "conversation.item.input_audio_transcription.completed": {
-        log.info("....conversation.item.input_audio_transcription.completed....");
-        log.info("[conversation.item.input_audio_transcription.completed]: input_text_customer.transcript=", event.transcript?.trim());
+        console.log("....conversation.item.input_audio_transcription.completed....");
+        console.log("[conversation.item.input_audio_transcription.completed]: input_text_customer.transcript=", event.transcript?.trim());
 
         const khText = event.transcript?.trim();
         // Tích lũy transcription token usage (tính phí riêng cho model transcription)
@@ -1343,11 +1145,6 @@ export function openSessionWebSocket(callId, callOps) {
           _lastCustomerTurnAt = Date.now();
           _armMuteWatchdog(); // [MỨC C] mọi lượt khách nói đều phải có hồi đáp
           _unansweredRealTurn = true; // [fix 18/07/2026 v2] khách vừa nói thật — chưa được trả lời
-          // [migrate 30/07/2026 — confirm_tool] Lượt khách THẬT nào cũng mở lại
-          // "cửa sổ" cho confirm_danh_bo được báo trạng thái lần nữa — tránh gate
-          // chống spam (xem tools.js) hiểu lầm lượt xác nhận/phủ định hợp lệ của
-          // khách là "model tự gọi lại tool không có gì mới".
-          noteDanhBoConfirmNewTurn(_toolCallState);
 
           // [1.1 — 26/07/2026] Ghi lượt có chữ số vào CẢ HAI biến tích luỹ
           // (biến 1 = kho quan sát toàn cuộc gọi cho trọng tài; biến 2 = phiên
@@ -1365,27 +1162,6 @@ export function openSessionWebSocket(callId, callOps) {
           const _laLuotDocSo = !_seXuLyXacNhan && !_seXuLyPhuDinh && _looksLikeDigitTurn(khText);
 
           if (_laLuotDocSo) {
-            // [fix 31/07/2026] Khách ĐỌC LẠI số trong lúc đang chờ xác nhận (có
-            // ứng viên `danhBo` pending, chưa confirmed) mà KHÔNG nói "đúng/sai"
-            // rõ ràng — chỉ tự đọc lại từ đầu (phản xạ tự nhiên khi thấy đọc lại
-            // có vẻ sai). Trước đây lượt này vẫn cộng dồn vào `_danhBoSession`
-            // CŨ (chưa được reset vì phiên chỉ reset khi "mời đọc lại" hoặc khi
-            // XÁC NHẬN xong, không phải khi CHUYỂN sang chờ xác nhận) → tràn số
-            // (cuộc rtc_u2_E7XpOB5fmY21Hm4L28mXW: 12 số cũ + 11 số mới = "23/11").
-            // Tệ hơn: `_maybeVerifyDanhBo` có guard `if (_toolCallState.danhBo)
-            // return` — vì ứng viên pending vẫn còn đó, guard này ÂM THẦM CHẶN
-            // việc verify lại, bot im lặng tới khi mute watchdog (15s) cứu, lúc
-            // đó model đã mất dấu ngữ cảnh và đọc bừa một số khác. Coi lượt đọc
-            // lại này là PHỦ ĐỊNH NGẦM ứng viên cũ: reject candidate pending +
-            // mở phiên đọc MỚI (reset sạch, không lẫn số cũ) trước khi ghi nhận.
-            if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed) {
-              logger.addEvent("danh_bo_doc_lai_ngam_dinh_phu_dinh",
-                `${khText.slice(0, 60)} — huỷ ứng viên pending, mở phiên đọc mới`);
-              log.info(`[WS][${callId}] Khách đọc lại số giữa lúc chờ xác nhận → coi như phủ định ngầm, mở phiên mới.`);
-              noteDanhBoRejected(_toolCallState);
-              startDanhBoRequest(_toolCallState, "khách đọc lại trong lúc đang chờ xác nhận");
-              _toolCallState._danhBoVerifyLastAt = 0; // bỏ khoảng nghỉ tối thiểu cho lượt này
-            }
             const _s = noteDanhBoTranscript(_toolCallState, khText);
             log.info(`[WS][${callId}] [danh_bo] phiên #${_s.requestNo}: ${_s.digits.length}/11 số (+"${khText}")`);
             _armDanhBoWatchdog();
@@ -1472,18 +1248,10 @@ export function openSessionWebSocket(callId, callOps) {
             // [MỨC C — đợt 5] Lượt "đúng rồi" này được commit khi model còn đang bị
             // khoá → sẽ KHÔNG có response nào được sinh ra. Không tự tạo thì bot câm
             // ngay sau khi khách xác nhận. Nhờ model đi tra cứu luôn.
-            // [migrate 30/07/2026] confirm_tool: nudge LẠI confirm_danh_bo (thay vì
-            // response.create tự do) để model nhận TƯỜNG MINH trang_thai_danh_bo=
-            // da_xac_nhan + ma_danh_bo trong context, không chỉ tự suy đoán từ việc
-            // vừa nghe khách nói "đúng".
-            if (_DANHBO_CONFIRM_TOOL) {
-              _openDanhBoConfirmTurn("khach_da_xac_nhan");
-            } else {
-              _requestModelReply("khách đã xác nhận mã danh bộ",
-                "Quý Khách vừa xác nhận mã danh bộ là ĐÚNG. Gọi NGAY tool tra cứu mà Quý Khách cần " +
-                "(get_bill / get_payment_status / get_water_usage / get_outages / create_ticket...). " +
-                "KHÔNG hỏi lại số, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.");
-            }
+            _requestModelReply("khách đã xác nhận mã danh bộ",
+              "Quý Khách vừa xác nhận mã danh bộ là ĐÚNG. Gọi NGAY tool tra cứu mà Quý Khách cần " +
+              "(get_bill / get_payment_status / get_water_usage / get_outages / create_ticket...). " +
+              "KHÔNG hỏi lại số, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.");
           }
 
           // [fix 23/07/2026] Khách PHỦ ĐỊNH số đang chờ xác nhận → BÁC ngay ứng
@@ -1496,11 +1264,6 @@ export function openSessionWebSocket(callId, callOps) {
             log.info(`[WS][${callId}] danh_bo_customer_said_no: ${khText}`);
             noteDanhBoRejected(_toolCallState);
             logger.addEvent("danh_bo_rejected_proactive", "khách phủ định số đang chờ xác nhận");
-            // [migrate 30/07/2026] confirm_tool: đã mở khoá (create_response:true)
-            // cho bước xác nhận vừa rồi — quay lại gom số thô thì phải khoá lại,
-            // nếu không noise/tạp âm có thể tự kích hoạt response ngay giữa lúc
-            // đường nền đang chạy lại (đúng rủi ro đã gặp ở phép thử "unlocked").
-            if (_DANHBO_CONFIRM_TOOL) _setVadMode("digits");
             // [1.4] Chạy lại đường nền ngay: trọng tài sẽ né dãy vừa bị bác và
             // đề xuất phương án khác; không ra thì mời đọc lại / bấm phím.
             _toolCallState._danhBoVerifyLastAt = 0; // bỏ khoảng nghỉ tối thiểu cho lượt này
@@ -1529,16 +1292,16 @@ export function openSessionWebSocket(callId, callOps) {
             const _itemMatch = !!_echoItemId && _activeResponseTriggerItemId === _echoItemId;
             if (_itemMatch && !_unansweredRealTurn) {
               try {
-                log.info("[_isPromptEcho]:ws.send response.cancel : ", {
+                console.log("[_isPromptEcho]:ws.send response.cancel : ", {
                   type: "response.cancel",
                 });
                 ws.send(JSON.stringify({ type: "response.cancel" }));
                 logger.addEvent("response_cancel_sent", `hủy response do prompt echo (nhiễu) kích hoạt (item ${_echoItemId})`);
-                log.info(`[${callId}]:`, "response_cancel_sent", `hủy response do prompt echo (item ${_echoItemId})`);
+                console.log(`[${callId}]:`, "response_cancel_sent", `hủy response do prompt echo (item ${_echoItemId})`);
                 _reAssertDanhBoStep("sau khi hủy response do prompt echo");
               } catch (e) {
                 log.warn(`[WS][${callId}]không gửi được response.cancel: `, e.message);
-                log.info(`[WS][${callId}]không gửi được response.cancel: `, e.message);
+                console.log(`[WS][${callId}]không gửi được response.cancel: `, e.message);
               }
             } else {
               // Giữ nguyên response đang chạy — đang trả lời lượt thật của
@@ -1547,7 +1310,7 @@ export function openSessionWebSocket(callId, callOps) {
                 ? `echo item ${_echoItemId} ≠ trigger item ${_activeResponseTriggerItemId}`
                 : `item trùng nhưng còn lượt khách thật chưa được trả lời (_unansweredRealTurn)`;
               logger.addEvent("response_cancel_skipped", `${_reason} — không hủy response đang chạy`);
-              log.info(`[${callId}]:`, "response_cancel_skipped", _reason);
+              console.log(`[${callId}]:`, "response_cancel_skipped", _reason);
             }
           }
         } else {
@@ -1561,7 +1324,7 @@ export function openSessionWebSocket(callId, callOps) {
 
       // conversation.item.done: bắt lời AI (output_audio transcript) để ghi log đủ 2 chiều
       case "conversation.item.done": {
-        log.info("....conversation.item.done....");
+        console.log("....conversation.item.done....");
         const content = event?.item?.content;
         if (Array.isArray(content)) {
           const aiPart = content.find((c) => c?.type === "output_audio" && c?.transcript);
@@ -1578,7 +1341,7 @@ export function openSessionWebSocket(callId, callOps) {
       }
 
       case "response.audio_transcript.done": {
-        log.info("....response.audio_transcript.done....");
+        console.log("....response.audio_transcript.done....");
         const aiText = event.transcript?.trim();
         log.info(`[WS][${callId}][AI nói]: ${aiText}`);
         if (aiText) logger.flushAI(aiText);
@@ -1592,19 +1355,19 @@ export function openSessionWebSocket(callId, callOps) {
       // Cuộc gọi "khỏe": số vad_speech_started ≈ số lượt khách nói thật.
 
       case "input_audio_buffer.speech_started":
-        log.info("....input_audio_buffer.speech_started....");
+        console.log("....input_audio_buffer.speech_started....");
         logger.addEvent("vad_speech_started", null);
         break;
 
       case "input_audio_buffer.speech_stopped":
-        log.info("....input_audio_buffer.speech_stopped....");
+        console.log("....input_audio_buffer.speech_stopped....");
         logger.addEvent("vad_speech_stopped", null);
         break;
 
       // [fix 18/07/2026] VAD commit audio thành conversation item → nhớ item_id.
       // Response do VAD tạo ngay sau đó sẽ được gắn với item này (response.created).
       case "input_audio_buffer.committed":
-        log.info("....input_audio_buffer.committed....");
+        console.log("....input_audio_buffer.committed....");
         _lastCommittedItemId = event.item_id ?? null;
         logger.addEvent("audio_committed", _lastCommittedItemId);
         break;
@@ -1613,26 +1376,26 @@ export function openSessionWebSocket(callId, callOps) {
 
       // Transcription thất bại (trước đây rơi vào default, mất dấu vết)
       case "conversation.item.input_audio_transcription.failed":
-        log.info("....conversation.item.input_audio_transcription.failed....");
+        console.log("....conversation.item.input_audio_transcription.failed....");
         logger.addError("transcription_failed", event.error?.message || _safeJson(event.error));
         break;
 
       // ── Lỗi từ OpenAI ─────────────────────────────────────────────────────
       case "error":
-        log.info("....error....");
+        console.log("....error....");
         log.error(`[WS][${callId}]OpenAI error: `, event.error);
         logger.addError("openai_event", event.error?.message || _safeJson(event.error));
         break;
 
       case "session.created":
-        log.info("....session.created....");
+        console.log("....session.created....");
         log.info(`[WS][${callId}]session.created: ${event.session?.id}`);
         logger.setSessionCreatedData(event.session ?? {});
         logger.addEvent("session_created", event.session?.id || null);
         break;
 
       case "session.updated": {
-        log.info("....session.updated....");
+        console.log("....session.updated....");
         // [fix 27/07/2026] Log cấu hình VAD OpenAI THẬT SỰ đang áp dụng. Cuộc
         // rtc_u2_E66X1bhQIrBrwtqeHkOau: code báo "VAD → digits" nhưng model vẫn
         // tự nói và tự gọi tool — không có cách nào biết `create_response: false`

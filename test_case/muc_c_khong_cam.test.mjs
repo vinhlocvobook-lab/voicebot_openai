@@ -19,9 +19,19 @@ const _looksLikeDigitTurn = (t) => {
   if ((s.match(/\d/g) || []).length >= 3) return true;
   return (s.match(_DIGIT_WORD_RE) || []).length >= 3;
 };
-const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bừ\b|\bừm\b|\bờ\b|\bok\b|\boke\b|\bđược\b|yes)/i;
+const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đúng|\bok\b|\boke\b|\bđược\b|yes)/i;
+// [fix 30/07/2026] \bờ\b/\bừ\b khớp NHẦM bên trong từ khác vì JS coi ký tự có
+// dấu là non-word (vd "dời" = d+ờ+i vẫn khớp \bờ\b). Chỉ tính là xác nhận khi
+// "ừ"/"ừm"/"ờ" là CẢ MỘT TỪ riêng trong câu ngắn — xem session-ws.js.
+const _KHANG_DINH_TU_DON_RE = /^(ừ+|ừm|ờ+)$/i;
 const _PHU_DINH_RE = /(không đúng|chưa đúng|sai rồi|\bsai\b|chưa phải|không phải)/i;
-const _isAffirmative = (t) => (_PHU_DINH_RE.test(String(t)) ? false : _KHANG_DINH_RE.test(String(t)));
+const _isAffirmative = (t) => {
+  const s = String(t).trim();
+  if (_PHU_DINH_RE.test(s)) return false;
+  if (_KHANG_DINH_RE.test(s)) return true;
+  const tokens = s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").trim().split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.length <= 2 && tokens.some((tok) => _KHANG_DINH_TU_DON_RE.test(tok));
+};
 const _XIN_NHAC_LAI_RE = /((đọc|nói|nhắc)\s+lại|chưa nghe rõ|nghe không rõ|không nghe rõ|nói gì)/i;
 
 /**
@@ -114,6 +124,32 @@ test("câu lạ chen vào lúc ĐANG XÁC MINH → GIỮ KHOÁ, không thả mod
 test("khi model CHƯA bị khoá thì câu ngoài luồng để model tự trả lời", () => {
   assert.equal(nhanhXuLy("Cho hỏi thủ tục sang tên", { dangChoXacNhan: false, vadMode: "normal" }),
     "MODEL_TU_TRA_LOI");
+});
+
+test("câu KHÔNG liên quan chứa 'ờ'/'ừ' lẫn trong từ khác KHÔNG bị coi là xác nhận", () => {
+  // Cuộc rtc_u1_E7L7Y2XD6JGGx1oQkIjAj: khách đang được hỏi "có đúng không" thì
+  // trả lời "Mình muốn nâng dời đồng hồ." (một yêu cầu KHÁC, xin dời đồng hồ
+  // nước) — nhưng bị chốt confirmed=true vì chữ "dời" chứa "ờ", và \bờ\b của JS
+  // khớp nhầm ở cả hai đầu "ờ" (coi ký tự có dấu là non-word). Phải rơi vào
+  // "DOI_CHU_DE" (đổi chủ đề), KHÔNG PHẢI "XAC_NHAN".
+  assert.equal(
+    nhanhXuLy("Mình muốn nâng dời đồng hồ.", { dangChoXacNhan: true, vadMode: "digits" }),
+    "DOI_CHU_DE",
+    "phải KHÔNG coi là xác nhận — 'dời' chỉ tình cờ chứa chữ 'ờ'"
+  );
+  // Các từ phổ biến khác có cùng rủi ro: "từ", "giờ", "chờ", "sợ".
+  for (const cau of ["Từ hôm qua nhà tôi mất nước.", "Mấy giờ có nước lại vậy em?", "Chờ chút anh nói."]) {
+    assert.notEqual(
+      nhanhXuLy(cau, { dangChoXacNhan: true, vadMode: "digits" }),
+      "XAC_NHAN",
+      `"${cau}" không phải câu xác nhận, không được rơi vào XAC_NHAN`
+    );
+  }
+});
+
+test("'Ừ'/'Ờ' đứng riêng MỘT MÌNH vẫn được coi là xác nhận khi đang chờ", () => {
+  assert.equal(nhanhXuLy("Ừ.", { dangChoXacNhan: true, vadMode: "digits" }), "XAC_NHAN");
+  assert.equal(nhanhXuLy("Ờ, đúng đó.", { dangChoXacNhan: true, vadMode: "digits" }), "XAC_NHAN");
 });
 
 console.log(`\nKết quả: ${passed} test đạt${process.exitCode ? " — CÓ TEST HỎNG" : ""}\n`);
