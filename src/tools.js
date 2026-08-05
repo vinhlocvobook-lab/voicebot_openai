@@ -321,9 +321,18 @@ function invalidDanhBoResponse(length, callState = {}) {
       invalid_danh_bo: true,
       do_dai_hien_tai: 0,
       do_dai_yeu_cau: DANH_BO_LENGTH,
+      // [fix 04/08/2026 đợt 14] Quan sát từ log thật: khách đọc LIÊN TỤC một mạch
+      // đủ 11 số (không ngắt quãng, không tách nhiều lượt) có tỉ lệ trọng tài chốt
+      // được ngay lần đầu cao hơn hẳn so với đọc rời rạc nhiều hơi/nhiều lượt —
+      // đọc rời rạc còn kéo theo hệ quả phụ nghiêm trọng hơn: cuộc
+      // rtc_u0_E95Q90QYobubPqXAMJSP2 (3 lượt đọc rời rạc) khiến model, dù đã có
+      // ứng viên và được yêu cầu đọc câu XÁC NHẬN, vẫn quay lại nói "còn thiếu số,
+      // đọc tiếp đi" — lịch sử hội thoại đầy các lượt "thiếu số" khiến model bám
+      // vào ngữ cảnh cũ thay vì làm theo instructions mới nhất. Đổi "đọc chậm từng
+      // chữ số" (dễ hiểu lầm là ngắt nghỉ giữa mỗi số) thành "đọc liền một mạch".
       doc_cho_khach:
         `Dạ, Quý Khách cho em xin mã danh bộ gồm ${DANH_BO_LENGTH} chữ số, ` +
-        `đọc chậm từng chữ số giúp em ạ.`,
+        `đọc liền một mạch từ đầu đến cuối, đừng ngừng giữa chừng, chậm và rõ giúp em ạ.`,
       // [fix 31/07/2026 đợt 10] Cùng lớp rủi ro với đợt 6 (dangXacMinhResponse):
       // "TUYỆT ĐỐI không đọc/tự đoán" là mệnh lệnh tuyệt đối, mà message này NẰM
       // LẠI VĨNH VIỄN trong hội thoại — có thể xung đột với yêu cầu đọc số ở bước
@@ -346,10 +355,13 @@ function invalidDanhBoResponse(length, callState = {}) {
       invalid_danh_bo: true,
       do_dai_hien_tai: length,
       do_dai_yeu_cau: DANH_BO_LENGTH,
+      // [fix 04/08/2026 đợt 14] xem giải thích ở nhánh length===0 phía trên —
+      // đổi sang "đọc liền một mạch" thay vì "chậm và rõ từng chữ số".
       doc_cho_khach:
         `Dạ, đường truyền bên em nghe bị lẫn nên chưa tách được đúng ` +
-        `${docSoLuong(DANH_BO_LENGTH)} chữ số ạ. Quý Khách vui lòng đọc lại một lần nữa, ` +
-        `chậm và rõ từng chữ số giúp em ạ.`,
+        `${docSoLuong(DANH_BO_LENGTH)} chữ số ạ. Quý Khách vui lòng đọc lại từ đầu, ` +
+        `đọc liền một mạch đủ ${docSoLuong(DANH_BO_LENGTH)} chữ số, đừng ngừng giữa chừng, ` +
+        `chậm và rõ giúp em ạ.`,
       message:
         `Nghe được ${length} số (NHIỀU HƠN ${DANH_BO_LENGTH}) — lẫn nhiễu, hệ thống đang tự ` +
         `chờ khách đọc lại và tự phát câu thoại của bước này. Lượt NÀY model không cần tự ` +
@@ -363,10 +375,13 @@ function invalidDanhBoResponse(length, callState = {}) {
     invalid_danh_bo: true,
     do_dai_hien_tai: length,
     do_dai_yeu_cau: DANH_BO_LENGTH,
+    // [fix 04/08/2026 đợt 14] xem giải thích ở nhánh length===0 phía trên — giữ
+    // nguyên cụm "đọc lại đầy đủ" (test_case/danh_bo_verify_flow.test.mjs đang
+    // kiểm tra cụm này) nhưng thêm "đọc liền một mạch, đừng ngừng giữa chừng".
     doc_cho_khach:
       `Dạ, em nghe được ${docSoLuong(length)} số, mà mã danh bộ cần đúng ` +
-      `${docSoLuong(DANH_BO_LENGTH)} số ạ. Quý Khách đọc lại đầy đủ, ` +
-      `chậm từng chữ số giúp em ạ.`,
+      `${docSoLuong(DANH_BO_LENGTH)} số ạ. Quý Khách đọc lại đầy đủ từ đầu, ` +
+      `đọc liền một mạch, đừng ngừng giữa chừng, chậm và rõ giúp em ạ.`,
     message:
       `Nghe chưa đủ ${DANH_BO_LENGTH} số — hệ thống đang tự chờ khách đọc lại và tự phát ` +
       `câu thoại. Lượt NÀY model không cần tự đọc/đoán số nào; khi hệ thống gửi yêu cầu ` +
@@ -1224,7 +1239,8 @@ async function handleGetBill({ ma_danh_bo, ky, nam }, callState) {
     const tt = d.TrangThaiThanhToan === "Đã thanh toán"
       ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
       : `, chưa thanh toán`;
-    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
+    // return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
+    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}`;
   });
 
   return JSON.stringify({
@@ -1269,7 +1285,17 @@ async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }, callState) {
 async function handleCompareUsage({ ma_danh_bo, ky, nam }, callState) {
   const rs = await resolveDanhBo(ma_danh_bo, callState);
   if (!rs.ok) return rs.error;
-  const r = await getSoSanhTangGiam(rs.value, ky, nam);
+  let r = await getSoSanhTangGiam(rs.value, ky, nam);
+  // [fix 04/08/2026] Cùng vấn đề đã sửa ở fetchBilling (26/07): khi không truyền
+  // ky/nam, backend /so-sanh-tang-giam mặc định lấy THEO NGÀY GỌI HIỆN TẠI thay vì
+  // kỳ gần nhất có dữ liệu → "Chưa có dữ liệu sản lượng cho kỳ 8/2026" dù kỳ 7 đã
+  // có đủ dữ liệu (rtc_u2_E963mRMGPfEe5EOma4Xx1). Thử lại với kỳ liền trước khi
+  // không truyền ky/nam và lần đầu không có dữ liệu.
+  const noPeriodGiven = (ky === null || ky === undefined) && (nam === null || nam === undefined);
+  if (!r.success && noPeriodGiven) {
+    const p = prevPeriod();
+    r = await getSoSanhTangGiam(rs.value, p.ky, p.nam);
+  }
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không có dữ liệu so sánh." });
   }

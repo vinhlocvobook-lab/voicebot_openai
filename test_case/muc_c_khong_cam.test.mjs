@@ -25,9 +25,13 @@ const _KHANG_DINH_RE = /(đúng|chính xác|chuẩn|phải rồi|vâng|dạ đú
 // "ừ"/"ừm"/"ờ" là CẢ MỘT TỪ riêng trong câu ngắn — xem session-ws.js.
 const _KHANG_DINH_TU_DON_RE = /^(ừ+|ừm|ờ+)$/i;
 const _PHU_DINH_RE = /(không đúng|chưa đúng|sai rồi|\bsai\b|chưa phải|không phải)/i;
+// [fix 31/07/2026 đợt 12] Câu DÀI có dấu "?" gần như chắc chắn không phải xác
+// nhận thuần (khách đang hỏi chuyện khác) dù lỡ chứa "vâng"/"được" — xem
+// session-ws.js.
 const _isAffirmative = (t) => {
   const s = String(t).trim();
   if (_PHU_DINH_RE.test(s)) return false;
+  if (/\?/.test(s)) return false;
   if (_KHANG_DINH_RE.test(s)) return true;
   const tokens = s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").trim().split(/\s+/).filter(Boolean);
   return tokens.length > 0 && tokens.length <= 2 && tokens.some((tok) => _KHANG_DINH_TU_DON_RE.test(tok));
@@ -150,6 +154,24 @@ test("câu KHÔNG liên quan chứa 'ờ'/'ừ' lẫn trong từ khác KHÔNG b�
 test("'Ừ'/'Ờ' đứng riêng MỘT MÌNH vẫn được coi là xác nhận khi đang chờ", () => {
   assert.equal(nhanhXuLy("Ừ.", { dangChoXacNhan: true, vadMode: "digits" }), "XAC_NHAN");
   assert.equal(nhanhXuLy("Ờ, đúng đó.", { dangChoXacNhan: true, vadMode: "digits" }), "XAC_NHAN");
+});
+
+test("câu DÀI mở đầu bằng 'Vâng,' nhưng thực ra đang hỏi chuyện KHÁC → KHÔNG tính là xác nhận", () => {
+  // Cuộc rtc_u1_E7Z0LRZnTro02qMeeISyy: khách nói "Vâng, cho mình hỏi giờ mình lên
+  // đăng ký định mức nước hai nhân khẩu được không ạ?" ngay sau khi bot mời bấm
+  // DTMF (không hề đọc lại số để khách xác nhận) — nhưng bị `_KHANG_DINH_RE` khớp
+  // chữ "Vâng"/"được" ở giữa câu nên ghi nhận nhầm thành "danh_bo_verbal_confirm".
+  // May mắn số đang chờ đúng nên không lộ sai dữ liệu, nhưng đúng lỗ hổng mà gate
+  // xác nhận lời nói được dựng lên để chặn — câu có dấu "?" không được tính là
+  // xác nhận thuần.
+  assert.equal(
+    _isAffirmative("Vâng, cho mình hỏi giờ mình lên đăng ký định mức nước hai nhân khẩu được không ạ?"),
+    false,
+    "câu có dấu '?' không được tính là xác nhận dù chứa 'vâng'/'được'"
+  );
+  // Xác nhận thật (ngắn, không có câu hỏi kèm theo) vẫn phải hoạt động bình thường.
+  assert.equal(_isAffirmative("Vâng, đúng rồi ạ."), true);
+  assert.equal(_isAffirmative("Dạ đúng số đó."), true);
 });
 
 console.log(`\nKết quả: ${passed} test đạt${process.exitCode ? " — CÓ TEST HỎNG" : ""}\n`);

@@ -123,6 +123,17 @@ export function openSessionWebSocket(callId, callOps) {
   // _logger: cho tools.js ghi event (vd kết quả trọng tài danh bộ) vào timeline.
   const _toolCallState = { knownDanhBo: callOps.knownDanhBo || [], _logger: logger };
 
+  // [fix 04/08/2026] Cuộc rtc_u1_E96OlQKSLxBoNCZ4pU8Dp: hai `response.done`
+  // liên tiếp (38ms) cùng chứa MỘT function_call `get_bill` giống hệt nhau
+  // (cùng tên, cùng args, cùng `call_id`) — dispatchTool chạy 2 lần thật (2 khối
+  // resolveDanhBo riêng biệt trong log), gửi 2 `function_call_output` cho CÙNG
+  // một `call_id` (vi phạm bất biến "mỗi call_id đúng 1 output" ở CLAUDE.md), và
+  // bộ đếm "model bịa số" bị cộng 2 lần cho một sự kiện logic duy nhất → leo
+  // thẳng lên mời bấm phím DTMF chỉ sau một lượt đọc dở dang thật sự đầu tiên.
+  // Chưa rõ nguồn gốc (OpenAI gửi trùng response.done hay WS lớp dưới phát lại)
+  // — vá phòng thủ bằng cách nhớ các `call_id` đã xử lý, bỏ qua nếu gặp lại.
+  const _processedToolCallIds = new Set();
+
   // [fix 19/07/2026] Nhận diện lượt khách nói có vẻ đang đọc CHỮ SỐ (buffer cho
   // trọng tài danh bộ trong tools.js). Chỉ là bộ lọc thô — việc bóc chữ số thật
   // do model trọng tài làm. NGOẠI LỆ có chủ đích của quy ước "transcript chỉ để
@@ -169,6 +180,19 @@ export function openSessionWebSocket(callId, callOps) {
   const _isAffirmative = (t) => {
     const s = String(t).trim();
     if (_PHU_DINH_RE.test(s)) return false;
+    // [fix 31/07/2026 đợt 12] `_KHANG_DINH_RE` khớp "vâng"/"được"/"đúng"... Ở BẤT
+    // KỲ ĐÂU trong câu, nên một câu DÀI đổi hẳn sang chuyện khác nhưng lỡ mở đầu
+    // bằng "Vâng," (phép lịch sự thường gặp) hoặc có chữ "được" ở cuối vẫn bị
+    // chốt nhầm là XÁC NHẬN. Cuộc rtc_u1_E7Z0LRZnTro02qMeeISyy: khách nói "Vâng,
+    // cho mình hỏi giờ mình lên đăng ký định mức nước hai nhân khẩu được không
+    // ạ?" (đang hỏi chuyện HOÀN TOÀN khác) bị ghi nhận thành
+    // "danh_bo_verbal_confirm" chỉ vì có chữ "Vâng"/"được" — may mắn số đang chờ
+    // xác nhận đúng nên không lộ dữ liệu sai, nhưng đúng lỗ hổng mà gate xác nhận
+    // lời nói (CLAUDE.md) được dựng lên để chặn. Câu có dấu "?" gần như chắc chắn
+    // KHÔNG PHẢI một câu xác nhận thuần — khách xác nhận và hỏi tiếp trong cùng
+    // một câu là tình huống hiếm, còn coi nhầm câu hỏi thành xác nhận thì rủi ro
+    // lộ dữ liệu người khác. Mặc định AN TOÀN: có "?" → KHÔNG tính là xác nhận.
+    if (/\?/.test(s)) return false;
     if (_KHANG_DINH_RE.test(s)) return true;
     const _tokens = s
       .toLowerCase()
@@ -250,7 +274,7 @@ export function openSessionWebSocket(callId, callOps) {
   // chỉ dẫn 'Đọc NGUYÊN VĂN "doc_cho_khach"', model mini bám vào đó thay vì
   // `instructions` của response mới.
   // Không thể tin model tuân thủ → CODE tự kiểm và gửi lại.
-  let _expectedSpeak = null; // { text, core, tag, at, retries }
+  let _expectedSpeak = null; // { text, core, tag, at, retries, lastSpokenCore }
 
   /** Dấu hiệu nhận dạng một câu: ưu tiên dãy chữ số, không có thì lấy phần đầu. */
   const _speakCore = (text) => {
@@ -342,9 +366,21 @@ export function openSessionWebSocket(callId, callOps) {
       logger.addEvent("response_create_sent", tag);
       // Câu quan trọng → theo dõi xem bot có đọc đúng không (xử lý ở conversation.item.done).
       if (opts.verify) {
+        // [fix 31/07/2026 đợt 11] Bug thật trong đợt 8: object này được TẠO MỚI ở
+        // mỗi lần gọi _speakVerbatim, kể cả khi đây là lần GỬI LẠI do chính
+        // _checkExpectedSpeak kích hoạt (setTimeout gọi lại _speakVerbatim). Trước
+        // đây chỉ giữ lại `retries` theo tag, còn `lastSpokenCore` bị bỏ quên nên
+        // luôn về `undefined` ở mỗi lần gửi lại — khiến `_lapLaiYHet` KHÔNG BAO GIỜ
+        // đúng, cơ chế "bỏ cuộc sớm khi bot lặp lỗi y hệt" (đợt 8) vô tác dụng.
+        // Cuộc rtc_u1_E7Z0LRZnTro02qMeeISyy: bot đọc "...Bảy-Bảy-Bảy-Năm" (thừa 7)
+        // Y HỆT 2 lần liên tiếp nhưng vẫn phải đợi đủ 3 lần mới bỏ cuộc, thay vì
+        // phát hiện lặp và bỏ cuộc ngay ở lần 2. Giữ nguyên `lastSpokenCore` theo
+        // cùng điều kiện "cùng tag" như `retries`.
+        const _tiepTucCungTag = _expectedSpeak?.tag === tag;
         _expectedSpeak = {
           text, tag, core: _speakCore(text), at: Date.now(),
-          retries: _expectedSpeak?.tag === tag ? (_expectedSpeak.retries || 0) : 0,
+          retries: _tiepTucCungTag ? (_expectedSpeak.retries || 0) : 0,
+          lastSpokenCore: _tiepTucCungTag ? _expectedSpeak.lastSpokenCore : undefined,
         };
       }
     } catch (e) {
@@ -378,6 +414,19 @@ export function openSessionWebSocket(callId, callOps) {
   const _maybeVerifyDanhBo = () => {
     clearTimeout(_toolCallState._danhBoVerifyTimer);
     const _du = danhBoSessionDigits(_toolCallState) >= 11;
+    // [fix 31/07/2026 đợt 13] Đợt 9 chỉ tắt watchdog khi ĐÃ CÓ ứng viên
+    // (action==="confirm", sau khi trọng tài chạy xong) — vẫn còn khoảng hở:
+    // debounce `_DANHBO_DEBOUNCE_DU_MS` (1500ms) TRƯỚC khi verify thật sự chạy,
+    // cộng thời gian gọi trọng tài, đều nằm NGOÀI phạm vi bảo vệ đó. Cuộc
+    // rtc_u0_E7ZC4KI88GN0QNHZRjhjX: khách vừa đọc đủ 11/11 số sạch (phiên #3),
+    // watchdog 90s (đếm từ rất lâu trước, không gia hạn) hết hạn CHỈ 719ms sau —
+    // tức là NGAY TRONG lúc debounce đang chờ, trước cả khi verify/trọng tài kịp
+    // chạy — mời bấm phím luôn, bỏ lỡ hẳn cơ hội xác nhận bằng giọng nói dù khách
+    // vừa đọc đúng. Tắt watchdog ngay khi biết đã ĐỦ 11 số (trước debounce), coi
+    // như "đang tích cực xử lý, không phải bế tắc". Re-arm lại ở nhánh "reread"
+    // bên dưới nếu cuối cùng vẫn không chốt được (khi đó lại thật sự cần chờ
+    // khách đọc lại, watchdog phải tiếp tục đếm).
+    if (_du) _clearDanhBoWatchdog();
 
     _toolCallState._danhBoVerifyTimer = setTimeout(async () => {
       if (_hungUp || _transferred) return;
@@ -406,7 +455,14 @@ export function openSessionWebSocket(callId, callOps) {
         }
         const r = await verifyDanhBoFromSession(_toolCallState, { chapNhanThieuSo: true });
         if (_hungUp || _transferred) return;
-        if (r.action === "none" || !r.prompt) return;
+        if (r.action === "none" || !r.prompt) {
+          // [fix 31/07/2026 đợt 13] Nhánh thoát sớm — không có gì để nói. Nếu lúc
+          // vào hàm này `_du` đã tắt watchdog (đủ 11 số) mà cuối cùng verify vẫn
+          // không quyết định được gì (hiếm, nhưng không loại trừ), phải bật lại,
+          // không được để mất hẳn lưới an toàn.
+          if (_du) _armDanhBoWatchdog();
+          return;
+        }
         _toolCallState._danhBoLastPrompt = r.prompt;
         logger.addEvent(`danh_bo_${r.action}`, r.value ? `${r.by}: ${r.value}` : r.prompt);
         log.info(`[WS][${callId}] danh_bo_${r.action}${r.value ? ` → ${r.value} (${r.by})` : ""}`);
@@ -422,7 +478,16 @@ export function openSessionWebSocket(callId, callOps) {
         // là VẪN chưa có ứng viên, watchdog phải tiếp tục đếm). Nếu khách phủ
         // định/đọc lại sau đó, lượt đọc số kế tiếp tự bật lại nó (_armDanhBoWatchdog
         // không gia hạn khi đang chạy nhưng vẫn tự set lại từ null).
-        if (r.action === "confirm") _clearDanhBoWatchdog();
+        if (r.action === "confirm") {
+          _clearDanhBoWatchdog();
+        } else {
+          // [fix 31/07/2026 đợt 13] Trọng tài không chốt được dù đã đủ số (hoặc
+          // đang mời đọc lại) → thật sự vẫn bế tắc, bật lại watchdog đã tắt tạm ở
+          // trên (khi vào hàm này với `_du===true`). Không có lượt khách nào chen
+          // giữa để tự bật lại như bình thường — nếu không re-arm ở đây, cuộc gọi
+          // mất hẳn lưới an toàn 90s cho tới lượt đọc số kế tiếp.
+          _armDanhBoWatchdog();
+        }
         // [migrate 30/07/2026] confirm_tool: CHỈ bước "đã có ứng viên, chờ xác
         // nhận" (action === "confirm") đổi cơ chế — mời đọc lại (action !==
         // "confirm", vẫn ở giai đoạn gom số thô) giữ nguyên `_speakVerbatim`.
@@ -433,6 +498,9 @@ export function openSessionWebSocket(callId, callOps) {
         }
       } catch (e) {
         log.warn(`[WS][${callId}] verifyDanhBoFromSession lỗi: `, e.message);
+        // [fix 31/07/2026 đợt 13] Lỗi giữa chừng → không chốt được gì, bật lại
+        // watchdog nếu đã tắt tạm ở trên, cùng lý do với nhánh "none" phía trên.
+        if (_du) _armDanhBoWatchdog();
       } finally {
         _toolCallState._danhBoVerifyRunning = false;
         // Có transcript mới đến trong lúc đang chạy → xử lý ngay, đừng bỏ rơi.
@@ -496,7 +564,33 @@ export function openSessionWebSocket(callId, callOps) {
   const _escalateDanhBoToDtmf = (lyDo) => {
     if (_hungUp || _transferred) return;
     if (_toolCallState.danhBo?.confirmed) return;
-    if (_toolCallState._danhBoDtmfInvited) return;
+    if (_toolCallState._danhBoDtmfInvited) {
+      // [fix 05/08/2026 đợt 20] Cuộc rtc_u1_E9LkfCNs3Zs6eNiIHxbXb: bot bỏ cuộc đọc
+      // xác nhận giọng nói → mời bấm phím (đúng thiết kế, mở đầu bằng nhánh trên).
+      // Khách bấm ĐÚNG 11 số qua DTMF, nhưng khi bot đọc lại xác nhận số đó
+      // (`dtmf_danh_bo_confirm`) lại LIÊN TỤC rớt mất đúng chữ "Bảy" trong chuỗi
+      // "Bốn - Bảy - Bốn" (lỗi phát âm TTS mang tính hệ thống, cùng loại đã ghi
+      // ở đợt 31/07 — không phải do dữ liệu sai, DTMF vốn "chính xác tuyệt đối")
+      // → bỏ cuộc LẦN HAI, rơi đúng vào nhánh này. Guard cũ chỉ `return` — không
+      // còn kênh tự động nào khác để mời (đã dùng cả giọng nói lẫn DTMF), khách bị
+      // bỏ mặc trong im lặng tuyệt đối cho tới khi tự cúp máy (17 giây im lặng
+      // rồi WebSocket đóng). Đã có dữ liệu ĐÚNG (khách vừa bấm), hệ thống chỉ là
+      // không tự đọc lại xác nhận được — chuyển máy cho tổng đài viên NGAY thay vì
+      // im lặng, đúng tinh thần "Bot câm tệ hơn bot trả lời sai".
+      if (_transferred) return;
+      _transferred = true;
+      logger.setOutcome("transferred");
+      logger.addEvent("danh_bo_confirm_giveup_transfer", lyDo);
+      log.warn(`[WS][${callId}] ${lyDo} — đã mời bấm phím rồi vẫn bỏ cuộc, không còn kênh tự động → chuyển máy tổng đài viên.`);
+      _setVadMode("normal");
+      _speakVerbatim(
+        "Dạ, em xin lỗi Quý Khách vì sự bất tiện này ạ. Em xin phép chuyển máy cho tổng đài viên hỗ trợ Quý Khách ngay ạ.",
+        "danh_bo_giveup_transfer", 0, { verify: false }
+      );
+      _handleTransfer(callId, callOps, lyDo).catch((e) =>
+        log.warn(`[WS][${callId}] _handleTransfer lỗi (danh_bo_giveup_transfer): `, e.message));
+      return;
+    }
     const prompt = danhBoDtmfInvitePrompt(_toolCallState);
     if (!prompt) return;
     _toolCallState._danhBoLastPrompt = prompt;
@@ -1012,6 +1106,16 @@ export function openSessionWebSocket(callId, callOps) {
           if (item?.type !== "function_call") continue;
 
           const toolCallId = item.call_id;
+          // [fix 04/08/2026] Xem chú thích ở khai báo `_processedToolCallIds` —
+          // cùng một call_id KHÔNG được xử lý (và gửi function_call_output) quá
+          // một lần, bất kể do response.done trùng lặp hay bất kỳ nguyên nhân nào.
+          if (toolCallId && _processedToolCallIds.has(toolCallId)) {
+            log.warn(`[WS][${callId}] Bỏ qua function_call trùng call_id đã xử lý: ${toolCallId} (${item.name})`);
+            logger.addEvent("tool_call_duplicate_ignored", `${item.name} call_id=${toolCallId}`);
+            continue;
+          }
+          if (toolCallId) _processedToolCallIds.add(toolCallId);
+
           const name = item.name;
           const argsStr = item.arguments;
           log.info("----------------------Tool calling -------------------------------");
@@ -1391,18 +1495,40 @@ export function openSessionWebSocket(callId, callOps) {
             // đó model đã mất dấu ngữ cảnh và đọc bừa một số khác. Coi lượt đọc
             // lại này là PHỦ ĐỊNH NGẦM ứng viên cũ: reject candidate pending +
             // mở phiên đọc MỚI (reset sạch, không lẫn số cũ) trước khi ghi nhận.
-            if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed) {
-              logger.addEvent("danh_bo_doc_lai_ngam_dinh_phu_dinh",
-                `${khText.slice(0, 60)} — huỷ ứng viên pending, mở phiên đọc mới`);
-              log.info(`[WS][${callId}] Khách đọc lại số giữa lúc chờ xác nhận → coi như phủ định ngầm, mở phiên mới.`);
-              noteDanhBoRejected(_toolCallState);
-              startDanhBoRequest(_toolCallState, "khách đọc lại trong lúc đang chờ xác nhận");
-              _toolCallState._danhBoVerifyLastAt = 0; // bỏ khoảng nghỉ tối thiểu cho lượt này
+            // [fix 04/08/2026 đợt 15] Trước khi coi là phủ định: nếu dãy số khách
+            // VỪA đọc lại TRÙNG Y HỆT với ứng viên đang chờ xác nhận, đây là CỦNG
+            // CỐ (khách khẳng định lại đúng số đó), KHÔNG PHẢI phủ định — coi là
+            // phủ định sẽ đẩy số ĐÚNG vào danh sách "khách báo sai" của trọng tài
+            // (mục "TUYỆT ĐỐI không trả lại y nguyên" trong prompt arbiter), khoá
+            // chết mã ĐÚNG cho phần còn lại cuộc gọi. Cuộc rtc_u1_E95eWKZyqtfuuviHFm4lv:
+            // model bị race lúc chuyển VAD nói nhầm "chưa đúng độ dài" ngay sau khi
+            // khách đọc ĐÚNG lần đầu (xem đợt log trước) → khách đọc lại y hệt số cũ
+            // theo hướng dẫn (sai) đó, không hề có ý phủ định — nhưng bị hiểu nhầm,
+            // trọng tài sau đó luôn trả conf=0.05 vì số đúng đã bị liệt vào "đã bác
+            // bỏ", cuộc gọi bế tắc dù khách đọc đúng ngay từ đầu.
+            const _docLaiSo = khText.replace(/\D/g, "");
+            const _trungKhopDangCho = !!(_toolCallState.danhBo && !_toolCallState.danhBo.confirmed &&
+              _docLaiSo && _docLaiSo === _toolCallState.danhBo.value);
+            if (_trungKhopDangCho) {
+              logger.addEvent("danh_bo_doc_lai_trung_khop_cung_co",
+                `${khText.slice(0, 60)} — trùng số đang chờ, coi là củng cố`);
+              log.info(`[WS][${callId}] Khách đọc lại TRÙNG số đang chờ xác nhận → củng cố, nhắc lại câu xác nhận.`);
+              _armDanhBoWatchdog();
+              _reAssertDanhBoStep("khách đọc lại trùng số đang chờ xác nhận");
+            } else {
+              if (_toolCallState.danhBo && !_toolCallState.danhBo.confirmed) {
+                logger.addEvent("danh_bo_doc_lai_ngam_dinh_phu_dinh",
+                  `${khText.slice(0, 60)} — huỷ ứng viên pending, mở phiên đọc mới`);
+                log.info(`[WS][${callId}] Khách đọc lại số giữa lúc chờ xác nhận → coi như phủ định ngầm, mở phiên mới.`);
+                noteDanhBoRejected(_toolCallState);
+                startDanhBoRequest(_toolCallState, "khách đọc lại trong lúc đang chờ xác nhận");
+                _toolCallState._danhBoVerifyLastAt = 0; // bỏ khoảng nghỉ tối thiểu cho lượt này
+              }
+              const _s = noteDanhBoTranscript(_toolCallState, khText);
+              log.info(`[WS][${callId}] [danh_bo] phiên #${_s.requestNo}: ${_s.digits.length}/11 số (+"${khText}")`);
+              _armDanhBoWatchdog();
+              _maybeVerifyDanhBo();
             }
-            const _s = noteDanhBoTranscript(_toolCallState, khText);
-            log.info(`[WS][${callId}] [danh_bo] phiên #${_s.requestNo}: ${_s.digits.length}/11 số (+"${khText}")`);
-            _armDanhBoWatchdog();
-            _maybeVerifyDanhBo();
           } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh &&
             _XIN_NHAC_LAI_RE.test(khText) && _toolCallState._danhBoLastPrompt) {
             // [fix 27/07/2026] "Đọc lại đi", "nhắc lại giúp em", "chưa nghe rõ"…
@@ -1415,7 +1541,7 @@ export function openSessionWebSocket(callId, callOps) {
             _speakVerbatim(_toolCallState._danhBoLastPrompt, "danh_bo_nhac_lai", 0, { verify: true });
           } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits" &&
             (_toolCallState._danhBoVerifyRunning || _expectedSpeak ||
-              danhBoSessionDigits(_toolCallState) >= 11)) {
+              (!_toolCallState.danhBo && danhBoSessionDigits(_toolCallState) >= 11))) {
             // [fix 27/07/2026 đợt 8] ĐANG XÁC MINH / SẮP ĐỌC CÂU XÁC NHẬN → GIỮ KHOÁ.
             // Cuộc rtc_u2_E67HNE1dTVDUT80s4XixB: khách vừa đọc xong 11 số, đường nền
             // đang chạy, thì lọt vào hai chữ "đồng hồ" (nhiều khả năng nhiễu). Code
@@ -1428,8 +1554,33 @@ export function openSessionWebSocket(callId, callOps) {
             // tạo response). Ở chế độ "unlocked", việc "giữ khoá" ở đây chỉ là
             // log/bỏ qua — model vẫn có thể đã tự trả lời trước khi dòng này chạy
             // (đúng rủi ro đã ghi trong .env.example / docs/fix/fix_migrate_gpt_realtime_21_20260730.md).
+            // [fix 04/08/2026 đợt 19] Thêm điều kiện `!_toolCallState.danhBo` — xem
+            // giải thích đầy đủ ở nhánh MỚI ngay bên dưới (bug khách bị im lặng vô
+            // thời hạn sau khi câu hỏi xác nhận đã được hỏi xong).
             logger.addEvent("danh_bo_giu_khoa_dang_xac_minh", khText.slice(0, 60));
             log.info(`[WS][${callId}] Giữ khoá — đang xác minh, bỏ qua lượt "${khText.slice(0, 40)}"`);
+          } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits" &&
+            _toolCallState.danhBo && !_toolCallState.danhBo.confirmed && _toolCallState._danhBoLastPrompt) {
+            // [fix 04/08/2026 đợt 19] BUG THẬT, khách cúp máy bực bội — cuộc
+            // rtc_u0_E96ZWOOhKRYuhnpys7jYm: sau khi câu hỏi xác nhận đã được hỏi
+            // xong (bot nói đúng câu, `_expectedSpeak` đã cleared), khách trả lời 5
+            // lượt liền KHÔNG rõ ràng (ASR garbled: "Xin chào quý khách.", "Đọc đi
+            // em.", "tôi", rồi bực bội "Trời ơi, cái thằng điên này nó làm cái gì
+            // vậy?") — MỌI lượt đều rơi vào nhánh "Giữ khoá" ở trên vì điều kiện cũ
+            // `danhBoSessionDigits(_toolCallState) >= 11` KHÔNG BAO GIỜ được reset
+            // sau khi chuyển từ "gom số" sang "chờ xác nhận" (chỉ reset khi mở phiên
+            // đọc MỚI) — nên mãi mãi đúng, khoá im lặng VÔ THỜI HẠN dù không còn gì
+            // chạy nền cả. Khách chờ 41 giây trong im lặng rồi cúp máy.
+            // Đã chặn đúng lỗi bằng cách thêm `!_toolCallState.danhBo` vào điều kiện
+            // nhánh trên. Nhánh MỚI này xử lý đúng trạng thái thật: đã hỏi xác nhận
+            // xong, khách trả lời không khớp đúng/sai/đọc lại số/xin nhắc lại → đọc
+            // LẠI câu hỏi xác nhận (dùng `_reAssertDanhBoStep` có sẵn) thay vì im
+            // lặng, cho khách cơ hội trả lời rõ hơn. Watchdog 90s vẫn là lưới an
+            // toàn cuối nếu lặp lại nhiều lần không có tiến triển.
+            logger.addEvent("danh_bo_khong_ro_nhac_lai_xac_nhan", khText.slice(0, 60));
+            log.info(`[WS][${callId}] Khách trả lời không rõ khi đang chờ xác nhận → nhắc lại câu hỏi xác nhận.`);
+            _armDanhBoWatchdog();
+            _reAssertDanhBoStep("khách trả lời không rõ khi đang chờ xác nhận");
           } else if (!_seXuLyXacNhan && !_seXuLyPhuDinh && _vadMode === "digits") {
             // [MỨC C — đợt 5] Khách nói chuyện KHÁC giữa lúc đang thu số (cuộc
             // rtc_u1_E5iAEYIr6WXOZvgtds2e5: đang đọc dở thì hỏi "cho tôi hỏi về

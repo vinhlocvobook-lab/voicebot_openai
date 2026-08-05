@@ -902,3 +902,435 @@ trạng thái + báo trước bước sau không bị ràng buộc, bỏ mệnh 
 Test có sẵn `test_case/danh_bo_verify_flow.test.mjs` (nhóm "Chỉ dẫn tồn dư")
 đã tự động kiểm tra generic cho các payload này (không được chứa "đọc nguyên
 văn", phải chứa "hệ thống (sẽ) tự") — không cần thêm test riêng. 58/58 test đạt.
+
+## Fix 31/07/2026 (đợt 11) — cơ chế "bỏ cuộc sớm khi lặp lỗi y hệt" (đợt 8) chưa từng hoạt động
+
+Log nguồn: `rtc_u1_E7Z0LRZnTro02qMeeISyy`. Bot đọc "...Bảy - Bảy - Bảy - Năm"
+(thừa đúng 1 chữ so với câu yêu cầu) Ở CẢ HAI lần gửi lại liên tiếp (byte-for-byte
+giống nhau, xác nhận qua log "Bot đọc số LẠ '220232517775' (lần 1)" rồi
+"(lần 2)") — nhưng hệ thống vẫn đợi đủ 3 lần mới bỏ cuộc, đúng NHƯ TRƯỚC đợt 8,
+chứng tỏ cơ chế phát hiện lặp chưa hề chạy.
+
+**Gốc rễ**: `_speakVerbatim` (dòng ~344-349) TẠO MỚI `_expectedSpeak` ở MỌI lần
+gọi — kể cả lần gọi LẠI do chính `_checkExpectedSpeak` kích hoạt qua
+`setTimeout`. Object mới chỉ giữ lại `retries` (nếu cùng tag), còn
+`lastSpokenCore` (trường đợt 8 vừa thêm) bị bỏ sót khỏi object literal nên luôn
+về `undefined` — `_lapLaiYHet` (`exp.lastSpokenCore && exp.lastSpokenCore ===
+_spokenCoreNow`) do đó KHÔNG BAO GIỜ đúng, vì vế đầu luôn falsy.
+
+**Fix**: giữ lại `lastSpokenCore` theo đúng điều kiện "cùng tag" như `retries`
+khi dựng `_expectedSpeak` mới trong `_speakVerbatim`. 59/59 test đạt (không
+thêm test mới — đây là bug trong logic closure của `session-ws.js`, cùng giới
+hạn về mock WebSocket đã ghi ở đợt 8; cần quan sát cuộc gọi thật tiếp theo để
+xác nhận cơ chế giờ chạy đúng).
+
+## Fix 31/07/2026 (đợt 12) — "Vâng," mở đầu câu đổi chủ đề bị chốt nhầm thành xác nhận danh bộ
+
+Log nguồn: `rtc_u1_E7Z0LRZnTro02qMeeISyy` (cùng cuộc với đợt 11, xảy ra ngay sau
+khi mời DTMF). Khách nói "Vâng, cho mình hỏi giờ mình lên đăng ký định mức
+nước hai nhân khẩu được không ạ?" — một câu hỏi HOÀN TOÀN khác, không liên
+quan gì tới việc xác nhận mã danh bộ — nhưng hệ thống ghi nhận
+`danh_bo_verbal_confirm` và dùng số đang chờ (đúng, may mắn) để tra cứu ngay.
+
+**Gốc rễ**: `_KHANG_DINH_RE` khớp "vâng"/"được"/"đúng"... ở BẤT KỲ ĐÂU trong
+câu, không giới hạn độ dài hay vị trí — câu dài đổi hẳn sang ý khác nhưng có
+"vâng" mở đầu (phép lịch sự phổ biến trong tiếng Việt) hoặc "được" ở cuối vẫn
+qua được. Lần này số đang chờ đúng nên không lộ sai dữ liệu, nhưng đây chính
+là lỗ hổng mà "gate xác nhận lời nói" trong `CLAUDE.md` được dựng lên để chặn
+("Hỏng chỗ này = bot đọc thông tin người khác cho khách nghe").
+
+**Fix**: thêm guard trong `_isAffirmative` — câu có dấu "?" thì KHÔNG tính là
+xác nhận, bất kể chứa từ khẳng định nào. Lý do chọn tín hiệu này: khách xác
+nhận VÀ hỏi thêm trong cùng một câu là tình huống hiếm, còn coi nhầm câu hỏi
+thành xác nhận thì rủi ro lộ dữ liệu — mặc định an toàn khi mơ hồ. Sync cùng
+fix vào bản sao logic trong `test_case/muc_c_khong_cam.test.mjs`, thêm test
+tái hiện đúng câu trên + 2 câu xác nhận thật (ngắn, không kèm câu hỏi) để đảm
+bảo không bóp chết luồng xác nhận bình thường. 59/59 test đạt.
+
+## Fix 31/07/2026 (đợt 13) — watchdog vẫn có thể hết hạn TRONG lúc debounce chờ verify
+
+Log nguồn: `rtc_u0_E7ZC4KI88GN0QNHZRjhjX`. Khách đọc sạch đủ 11/11 số (phiên
+#3), nhưng watchdog 90s hết hạn CHỈ 719ms sau đó — mời bấm phím NGAY, trước cả
+khi `_maybeVerifyDanhBo` kịp hết debounce 1500ms để chạy trọng tài — bỏ lỡ hẳn
+cơ hội xác nhận bằng giọng nói dù khách vừa đọc đúng lần này.
+
+**Gốc rễ**: đợt 9 chỉ tắt watchdog ở thời điểm `r.action === "confirm"` — tức
+là SAU KHI trọng tài đã chạy xong. Khoảng debounce `_DANHBO_DEBOUNCE_DU_MS`
+(1500ms, cố ý để gom nốt các hơi đọc rời rạc) cộng thời gian gọi trọng tài vẫn
+nằm NGOÀI phạm vi được bảo vệ.
+
+**Fix**: tắt watchdog ngay khi `_maybeVerifyDanhBo` phát hiện đã đủ 11 số
+(biến `_du`, tính TRƯỚC debounce) — coi "đủ số, đang tích cực xử lý" là đủ lý
+do tạm ngưng đồng hồ bế tắc. Bật lại watchdog (`_armDanhBoWatchdog()`) ở CẢ BA
+nhánh verify cuối cùng không chốt được gì (reread, action==="none"/không có
+prompt, lỗi giữa chừng) — để không mất hẳn lưới an toàn cho tới lượt đọc số kế
+tiếp của khách. 59/59 test đạt.
+
+## Ghi nhận thêm (đợt log 31/07/2026, batch 5 — chưa sửa, cần thêm bằng chứng)
+
+- **Race VAD lúc CHUYỂN sang chế độ khoá ở lượt đọc số ĐẦU TIÊN**
+  (`rtc_u1_E7Z25DKmWbWQokYVfD694`): khách đọc "Mã danh bộ là 2209." — code phát
+  hiện đây là lượt đọc số và gửi `session.update` chuyển VAD sang `digits`
+  (`create_response:false`), nhưng response cho lượt NÀY đã được kích hoạt bởi
+  VAD CŨ (`semantic_vad`, `create_response:true`) ngay trước khi update kịp áp
+  dụng — model tự do nói "Thưa Quý Khách, số danh bộ em đang nghe là '2209',
+  nhưng" (bị cắt ngang, và bị flag đúng là "Bot đọc số LẠ"). Lần này vô hại
+  (số trùng khớp, câu bị cắt giữa chừng, không tra cứu gì), nhưng là lỗ hổng
+  cấu trúc: KHÔNG cách nào biết một lượt là "đọc số" trước khi có transcript,
+  mà transcript chỉ có sau khi response đã có thể được VAD cũ tự kích hoạt.
+  Cần thêm log ở nhiều cuộc khác để đánh giá tần suất/mức độ nghiêm trọng
+  trước khi cân nhắc hướng sửa (vd: tạm khoá `create_response` sớm hơn dựa
+  trên độ dài audio, hoặc chấp nhận rủi ro thấp này).
+- **`conversation_already_has_active_response` tái diễn ở bước xác nhận xong,
+  chuẩn bị tra cứu** (`rtc_u0_E7ZC4KI88GN0QNHZRjhjX`, ~11:34:11.26-11:34:11.68):
+  đây là LẦN THỨ HAI quan sát đúng dạng lỗi này (lần đầu ở
+  `rtc_u2_E7YQCdKECKBoFNKzFMRpe`, batch trước, bước `dang_gom_so`) — tăng độ
+  tin cậy đây là race có thật, không phải ngẫu nhiên. Ở cuộc này: khách xác
+  nhận qua DTMF ("Đúng rồi em.") → VAD (đã ở chế độ `normal` từ trước) TỰ kích
+  hoạt một response mà model tự nói "Dạ, vậy để em xử lý tiếp..." VÀ tự gọi
+  `get_bill` trong CÙNG response đó (không cần code nhắc) → gần như đồng thời,
+  `danh_bo_verbal_confirm`'s `_requestModelReply()` (bị hoãn tới khi
+  `_responseActive` rảnh) CŨNG gửi yêu cầu "Gọi NGAY tool tra cứu" → khi
+  response.done xử lý xong tool `get_bill` và gửi response.create đọc kết quả,
+  nó đụng ngay response CHƯA XONG của `_requestModelReply` → lỗi
+  `conversation_already_has_active_response`. Khách nghe câu vòng vo "kết quả
+  vẫn đang chờ" dù dữ liệu đã có, cuộc gọi kết thúc ngay sau đó không rõ ràng
+  (không có `end_call`). Cần đọc kỹ code `danh_bo_verbal_confirm` +
+  `_requestModelReply` trước khi sửa — có khả năng cần guard "nếu model đã tự
+  gọi tool tra cứu trong response VAD tự kích hoạt rồi thì bỏ qua
+  `_requestModelReply`", nhưng chưa đủ thời gian xác minh trong đợt này.
+
+## Fix 04/08/2026 (đợt 14) — khuyến khích khách đọc LIÊN TỤC một mạch đủ 11 số
+
+Giả thuyết từ chủ dự án, xác nhận qua 7 cuộc log cùng đợt (2026-08-04, khoảng
+15:56-16:10): cuộc nào khách đọc đủ 11 số trong MỘT lượt liên tục (không tách
+nhiều hơi/nhiều lượt) đều được trọng tài chốt ngay từ lần đọc đầu tiên với độ
+tin cậy cao (`rtc_u2_E95NPNJM6w3YIgRpyhYwB`, `rtc_u1_E95OiVnd2UsXjvbMYx0aC`,
+và về sau của `rtc_u2_E95FbAXLHewtjX3ImlaSg`: 0.93-0.97 conf, xác nhận đúng
+ngay lần đầu). Ngược lại, cuộc khách đọc RỜI RẠC nhiều lượt
+(`rtc_u0_E95Q90QYobubPqXAMJSP2`: 3 lượt tách rời — "22023 247" → phải mời đọc
+lại → "431" → trọng tài ghép sai thứ tự → mời đọc lại lần nữa → cuối cùng mới
+ghép đúng) không chỉ tốn nhiều vòng hơn mà còn kéo theo một lỗi MỚI, nghiêm
+trọng hơn: sau khi đã có ứng viên đúng và hệ thống yêu cầu model đọc câu XÁC
+NHẬN, model liên tục nói "còn thiếu số, đọc tiếp đi" — lịch sử hội thoại đầy
+các lượt "thiếu số"/"mời đọc lại" khiến model bám vào ngữ cảnh cũ, phớt lờ
+`instructions` mới nhất bảo đọc câu xác nhận. 3 lần gửi lại đều bị mismatch
+(không giống hệt nhau về câu chữ nên `_lapLaiYHet` — đợt 11 — không bắt được,
+nhưng cơ chế "3 lần thì bỏ cuộc" vẫn hoạt động đúng, escalate DTMF thành công).
+
+**Fix**: đổi lời nhắc từ "đọc chậm từng chữ số" (dễ hiểu lầm là ngắt nghỉ giữa
+mỗi số) sang "đọc liền một mạch, đừng ngừng giữa chừng" ở cả 3 nhánh
+`invalidDanhBoResponse` trong `src/tools.js` (chưa có số / thừa số / thiếu số
+— nhánh "thiếu số" giữ nguyên cụm "đọc lại đầy đủ" cũ vì có test kiểm tra cụm
+này). Đồng thời thêm hướng dẫn vào `src/system-prompt.js` (mục "Thu thập mã
+danh bộ") để lượt hỏi ĐẦU TIÊN (model tự nói, chưa qua code) cũng nói rõ "gồm
+11 chữ số" + mời đọc liền một mạch, thay vì chỉ dựa vào 3 câu gợi ý cũ trong
+mô tả tool (get_bill/get_payment_status/get_water_usage) vốn không nhắc số
+lượng hay cách đọc.
+
+**Ghi chú**: đây là thay đổi NGÔN TỪ dựa trên tương quan quan sát được (7
+cuộc), chưa phải thực nghiệm A/B có đối chứng — cần tiếp tục theo dõi tỉ lệ
+đọc-một-lượt-thành-công sau khi đổi lời để xác nhận. Lỗi "model quay lại nói
+thiếu số khi đang được yêu cầu đọc xác nhận" (quan sát ở
+`rtc_u0_E95Q90QYobubPqXAMJSP2`) chưa được sửa TRỰC TIẾP ở lớp code (vẫn dựa
+vào cơ chế 3-lần-rồi-bỏ-cuộc có sẵn) — kỳ vọng giảm tần suất nhờ ít lượt đọc
+rời rạc hơn, nhưng nếu vẫn tái diễn cần cân nhắc thêm: phát hiện mismatch
+"giống Ý NGHĨA" (không chỉ giống y hệt câu chữ) để bỏ cuộc sớm hơn 3 lần.
+59/59 test đạt.
+
+## Fix 04/08/2026 (đợt 15) — khách đọc lại TRÙNG số đang chờ bị hiểu nhầm thành phủ định, khoá chết mã ĐÚNG
+
+Log nguồn: `rtc_u1_E95eWKZyqtfuuviHFm4lv`. Khách đọc "Mã danh bộ là 22023 247
+431." — ĐÚNG, liền một mạch, đủ 11 số. NHƯNG ngay sau đó bot nói một câu KHÔNG
+do code tạo: *"Dạ, cảm ơn Quý Khách đã cho số danh bộ. Tuy nhiên, vị trí số
+danh bộ mà em nghe lại thì chưa đúng độ dài. Quý Khách vui lòng đọc lại..."*
+— sai hoàn toàn (khách đọc đủ 11 số), rất có thể do cùng loại race đã ghi nhận
+ở đợt log trước (model tự trả lời ngay lúc VAD chuyển sang chế độ khoá, trước
+khi `session.update` kịp áp dụng). Khách nghe vậy, đọc lại Y HỆT số cũ (không
+hề có ý phủ định) — nhưng session-ws.js coi MỌI lượt đọc lại giữa lúc chờ xác
+nhận là "phủ định ngầm" (đợt 7), đẩy số ĐÚNG "22023247431" vào danh sách "khách
+báo sai" gửi cho trọng tài. Prompt trọng tài có dòng *"đáp án đúng KHÁC các
+dãy này ở ít nhất một vị trí — TUYỆT ĐỐI không trả lại y nguyên"* — nên từ đó
+trọng tài VĨNH VIỄN từ chối trả lại đúng số đó (`do_tin_cay=0.05`, null), dù
+khách có đọc lại đúng bao nhiêu lần nữa. Cuộc gọi bế tắc, phải mời đọc lại vô
+ích thêm 1 vòng nữa trước khi log dừng lại.
+
+**Fix**: trong nhánh `_laLuotDocSo` xử lý "khách đọc lại giữa lúc chờ xác
+nhận" (`src/session-ws.js`), trước khi coi là phủ định ngầm — so khớp dãy số
+khách VỪA đọc (chuẩn hoá bỏ ký tự không phải số) với `_toolCallState.danhBo.value`
+đang chờ. TRÙNG Y HỆT → coi là CỦNG CỐ (khách khẳng định lại đúng số), không
+phải phủ định: giữ nguyên ứng viên, không đẩy vào danh sách "đã bác bỏ", chỉ
+gọi `_reAssertDanhBoStep` (hàm có sẵn) để đọc lại đúng câu xác nhận đang chờ.
+Chỉ nhánh KHÔNG trùng (đọc lại ra số khác) mới đi theo đường phủ định ngầm cũ.
+
+**Chưa sửa** (nguyên nhân gốc): race khiến model tự trả lời sai ngay lúc VAD
+chuyển chế độ — đã ghi nhận 2 lần ở 2 đợt log liên tiếp (lần trước vô hại, lần
+này gây bế tắc thật). Kiến trúc hiện tại không có cách biết trước một lượt là
+"đọc số" trước khi có transcript, mà response cũ có thể đã được VAD kích hoạt
+trước khi `session.update` (chuyển `create_response:false`) kịp áp dụng. Fix
+đợt 15 chỉ chặn HẬU QUẢ nghiêm trọng nhất (khoá chết mã đúng), chưa chặn được
+GỐC (model vẫn có thể nói sai lệch một câu). Cần thêm log để đánh giá tần suất
+trước khi đầu tư sửa gốc (có thể cần: hủy/bỏ qua response tự phát sinh ngay
+sau khi vừa gửi `session.update` chuyển digits, dựa vào cờ `_pendingCodeResponse`
+đã có sẵn).
+
+59/59 test đạt. Chưa có test tự động riêng (cùng giới hạn mock WebSocket đã
+ghi ở các đợt trước) — cần xác nhận qua cuộc gọi thật tiếp theo.
+
+---
+
+## Fix 04/08/2026 (đợt 16) — model tự đoán ky/nam theo ngày hiện tại thay vì bỏ trống
+
+Log đối chiếu 2 cuộc gọi liên tiếp cùng kịch bản "tiền nước tháng này":
+
+- **`rtc_u2_E95mmJupoqVedcpxyYbaT`**: khách hỏi "tiền nước tháng này là bao
+  nhiêu", không nói rõ kỳ/năm. Model tự gọi `get_bill({ma_danh_bo, ky:8,
+  nam:2026})` — suy từ NGÀY GỌI ĐIỆN (04/08/2026) chứ không phải kỳ có dữ
+  liệu. Kết quả `PRODUCTION_NOT_FOUND` (kỳ 8 chưa có sản lượng), bot phải xin
+  lỗi và hỏi lại kỳ khác, khách phải nói lại "Kỳ 7 năm 2026" mới ra kết quả —
+  tốn 1 vòng hỏi-đáp thừa.
+- **`rtc_u0_E95pYJPzz0rA86H4h2AeB`** (cùng kịch bản, khác cuộc gọi): model gọi
+  `get_bill({ma_danh_bo})` — KHÔNG kèm `ky`/`nam` — và hệ thống tự trả về kỳ
+  gần nhất có dữ liệu (kỳ 7/2026) ngay lần đầu, không cần hỏi lại.
+
+**Nguyên nhân**: description của `ky`/`nam` trong 4 tool (`get_bill`,
+`get_payment_status`, `get_water_usage`, `compare_usage`) chỉ ghi "tùy chọn",
+không nói rõ khi nào nên bỏ trống. Bản comment cũ trong file từng có câu "Nếu
+không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất" nhưng đã bị comment-out
+từ trước, không còn nằm trong description thật gửi cho model — model quay về
+hành vi mặc định là tự suy luận từ ngày hiện tại khi khách nói mơ hồ ("tháng
+này").
+
+**Fix**: viết lại description của `ky`/`nam` ở cả 4 tool trong
+`src/system-prompt.js`, nêu rõ: CHỈ điền khi khách nói RÕ tháng/kỳ cụ thể;
+khách nói mơ hồ ("tháng này", "gần đây", "hiện tại") hoặc không nói gì thì BỎ
+TRỐNG field, đừng tự suy ra từ ngày hiện tại — hệ thống tự trả về kỳ gần nhất
+có dữ liệu. Nhân tiện phát hiện và sửa luôn một lỗi gõ: khi sửa `compare_usage`
+đã lỡ xoá mất `required: ["ma_danh_bo"]`, đã thêm lại.
+
+59/59 test đạt (`node --check` + `npm test` xanh). Đây là quan sát chỉ từ 2
+cuộc gọi — cần thêm log thật để xác nhận model tuân theo hướng dẫn mới và
+không quay lại thói quen tự đoán kỳ.
+
+---
+
+## Fix 04/08/2026 (đợt 17) — compare_usage vẫn "Chưa có dữ liệu" dù get_bill đã sửa
+
+Log `rtc_u2_E963mRMGPfEe5EOma4Xx1` (cùng ngày, ngay sau đợt 16): đợt 16 đã có
+tác dụng đúng như kỳ vọng — `get_bill` gọi KHÔNG kèm `ky`/`nam` và trả về kỳ
+7/2026 (kỳ gần nhất có dữ liệu) ngay lần đầu, không cần hỏi lại. Nhưng ngay
+sau đó khách hỏi "sản lượng" (ASR nghe thành "Ăn lợn bao nhiêu em?"), model
+gọi `compare_usage({ma_danh_bo})` — cũng KHÔNG kèm `ky`/`nam`, đúng theo
+hướng dẫn mới — nhưng lại nhận về lỗi "Chưa có dữ liệu sản lượng cho kỳ
+8/2026", dù kỳ 7/2026 rõ ràng có dữ liệu (vừa tra `get_bill` thành công ngay
+trước đó). Khách quay sang xin gặp tổng đài viên và cuộc gọi được chuyển máy
+— một yêu cầu lẽ ra trả lời được ngay bị đẩy thành escalation.
+
+**Nguyên nhân**: đây là instance thứ hai của đúng lỗi đã sửa ở `fetchBilling`
+ngày 26/07 (`fix_danh_bo_...` — xem comment trong `fetchBilling`): backend
+`/so-sanh-tang-giam`, khi không được truyền `ky`/`nam`, tự mặc định lấy
+THEO NGÀY GỌI ĐIỆN HIỆN TẠI (8/2026) thay vì kỳ gần nhất có dữ liệu. Fix 26/07
+chỉ vá cho `fetchBilling` (dùng chung bởi `get_bill`/`get_payment_status`/
+`get_water_usage`) bằng cách thử lại với `prevPeriod()` khi không có kỳ và
+API báo not-found — nhưng `handleCompareUsage` gọi thẳng `getSoSanhTangGiam`
+riêng, không đi qua `fetchBilling`, nên không được hưởng fix đó.
+
+**Fix**: thêm đúng logic thử-lại-với-kỳ-liền-trước vào `handleCompareUsage`
+(`src/tools.js`) — khi không truyền `ky`/`nam` và lần gọi đầu `!r.success`,
+gọi lại `getSoSanhTangGiam` với `prevPeriod()`. Cùng pattern, không tạo
+helper mới.
+
+**Ghi nhận thêm**: nên rà lại toàn bộ 4 endpoint dùng `ky`/`nam` tùy chọn
+(`/tien-nuoc`, `/san-luong`, `/so-sanh-tang-giam`, và endpoint `get_outages`
+không dùng kỳ nên không liên quan) xem có endpoint nào khác cùng hành vi
+"mặc định theo ngày hiện tại" mà chưa có lớp thử-lại — hiện `fetchBilling`
+dùng chung cho 3/4 tool nên chỉ `compare_usage` bị lọt, nhưng nếu sau này
+thêm tool mới dùng `ky`/`nam` tùy chọn thì cần nhớ áp cùng pattern.
+
+59/59 test đạt. Cần xác nhận qua cuộc gọi thật tiếp theo hỏi "sản lượng"/"so
+sánh" mà không nói rõ kỳ.
+
+---
+
+## Fix 04/08/2026 (đợt 18) — response.done trùng lặp gọi tool 2 lần, vi phạm call_id
+
+Log `rtc_u1_E96OlQKSLxBoNCZ4pU8Dp`: hai sự kiện `response.done` liên tiếp cách
+nhau **38ms**, không có `response.created` mới nào chen giữa, mỗi sự kiện đều
+chứa MỘT `function_call` `get_bill({"ma_danh_bo":"123345247"})` — giống hệt
+nhau về tên tool, tham số, VÀ `call_id` (`call_dwmJekK0RnjldXP8`). Đây không
+phải log trùng do in 2 dòng — hai khối `==========[resolveDanhBo]===========`
+riêng biệt trong log xác nhận `dispatchTool` thực sự chạy 2 lần độc lập. Hậu
+quả 3 lớp:
+
+1. **Vi phạm bất biến đã ghi ở CLAUDE.md** — "Mỗi `call_id` phải gửi đúng MỘT
+   `function_call_output`": code gửi `conversation.item.create` với cùng
+   `call_id` hai lần liên tiếp.
+2. **Bộ đếm "model bịa số" bị cộng đúp cho MỘT sự kiện logic** — lần xử lý đầu
+   ghi nhận R1 (bịa số), lần xử lý thứ hai (38ms sau, cùng args) ghi nhận R4 và
+   NGAY LẬP TỨC kết luận "bịa số 2 lần → mời bấm phím DTMF" — leo thang lên
+   DTMF chỉ sau khi khách vừa bắt đầu đọc số thật (mới nghe 7/11 số), một trải
+   nghiệm tệ và không đúng bản chất (khách chưa hề bịa hay đọc sai 2 lần thật).
+3. Gọi `resolveDanhBo`/`fetchBilling` 2 lần cho cùng một tool call — lãng phí,
+   và nếu tool đó có side-effect (vd `create_ticket`) sẽ tạo dữ liệu trùng.
+
+**Nguyên nhân**: chưa xác định được OpenAI gửi trùng `response.done` cho CÙNG
+một response, hay có race ở tầng WebSocket/xử lý sự kiện của code khiến cùng
+một message được xử lý 2 lần — hiện tượng mới quan sát lần đầu, cần thêm log
+để khoanh vùng.
+
+**Fix (phòng thủ, không phụ thuộc xác định đúng nguyên nhân gốc)**: thêm
+`Set` `_processedToolCallIds` (khai báo cạnh `_toolCallState`, theo cuộc gọi)
+trong `src/session-ws.js`. Ngay đầu vòng lặp xử lý `function_call` trong
+`response.done`, nếu `call_id` đã có trong Set → bỏ qua hẳn (không chạy
+`dispatchTool`, không gửi `function_call_output`, chỉ log
+`tool_call_duplicate_ignored`); chưa có thì thêm vào Set rồi xử lý bình
+thường. An toàn với MỌI kịch bản có thể gây trùng (OpenAI gửi lặp, code xử lý
+lặp, hay retry ở tầng nào khác) vì `call_id` do OpenAI cấp vốn phải duy nhất
+cho mỗi lệnh gọi tool thật.
+
+59/59 test đạt. Chưa có test tự động mô phỏng được 2 `response.done` trùng
+`call_id` (giới hạn mock WebSocket) — cần theo dõi log
+`tool_call_duplicate_ignored` ở các cuộc gọi tiếp theo để biết tần suất hiện
+tượng gốc.
+
+---
+
+## Fix 04/08/2026 (đợt 19) — khoá im lặng vô thời hạn, khách cúp máy bực bội
+
+Bug **nghiêm trọng nhất** phát hiện được trong cả đợt rà soát này — có bằng
+chứng khách hàng thật sự cúp máy vì tức giận. Log `rtc_u0_E96ZWOOhKRYuhnpys7jYm`:
+
+1. Khách đọc số, hệ thống chốt đúng `22023247431`, bot hỏi xác nhận
+   ("...Quý Khách xác nhận giúp em có đúng không ạ?") lúc 17:22:45 — bot nói
+   đúng câu, `_expectedSpeak` đã cleared (xác nhận bot nói đúng).
+2. Sau đó khách nói LIÊN TIẾP 5 lượt trong 41 giây: "Xin chào quý khách."
+   (có thể ASR nghe nhầm ý định trả lời), "Đọc đi em.", "tôi", rồi bực bội
+   **"Trời ơi, cái thằng điên này nó làm cái gì vậy?"**, rồi "Dạ." — MỌI lượt
+   đều bị log `Giữ khoá — đang xác minh, bỏ qua lượt` — bot không nói bất cứ
+   điều gì, không đọc lại câu hỏi, không mở khoá cho model, hoàn toàn im lặng.
+3. 17:23:29 — WebSocket đóng (1006, abnormal) — khách cúp máy.
+
+**Nguyên nhân gốc**: nhánh "Giữ khoá — đang xác minh" (thêm từ đợt 8, 27/07)
+dùng điều kiện:
+```js
+_toolCallState._danhBoVerifyRunning || _expectedSpeak ||
+  danhBoSessionDigits(_toolCallState) >= 11
+```
+Mục đích BAN ĐẦU chỉ là bảo vệ một khoảng hẹp — từ lúc đủ 11 số tới lúc câu
+hỏi xác nhận được phát ra. Nhưng `danhBoSessionDigits(_toolCallState)` (số ký
+tự trong `_danhBoSession.digits` — phiên đọc HIỆN TẠI) **KHÔNG BAO GIỜ được
+reset khi chuyển từ "gom số" sang "chờ xác nhận"** — chỉ reset khi một phiên
+đọc MỚI được mở (`startDanhBoRequest`, xảy ra khi mời đọc lại hoặc khách đọc
+lại giữa chừng). Sau khi câu hỏi xác nhận đã hỏi xong, `_danhBoVerifyRunning`
+về false và `_expectedSpeak` đã cleared — nhưng vế thứ ba
+(`danhBoSessionDigits >= 11`) **vẫn mãi mãi đúng**, vì phiên đọc cũ (11 số)
+chưa từng bị xoá. Kết quả: MỌI lượt khách sau đó (trừ khi khớp đúng "đúng/sai"
+rõ ràng qua `_isAffirmative`/`_PHU_DINH_RE`, hoặc khớp regex "đọc lại") đều
+rơi vào nhánh này và bị bỏ qua hoàn toàn, VÔ THỜI HẠN — không có gì trong
+code từng thoát khỏi trạng thái này.
+
+**Fix** (`src/session-ws.js`):
+1. Thêm điều kiện `!_toolCallState.danhBo` vào nhánh "Giữ khoá" — một khi đã
+   có ứng viên danh bộ (nghĩa là đã CHUYỂN QUA giai đoạn chờ xác nhận), số đếm
+   `danhBoSessionDigits` của phiên gom số cũ coi như hết hiệu lực, không được
+   dùng làm lý do giữ khoá nữa. Chỉ `_danhBoVerifyRunning`/`_expectedSpeak`
+   (tín hiệu SỐNG, phản ánh đúng trạng thái hiện tại) mới còn được dùng.
+2. Thêm nhánh MỚI ngay sau đó: khi đã có ứng viên chưa xác nhận
+   (`_toolCallState.danhBo` tồn tại, `!confirmed`) và câu hỏi xác nhận đã có
+   sẵn (`_danhBoLastPrompt`), nhưng lượt khách không khớp đúng/sai/đọc lại số/
+   xin nhắc lại rõ ràng → **đọc LẠI câu hỏi xác nhận** bằng `_reAssertDanhBoStep`
+   (hàm có sẵn, cùng cơ chế dùng ở đợt 15/7), thay vì im lặng. Đồng thời tự
+   `_armDanhBoWatchdog()` lại — nếu vòng lặp "trả lời không rõ" kéo dài thật sự
+   90 giây không tiến triển, watchdog vẫn là lưới an toàn cuối leo thang DTMF.
+
+59/59 test đạt (`node --check` + `npm test` xanh; test unit sẵn có cho nhánh
+"Giữ khoá" dùng mock cục bộ không đụng tới `_toolCallState.danhBo` nên không
+bị ảnh hưởng, vẫn xanh). Chưa có test tự động cho nhánh MỚI (cùng giới hạn mock
+WebSocket) — cần xác nhận qua cuộc gọi thật: khách trả lời không rõ ràng sau
+khi đã được hỏi xác nhận mã danh bộ phải được bot hỏi lại, không im lặng.
+
+---
+
+## Ghi nhận thêm 05/08/2026 — không sửa, chỉ quan sát
+
+Log 2 cuộc gọi sáng 05/08 (`rtc_u2_E9LYHoo962HRmWphKGQj9`,
+`rtc_u2_E9La488vj8QS9IXfJ0AgT`): cả hai chốt danh bộ đúng, xác nhận đúng, tra
+cứu thành công — không thấy tái diễn bug đợt 19 (im lặng vô thời hạn) hay đợt
+15/17/23 (fallback kỳ, đọc lại trùng số). Xác nhận các fix đang hoạt động tốt.
+
+Một hiện tượng ĐÁNG NGHI NGỜ nhưng đã TỰ PHỤC HỒI, không cần sửa: cuộc
+`E9La488vj8QS9IXfJ0AgT` lúc 09:24:42 — code vừa yêu cầu bot nói câu
+`danh_bo_verify_filler` ("Dạ, em ghi nhận rồi ạ..."), nhưng audio transcript
+trả về lại là NGUYÊN VĂN câu `danh_bo_reread` đã nói TRƯỚC ĐÓ ~22 giây ("Dạ,
+em nghe được tám số..."). `_checkExpectedSpeak` (đợt 4/11) phát hiện lệch,
+tự động gửi lại đúng câu cần nói, cuộc gọi tiếp tục bình thường — khách không
+nghe thấy gì bất thường. Rất có thể đây là MỘT BIỂU HIỆN KHÁC của đúng race
+đã ghi ở đợt 18 (response.done/response trùng lặp hoặc đến trễ) — lần này lộ
+ra qua transcript giọng nói thay vì qua tool call. Không sửa gì thêm ở đợt
+này vì lưới an toàn sẵn có đã xử lý đúng; ghi lại làm bằng chứng thứ hai cho
+việc điều tra nguyên nhân gốc ở đợt 18 khi có đủ dữ liệu.
+
+Ngoài ra log có nhiều dòng `WARN [DB] ... ECONNREFUSED 127.0.0.1:3306` — MySQL
+cục bộ không chạy trong lúc test. Không phải lỗi code: mọi lỗi DB đã được
+try/catch + WARN (đúng thiết kế "lỗi DB không được làm sập cuộc gọi"), cuộc
+gọi vẫn chạy và tra cứu bình thường qua `TONGDAI_API_BASE` (khác DB nội bộ
+dùng để ghi log/giá). Chỉ cần khởi động lại MySQL nếu muốn log được ghi đầy đủ
+vào `voicebot_calllog`/`voicebot_toolcall`.
+
+---
+
+## Fix 05/08/2026 (đợt 20) — bỏ cuộc lần 2 sau DTMF, cuộc gọi im lặng tới khi khách cúp máy
+
+Log `rtc_u1_E9LkfCNs3Zs6eNiIHxbXb` — chuỗi sự kiện đầy đủ, một trong những
+case rõ ràng nhất về lỗi PHÁT ÂM TTS mang tính hệ thống:
+
+1. Trọng tài chốt đúng `22023247431`. Bot đọc lại xác nhận
+   ("Hai-Hai-Không-Hai-Ba-Hai-Bốn-**Bảy**-Bốn-Ba-Một") nhưng audio thực tế lại
+   RỚT MẤT đúng chữ "Bảy" — ra "Hai-Hai-Không-Hai-Ba-Hai-Bốn-Bốn-Ba-Một" (10
+   số, thiếu 1). `_checkExpectedSpeak` phát hiện lệch, gửi lại — bot đọc lần 2
+   RỚT LẠI ĐÚNG CHỮ ĐÓ (giống hệt lần 1) → cơ chế "lặp lại y hệt lỗi cũ" (đợt
+   8/31-07) bỏ cuộc SỚM, đúng thiết kế `_escalateDanhBoToDtmf` mời khách bấm
+   phím ngay. Đây là lần THỨ HAI ghi nhận model rớt một chữ số cụ thể một cách
+   NHẤT QUÁN trên chuỗi 3 số cạnh nhau có 2 số giống nhau kẹp 1 số khác giữa
+   (lần trước ở đợt 31/07 là "Bảy-Bảy-Bảy-Năm" bị THỪA; lần này "Bốn-Bảy-Bốn"
+   bị THIẾU) — càng củng cố đây là lỗi phát âm TTS của model, không phải
+   nhiễu ngẫu nhiên.
+2. Khách bấm đúng DTMF `22023247431` (khớp 100% với số đã chốt). Bot đọc lại
+   xác nhận số VỪA BẤM (tag `dtmf_danh_bo_confirm`) — và RỚT MẤT ĐÚNG CHỮ
+   "Bảy" LẦN NỮA, 2 lần liên tiếp (lần 3 và lần 4 tính từ đầu cuộc gọi) → cơ
+   chế "lặp lại y hệt" bỏ cuộc lần 2, gọi `_escalateDanhBoToDtmf` lần nữa.
+3. **Bug**: `_escalateDanhBoToDtmf` có guard `if (_toolCallState._danhBoDtmfInvited)
+   return;` — vì DTMF đã được mời ở bước 1, guard này chặn và hàm KHÔNG LÀM
+   GÌ CẢ. Không còn nhánh nào khác được gọi tiếp theo. Log dừng lại ở dòng
+   `response.done` rồi **17 giây im lặng tuyệt đối**, sau đó WebSocket đóng —
+   khách tự cúp máy.
+
+**Nguyên nhân**: `_escalateDanhBoToDtmf` chỉ có ĐÚNG MỘT lối thoát (mời bấm
+phím), không có phương án dự phòng cho trường hợp kênh DỰ PHÒNG (DTMF) cũng
+đã dùng rồi mà bot vẫn không đọc lại xác nhận được — một tình huống mà dữ
+liệu đã chắc chắn đúng (DTMF "chính xác tuyệt đối" theo tài liệu dự án) nhưng
+hệ thống (TTS) không hoàn thành được vòng xác nhận.
+
+**Fix** (`src/session-ws.js`, trong `_escalateDanhBoToDtmf`): khi guard
+`_danhBoDtmfInvited` chặn (nghĩa là đã hết cả 2 kênh tự động — giọng nói và
+DTMF), thay vì `return` im lặng, **chuyển máy cho tổng đài viên ngay**: đọc
+một câu xin lỗi ngắn không chứa chữ số (né hẳn lỗi phát âm đang gặp phải,
+`verify:false` vì cuộc sắp chuyển máy nên không cần đối chiếu), rồi gọi
+`_handleTransfer` (hàm dùng chung với nhánh `transfer_to_agent` của tool,
+đã có sẵn, xử lý refer + xoá cờ trùng lặp qua `_transferred`). Đúng tinh thần
+"Bot câm tệ hơn bot trả lời sai" đã ghi trong CLAUDE.md — không để khách ở
+trong im lặng vô thời hạn dù dữ liệu bên dưới đã hoàn toàn chính xác.
+
+59/59 test đạt (`node --check` + `npm test` xanh). Chưa có test tự động cho
+nhánh dead-end này (giới hạn mock WebSocket, cũng như đợt 19). Cần xác nhận
+qua cuộc gọi thật: nếu bot bỏ cuộc đọc xác nhận DTMF lần 2, cuộc gọi phải
+được chuyển máy có lời thông báo, không im lặng.
+
+**Ghi nhận thêm**: đây là lần THỨ HAI (31/07 và 05/08) quan sát model
+`gpt-realtime-2.1-mini` rớt/thừa một chữ số MỘT CÁCH NHẤT QUÁN khi đọc chuỗi
+3 chữ số có dạng "A-B-A" (hai số giống nhau kẹp một số khác). Nếu còn tái diễn,
+nên cân nhắc thêm bước "diễn giải khác cách đọc" (vd chèn khoảng ngắt rõ hơn
+giữa từng số, hoặc đọc theo cặp thay vì liền mạch 11 số) cho CHÍNH XÁC câu đọc
+lại xác nhận — hiện tại `_speakVerbatim` luôn dùng cùng một cách đọc
+("Hai - Hai - Không - ...") cho mọi mã, chưa thử biến thể nào khi phát hiện
+lỗi lặp lại.

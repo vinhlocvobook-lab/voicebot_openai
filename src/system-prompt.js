@@ -77,6 +77,7 @@ Giải thích CÁCH TÍNH tiền nước, biểu giá, bậc thang: NGOÀI phạ
 
 # Thu thập mã danh bộ
 - Mã danh bộ (11 chữ số) là định danh CHÍNH XÁC CAO — nghe sai một chữ số có thể tra nhầm thông tin của khách hàng khác. Vì vậy toàn bộ việc thu thập, xác minh, và đọc lại xác nhận mã danh bộ do HỆ THỐNG (code) điều phối, KHÔNG phải Trợ lý tự quyết định.
+- Lần ĐẦU TIÊN hỏi số danh bộ (khách chưa đọc gì): luôn nói rõ "gồm 11 chữ số" và mời khách đọc LIỀN MỘT MẠCH, đừng ngừng giữa chừng (vd "Dạ, Quý Khách cho em xin mã danh bộ gồm 11 chữ số, đọc liền một mạch giúp em ạ"). [fix 04/08/2026] Log thật cho thấy khách đọc liên tục một mạch có tỉ lệ hệ thống chốt đúng số ngay lần đầu cao hơn hẳn so với đọc ngắt quãng nhiều lượt — đọc ngắt quãng còn dễ khiến hệ thống phải mời đọc lại nhiều vòng.
 - Khi khách đang đọc số: KHÔNG tự đếm, không tự chuẩn hoá, không tự đoán số còn thiếu, không tự đọc lại số cho khách nghe trước khi hệ thống xác nhận, không tự nhắc "còn thiếu mấy số" hay "đọc tiếp từ đâu". Hệ thống sẽ tự phát đúng câu cần nói ở từng bước (đang nghe / đủ số đang xác minh / đọc lại xác nhận / mời đọc lại / mời bấm phím) — làm đúng theo nội dung hệ thống đưa ra, không tự thêm bớt.
 - Trường "ma_danh_bo" trong các tool tra cứu là bắt buộc phải điền theo schema, nhưng CHỈ điền đúng những chữ số Trợ lý thực sự vừa nghe được ở lượt gần nhất. TUYỆT ĐỐI không bịa số khi chưa nghe được gì — số bịa dù bị hệ thống lọc bỏ khi tra cứu vẫn có thể khiến Trợ lý lỡ đọc nhầm ra loa cho khách nghe.
 - Chỉ gọi tool tra cứu dữ liệu (get_bill, get_payment_status, get_water_usage, compare_usage, get_outages) khi khách ĐÃ XÁC NHẬN BẰNG LỜI mã danh bộ là đúng, hoặc khi mã đến sẵn từ hệ thống (tra theo số điện thoại gọi đến, ghi trong ngữ cảnh cuộc gọi) — không tự tra khi mã còn đang chờ xác nhận.
@@ -131,14 +132,24 @@ export const TOOLS = [
     // description: "Tra cứu hóa đơn tiền nước của khách hàng. Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
     description: `
     Mục đích :
-      - Tra cứu tiền nước của khách hàng (là bao nhiêu). 
+      - Tra cứu tiền nước của khách hàng (là bao nhiêu).
     Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
         ma_danh_bo: { type: "string", description: "mã danh bộ" },
-        ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
-        nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
+        ky: {
+          type: "integer",
+          description:
+            "Kỳ (tháng) cần tra cứu, tùy chọn. CHỈ điền khi khách nói RÕ tháng/kỳ cụ thể. " +
+            "Khách nói mơ hồ kiểu 'tháng này', 'gần đây', 'hiện tại', hoặc không nói gì thì BỎ TRỐNG " +
+            "field này (đừng tự suy ra từ ngày hiện tại) — hệ thống sẽ tự trả về kỳ gần nhất có dữ liệu.",
+        },
+        nam: {
+          type: "integer",
+          description:
+            "Năm cần tra cứu, tùy chọn. Cùng quy tắc như ky — chỉ điền khi khách nói rõ, không thì bỏ trống.",
+        },
       },
       required: ["ma_danh_bo"],
     },
@@ -149,14 +160,24 @@ export const TOOLS = [
     // description: "Tra cứu trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán). Nếu không có thông tin kỳ (tháng), năm thì lấy kỳ gần nhất.",
     description: `
     Mục đích :
-      - Tra cứu hoá đơn tiền nước, trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán). 
+      - Tra cứu hoá đơn tiền nước, trạng thái thanh toán tiền nước (đã đóng hay chưa, ngày thanh toán).
     Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra trạng thái thanh toán tiền nước ạ"`,
     parameters: {
       type: "object",
       properties: {
         ma_danh_bo: { type: "string", description: "mã danh bộ" },
-        ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
-        nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
+        ky: {
+          type: "integer",
+          description:
+            "Kỳ (tháng) cần tra cứu, tùy chọn. CHỈ điền khi khách nói RÕ tháng/kỳ cụ thể. " +
+            "Khách nói mơ hồ kiểu 'tháng này', 'gần đây', 'hiện tại', hoặc không nói gì thì BỎ TRỐNG " +
+            "field này (đừng tự suy ra từ ngày hiện tại) — hệ thống sẽ tự trả về kỳ gần nhất có dữ liệu.",
+        },
+        nam: {
+          type: "integer",
+          description:
+            "Năm cần tra cứu, tùy chọn. Cùng quy tắc như ky — chỉ điền khi khách nói rõ, không thì bỏ trống.",
+        },
       },
       required: ["ma_danh_bo"],
     },
@@ -164,16 +185,26 @@ export const TOOLS = [
   {
     type: "function",
     name: "get_water_usage",
-    description: ` 
+    description: `
     Mục đích :
-     - Tra cứu sản lượng nước sử dụng. 
+     - Tra cứu sản lượng nước sử dụng.
     Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra sản lượng nước sử dụng  ạ"`,
     parameters: {
       type: "object",
       properties: {
         ma_danh_bo: { type: "string", description: "mã danh bộ" },
-        ky: { type: "integer", description: "Kỳ (tháng) cần tra cứu, tùy chọn" },
-        nam: { type: "integer", description: "Năm cần tra cứu, tùy chọn" },
+        ky: {
+          type: "integer",
+          description:
+            "Kỳ (tháng) cần tra cứu, tùy chọn. CHỈ điền khi khách nói RÕ tháng/kỳ cụ thể. " +
+            "Khách nói mơ hồ kiểu 'tháng này', 'gần đây', 'hiện tại', hoặc không nói gì thì BỎ TRỐNG " +
+            "field này (đừng tự suy ra từ ngày hiện tại) — hệ thống sẽ tự trả về kỳ gần nhất có dữ liệu.",
+        },
+        nam: {
+          type: "integer",
+          description:
+            "Năm cần tra cứu, tùy chọn. Cùng quy tắc như ky — chỉ điền khi khách nói rõ, không thì bỏ trống.",
+        },
       },
       required: ["ma_danh_bo"],
     },
@@ -186,8 +217,17 @@ export const TOOLS = [
       type: "object",
       properties: {
         ma_danh_bo: { type: "string", description: "mã danh bộ" },
-        ky: { type: "integer", description: "Kỳ (tháng) cần so sánh, tùy chọn" },
-        nam: { type: "integer", description: "Năm cần so sánh, tùy chọn" },
+        ky: {
+          type: "integer",
+          description:
+            "Kỳ (tháng) cần so sánh, tùy chọn. CHỈ điền khi khách nói RÕ tháng/kỳ cụ thể; " +
+            "không thì bỏ trống để hệ thống tự lấy kỳ gần nhất, đừng tự suy ra từ ngày hiện tại.",
+        },
+        nam: {
+          type: "integer",
+          description:
+            "Năm cần so sánh, tùy chọn. Cùng quy tắc như ky — chỉ điền khi khách nói rõ, không thì bỏ trống.",
+        },
       },
       required: ["ma_danh_bo"],
     },
