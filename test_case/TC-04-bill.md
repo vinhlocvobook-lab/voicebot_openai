@@ -71,7 +71,9 @@
 
 **Kết quả mong muốn:**
 - AI **không** yêu cầu xác thực lại mã khách hàng
-- AI nhớ session và gọi `get_water_usage` ngay cho 12345678901
+- AI **không** gọi lại tool — sản lượng nước đã có sẵn trong kết quả `get_bill` ở
+  bước 2 (từ 05/08/2026, `get_bill` trả đủ tiền + trạng thái thanh toán + sản
+  lượng trong 1 lần gọi), chỉ cần đọc lại từ dữ liệu đã có
 - Kết quả hiển thị lượng nước tháng hiện tại
 
 **Kết quả thực tế:** _(ghi sau khi test)_

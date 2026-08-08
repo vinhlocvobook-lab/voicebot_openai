@@ -71,15 +71,15 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
   // KHÔNG ghi headers (đề phòng sau này có Authorization).
   const _t0 = Date.now();
   const _trace = {
-    time:           _traceNow(),
+    time: _traceNow(),
     method,
     url,                       // đã gồm query string
-    query:          query ?? null,
-    body:           body  ?? null,
-    http_status:    null,
-    duration_ms:    null,
+    query: query ?? null,
+    body: body ?? null,
+    http_status: null,
+    duration_ms: null,
     response_outer: null,      // response GỐC 2 lớp từ api.php (đã clip)
-    error_code:     null,
+    error_code: null,
   };
 
   try {
@@ -195,10 +195,10 @@ export async function getThongBaoCupNuoc(maDanhBo) {
 
 /**
  * Báo sự cố rò rỉ / áp lực nước.
- * POST /bao-su-co  body: { danhba, noidung }
+ * POST /bao-su-co  body: { danhba, noidung,tel }
  */
-export async function baoSuCo(maDanhBo, noiDung) {
-  return callApi("/bao-su-co", { method: "POST", body: { danhba: maDanhBo, noidung: noiDung } });
+export async function baoSuCo(maDanhBo, noiDung, tel) {
+  return callApi("/bao-su-co", { method: "POST", body: { danhba: maDanhBo, noidung: noiDung, tel: tel } });
 }
 /**
  * Tra cứu trạng thái thanh toán (superset: TongTien + SanLuong + TrangThaiThanhToan).
@@ -208,4 +208,10 @@ export async function baoSuCo(maDanhBo, noiDung) {
  */
 export async function getTrangThaiTT(maDanhBo, ky = null, nam = null) {
   return callApi("/trang-thai-thanh-toan", { query: { danhba: maDanhBo, ky, nam } });
+}
+
+
+
+export async function getAvailableAgents() {
+  return callApi("/available-agents");
 }

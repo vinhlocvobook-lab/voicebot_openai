@@ -43,9 +43,14 @@ Cần `.env` (xem `.env.example`); thiếu `OPENAI_API_KEY` server không chạy
 
 ### Function call (tools)
 
-Schema ở `system-prompt.js` (`TOOLS`), xử lý ở `tools.js` (13 tool):
+Schema ở `system-prompt.js` (`TOOLS`), xử lý ở `tools.js` (10 tool — [fix
+05/08/2026] `get_payment_status` và `get_water_usage` đã GỘP vào `get_bill`:
+cả 3 tool cũ gọi chung một API backend trả sẵn tiền + trạng thái thanh toán +
+sản lượng trong 1 lần gọi, tách riêng chỉ tốn thêm vòng gọi tool cho cùng một
+dữ liệu; `dispatchTool` vẫn giữ 2 tên cũ làm alias trỏ về `handleGetBill` để
+phòng thủ, nhưng schema `TOOLS` chỉ còn `get_bill`):
 
-Tool dữ liệu — `get_bill`, `get_payment_status`, `get_water_usage`,
+Tool dữ liệu — `get_bill` (trả đủ tiền, trạng thái thanh toán, sản lượng),
 `compare_usage`, `get_outages`, `create_ticket`, `get_procedure_info`,
 `check_missing_docs`: trả JSON cho AI đọc lại cho khách.
 

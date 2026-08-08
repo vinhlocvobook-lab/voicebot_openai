@@ -59,7 +59,7 @@ if (empty($path)) {
             'GET /so-sanh-tang-giam' => 'So sánh tăng giảm sản lượng. Params: danhba (req), ky (opt), nam (opt)',
             'GET /cup-nuoc' => 'Thông báo lịch cúp nước. Params: danhba (req)',
             'GET /thong-tin-khach-hang' => 'Lấy thông tin khách hàng. Params: danhba (opt), sdt (opt) - ít nhất 1 tham số',
-            'POST /bao-su-co' => 'Báo sự cố rò rỉ hoặc áp lực nước. Body JSON: danhba (req), noidung (req)'
+            'POST /bao-su-co' => 'Báo sự cố rò rỉ hoặc áp lực nước / ghi nhận lời nhắn. Body JSON: noidung (req), tel (opt), danhba (opt — không bắt buộc từ 07/08/2026)'
         ]
     ], 'No API endpoint specified. Please refer to available endpoints.', 400);
 }
@@ -172,12 +172,19 @@ switch ($path) {
 
         $danhba = isset($input['danhba']) ? trim($input['danhba']) : '';
         $noidung = isset($input['noidung']) ? trim($input['noidung']) : '';
+        // [cập nhật 07/08/2026] danhba KHÔNG còn bắt buộc — hỗ trợ lời nhắn
+        // không gắn mã danh bộ (vd khách gọi chỉ để nhờ liên hệ lại, chưa xác
+        // minh tài khoản). Thêm "tel" để backend biết SĐT liên hệ khi thiếu
+        // danhba. LƯU Ý: file này là bản THAM KHẢO trong repo Node — cần đối
+        // chiếu lại với gateway PHP thật đang chạy trên server để đảm bảo khớp
+        // (Node gọi qua TONGDAI_API_BASE, không chạy trực tiếp file này).
+        $tel = isset($input['tel']) ? trim($input['tel']) : '';
 
-        if (empty($danhba) || empty($noidung)) {
-            sendResponse(false, null, 'Parameters "danhba" and "noidung" are required in the POST body.', 400);
+        if (empty($noidung)) {
+            sendResponse(false, null, 'Parameter "noidung" is required in the POST body.', 400);
         }
 
-        $result = $client->baoSuCo($danhba, $noidung);
+        $result = $client->baoSuCo($danhba, $noidung, $tel);
         handleClientResult($result);
         break;
 

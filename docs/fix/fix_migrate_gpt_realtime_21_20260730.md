@@ -1334,3 +1334,562 @@ giữa từng số, hoặc đọc theo cặp thay vì liền mạch 11 số) cho
 lại xác nhận — hiện tại `_speakVerbatim` luôn dùng cùng một cách đọc
 ("Hai - Hai - Không - ...") cho mọi mã, chưa thử biến thể nào khi phát hiện
 lỗi lặp lại.
+
+---
+
+## Fix 05/08/2026 (đợt 21) — gộp get_bill / get_payment_status / get_water_usage thành 1 tool
+
+### Yêu cầu
+
+Chủ dự án phát hiện cả 3 tool đều gọi chung một API (`getTrangThaiTT` qua
+`fetchBilling`), và API này LUÔN trả về đủ cả 3 thông tin (tiền nước, trạng
+thái thanh toán, sản lượng nước) trong một lần gọi — nghĩa là việc tách 3 tool
+chỉ tách phần diễn đạt câu trả lời (`message`), không tách được dữ liệu, vì
+`data` (qua `simplifyRow`) vốn đã đầy đủ cả 3 trường ở cả 3 tool từ trước. Hệ
+quả quan sát được qua log thật (trước đợt này): khách hỏi "tiền nước" xong hỏi
+thêm "sản lượng dùng bao nhiêu" trong cùng cuộc gọi khiến model gọi tool THỨ
+HAI dù dữ liệu đã có sẵn từ lần gọi đầu — vòng round-trip thừa, có rủi ro nhỏ
+là dữ liệu 2 lần gọi lệch nhau nếu backend thay đổi giữa chừng.
+
+Chủ dự án chọn phương án **gộp hẳn còn 1 tool** (`get_bill`), xoá hẳn
+`get_payment_status`/`get_water_usage` khỏi schema — thay vì giữ cả 3 tên tool
+dùng chung 1 handler.
+
+### Đã sửa
+
+- **`src/tools.js`**: gộp `handleGetBill`/`handleGetWaterUsage`/
+  `handleGetPaymentStatus` thành một `handleGetBill` duy nhất, trả `message`
+  luôn có đủ cả 3 thông tin (tiền + trạng thái thanh toán + sản lượng) bất kể
+  khách hỏi khía cạnh nào. `dispatchTool`: `case "get_bill": case
+  "get_water_usage": case "get_payment_status":` cùng trỏ về `handleGetBill`
+  (alias phòng thủ — 2 tên cũ không còn cách nào được model gọi tới vì đã xoá
+  khỏi `TOOLS` schema, nhưng giữ lại làm lưới an toàn rẻ, không tốn gì thêm).
+- **`src/system-prompt.js`**: xoá 2 entry `get_payment_status`/`get_water_usage`
+  khỏi mảng `TOOLS`, chỉ còn 1 entry `get_bill` với description nêu rõ trả về
+  cả 3 thông tin. Cập nhật 3 chỗ liệt kê tên tool trong phần văn bản thường của
+  system prompt.
+- **`src/session-ws.js`**: bỏ `get_payment_status`/`get_water_usage` khỏi danh
+  sách tool gợi ý trong `_requestModelReply` (nhánh "khách đã xác nhận mã danh
+  bộ").
+- **`CLAUDE.md`**: cập nhật bảng 13 tool → còn 10 tool, sửa mô tả `get_bill`
+  nêu rõ trả về gộp cả 3 thông tin.
+- **`test_case/TC-04-bill.md`** (TC-04-04, tài liệu QA thủ công, không nằm
+  trong `npm test`): sửa kết quả mong muốn từ "gọi `get_water_usage`" (tên tool
+  không còn tồn tại) thành "không gọi lại tool — dữ liệu đã có sẵn từ
+  `get_bill` ở bước trước".
+- **`db/voicebot_toolcall.sql`**: có 1 comment DDL liệt kê tên tool minh hoạ
+  (`'get_bill, get_water_usage, create_ticket, end_call...'`) — CHỦ ĐÍCH KHÔNG
+  sửa, vì đây là text minh hoạ tự do trong comment cột (không phải enum/ràng
+  buộc), sửa schema DB sống rủi ro cao hơn lợi ích so với để nguyên.
+- **`test_case/danh_bo_verify_flow.test.mjs`**: KHÔNG sửa — vẫn gọi
+  `dispatchTool("get_water_usage", ...)`/`dispatchTool("get_payment_status",
+  ...)` ở vài chỗ để test hành vi `invalid_danh_bo`/`dang_gom_so`/`moi_bam_phim`
+  (các hành vi này nằm ở tầng `resolveDanhBo`/`fetchBilling`, phía trên lớp
+  message-formatting vừa gộp) — vẫn xanh nhờ alias trong `dispatchTool`.
+
+### Rủi ro & kiểm chứng
+
+Rủi ro thấp: cả 3 tool trước đây đã cùng gọi 1 API, cùng 1 shape dữ liệu qua
+`simplifyRow` — phần đổi thực chất chỉ là câu chữ `message` và bề mặt schema,
+không đổi logic tra cứu/xác thực danh bộ. `node --check` tất cả file đã sửa +
+`npm test` (59/59) xanh sau khi gộp `tools.js`; các test liên quan
+`get_water_usage`/`get_payment_status` vẫn pass qua route alias.
+
+**Cần theo dõi ở cuộc gọi thật**: xác nhận model không còn gọi tool 2 lần
+trong 1 cuộc khi khách hỏi nối tiếp nhiều khía cạnh (tiền / trạng thái / sản
+lượng) của cùng kỳ hoá đơn — đúng mục tiêu ban đầu của việc gộp.
+
+---
+
+## Fix 05/08/2026 (đợt 22) — verify câu xác nhận chỉ so số, bỏ sót câu hỏi
+
+### Phát hiện từ cuộc `rtc_u1_E9Ta33OZSQDxQb28eU2YB`
+
+Sau khi trọng tài chốt đúng `22023247431`, `_speakVerbatim` yêu cầu bot đọc
+nguyên văn: *"Dạ, em đọc lại mã danh bộ để Quý Khách kiểm tra: Hai - Hai -
+Không - ... - Một. **Quý Khách xác nhận giúp em có đúng không ạ?**"* Bot lại
+nói: *"Dạ, em đã nghe rõ mã danh bộ là hai - hai - ... - một. **Nếu Quý Khách
+muốn kiểm tra thêm thông tin như tiền nước, trạng thái thanh toán, hay sản
+lượng, em cũng sẽ hỗ trợ tiếp ạ.**"* — đọc ĐÚNG cả 11 số, nhưng THAY hẳn câu
+hỏi xác nhận bằng một câu mời hỗ trợ khác, không hề hỏi khách "đúng không".
+`_checkExpectedSpeak` KHÔNG bắt được lệch này (không có dòng "Bot nói KHÁC câu
+yêu cầu" trong log) — coi đây là khớp. Khách, không được hỏi gì, trả lời lạc
+đề "Định mức em." — nhánh "khách trả lời không rõ khi đang chờ xác nhận" (đợt
+19) phát hiện đúng và đọc lại câu hỏi, cứu được cuộc gọi, khách xác nhận đúng
+ở lượt sau.
+
+### Nguyên nhân
+
+`_speakCore(text)` ưu tiên lấy DÃY SỐ nếu câu có chứa số (`_extractDigitRuns`),
+bỏ qua toàn bộ phần chữ còn lại — thiết kế này đúng cho các câu chỉ có số (vd
+câu mời đọc lại), nhưng với `danh_bo_confirm`/`danh_bo_reassert`/
+`dtmf_danh_bo_confirm` — 3 tag LUÔN kết câu bằng câu hỏi xác nhận bắt buộc —
+`_spokenMatchesCore` chỉ so đúng dãy số, hoàn toàn không kiểm tra câu hỏi có
+còn hay không. Bot có thể đọc đúng số nhưng lược bỏ/thay câu hỏi mà verify vẫn
+báo "đọc đúng".
+
+### Đã sửa
+
+`session-ws.js`: thêm `_CAN_CAU_HOI_XAC_NHAN` (set 3 tag trên) và
+`_coCauHoiXacNhan(text)` (kiểm tra text có chứa "đúng không" qua `_normTxt`).
+Trong `_checkExpectedSpeak`, điều kiện "đã đọc đúng" giờ là: khớp số (như cũ)
+**VÀ** (tag không cần câu hỏi HOẶC câu bot vừa nói vẫn còn câu hỏi xác nhận).
+Thiếu câu hỏi → rơi xuống đúng nhánh retry/escalate đã có sẵn (gửi lại tối đa
+2 lần, bỏ cuộc sớm nếu lặp lỗi y hệt, leo thang DTMF) — không cần thêm control-
+flow mới, chỉ sửa điều kiện match.
+
+`node --check` + `npm test`: 59/59 xanh. Kiểm chứng thủ công bằng script tách
+biệt: câu bot lệch (đợt này) → phát hiện thiếu câu hỏi; câu bot đúng nguyên
+văn → vẫn coi là khớp bình thường (không gây false positive cho các cuộc đã
+xanh trước đó, vd cuộc `rtc_u1_E9TdWeEy8LsykL7OQFNOs` cùng ngày, đọc đúng
+nguyên văn ngay lần đầu ở cả `danh_bo_confirm` lẫn `danh_bo_reassert`).
+
+Cần theo dõi cuộc gọi thật tiếp theo: xác nhận không còn trường hợp bot đọc
+đúng số nhưng bỏ câu hỏi xác nhận mà lọt qua verify.
+
+---
+
+## Fix 05/08/2026 (đợt 23) — câu MỜI DTMF cũng bị đọc sai 3 lần, không escalate tiếp, khách cúp máy
+
+### Cuộc `rtc_u0_E9TxnYZlW5VqDTcPRsxrt` — chuỗi sự kiện
+
+1. Danh bộ chốt đúng `22023247431`. Bot đọc `danh_bo_confirm` đúng nguyên văn
+   lần đầu. Khách trả lời không rõ (transcript lạ: "Xin chào, tôi có thể giúp
+   gì được cho bạn?" — nghi ASR lẫn tạp âm) → hệ thống re-ask đúng thiết kế
+   (đợt 19), gửi `danh_bo_reassert`.
+2. Bot lạc đề LIÊN TỤC 3 lần cho `danh_bo_reassert` — không phải lỗi phát âm
+   số như các đợt trước, mà là bot bịa hẳn nội dung khác hoàn toàn ("em cảm ơn
+   Quý Khách đã xác nhận ạ, hiện tại em chưa thể tra cứu...", "nếu Quý Khách
+   cần hỗ trợ tiếp...", "không có gì ạ! Cảm ơn Quý Khách đã tin tưởng..."). Cả
+   3 lần đều KHÔNG chứa dãy số → `_checkExpectedSpeak` bắt đúng cả 3, bỏ cuộc
+   đúng thiết kế, gọi `_escalateDanhBoToDtmf` mời bấm phím (tag
+   `danh_bo_watchdog_dtmf`, `_danhBoDtmfInvited` được set `true`).
+3. Câu mời DTMF chính nó CŨNG bị bot đọc lạc đề 2 lần liên tiếp ("em cảm ơn
+   Quý Khách nha...", rồi tệ hơn: đọc lại NGUYÊN VĂN CÂU CHÀO ĐẦU CUỘC GỌI —
+   "Alo... Xin chào Quý Khách, cảm ơn Quý Khách đã gọi đến Tổng đài..."). Log
+   dừng ở lần gửi lại thứ 3 (`attempt 0`, `retries` đã lên 2) — WebSocket đóng
+   1006 ngay sau đó, khách cúp máy, không rõ kết quả lần thử thứ 3.
+
+### Nguyên nhân
+
+`_checkExpectedSpeak` giveup chỉ gọi `_escalateDanhBoToDtmf` cho 3 tag
+(`danh_bo_confirm`, `dtmf_danh_bo_confirm`, `danh_bo_reassert`) — tag
+`danh_bo_watchdog_dtmf` (chính câu mời bấm phím) KHÔNG nằm trong danh sách.
+Nghĩa là nếu bản thân câu mời DTMF cũng bị đọc sai 3 lần, hệ thống chỉ log
+"bỏ cuộc" rồi DỪNG HẲN — không còn nhánh nào xử lý tiếp, không chuyển máy,
+không phát thêm lời nào. Khách bị bỏ lại trong im lặng cho tới khi tự cúp máy
+— đúng lớp lỗi "bot câm tệ hơn bot trả lời sai" mà đợt 20 đã vá cho trường hợp
+đọc-lại-số-sau-DTMF, nhưng đợt đó chưa bao phủ trường hợp đọc-câu-mời-DTMF.
+
+### Đã sửa
+
+Thêm `"danh_bo_watchdog_dtmf"` vào whitelist tag gọi `_escalateDanhBoToDtmf`
+trong `_checkExpectedSpeak`. Vì `danhBoDtmfInviteResponse` (tools.js) đã set
+`_danhBoDtmfInvited = true` ngay từ lần mời DTMF đầu tiên (trước khi biết bot
+có đọc đúng hay không), gọi lại `_escalateDanhBoToDtmf` cho tag này sẽ tự rơi
+đúng vào guard đã có sẵn từ đợt 20 (`if (_toolCallState._danhBoDtmfInvited)`)
+→ chuyển máy tổng đài viên ngay, không cần thêm nhánh mới. Không đổi
+control-flow nào khác — chỉ mở rộng điều kiện gọi hàm đã có.
+
+`node --check` + `npm test`: 59/59 xanh. Chưa có test tự động cho nhánh này
+(giới hạn mock WebSocket, giống đợt 19/20). Cần xác nhận qua cuộc gọi thật:
+nếu bot lỡ đọc sai cả câu mời DTMF 3 lần, cuộc gọi phải được chuyển máy có lời
+thông báo, không còn treo tới khi khách tự cúp.
+
+### Ghi nhận thêm — mức độ "lạc trôi" tăng dần trong cuộc gọi này
+
+Đáng chú ý: cả 5 lần đọc sai trong cuộc này đều KHÔNG phải lỗi phát âm số
+(khác các đợt 15/20 trước) mà là bot bịa hẳn nội dung không liên quan, kể cả
+đọc lại nguyên văn câu chào mở đầu — mức độ "lạc trôi khỏi chỉ dẫn ép buộc"
+nặng hơn hẳn các cuộc quan sát trước đó (xem mục "Chưa làm / cần theo dõi
+tiếp" ở fix đợt 30/07 tối, đợt 2: "mức độ lạc trôi tăng theo số lượt nhiễu
+tích luỹ trong hội thoại"). Cuộc này có transcript đáng ngờ ở bước 1 (khách
+"nói" nguyên văn giống một câu mở đầu hội thoại điển hình) — nghi vấn nhiễu
+ASR/audio, nhưng chưa đủ dữ liệu để kết luận, chỉ ghi nhận theo dõi thêm.
+
+---
+
+## Fix 05/08/2026 (đợt 24) — chuẩn hoá câu hỏi kết thúc sau khi đọc kết quả tra cứu
+
+### Yêu cầu
+
+Chủ dự án phát hiện qua log thật (`rtc_u0_E9UIGYKREmQtQXPneS2pv`), sau khi đọc
+kết quả `get_bill`, bot tự improvise câu chốt: *"Nếu Quý Khách muốn, em có thể
+hỗ trợ kiểm tra thêm sản lượng so với kỳ trước, hoặc hỗ trợ tạo phiếu phản ánh
+nếu cần nhé."* — câu này tự liệt kê gợi ý nghiệp vụ cụ thể, không nhất quán
+giữa các cuộc gọi (mỗi lần model bịa một câu khác), có thể dẫn khách sang
+hướng không liên quan (vd gợi ý "tạo phiếu phản ánh" dù khách không hề than
+phiền gì). Yêu cầu đổi thành câu cố định, trung lập: *"Quý Khách có cần em hỗ
+trợ gì thêm không ạ?"*
+
+### Nguyên nhân
+
+Response sau `get_bill` được tạo bằng `response.create` với `instructions:
+"Phản hồi lại khách hàng dựa trên kết quả vừa nhận được."` — không đi qua
+`_speakVerbatim`, toàn bộ câu chữ (kể cả câu hỏi kết thúc) do model tự soạn.
+`system-prompt.js` mục "Độ dài câu trả lời" trước đây chỉ nói "không thêm
+nhận xét ngoài dữ liệu tool trả về" nhưng KHÔNG quy định câu hỏi kết thúc phải
+là gì — để trống cho model tự chọn, dẫn tới model tự "sáng tạo" gợi ý nghiệp
+vụ mỗi lần một kiểu.
+
+### Đã sửa
+
+`system-prompt.js`, dòng "Đọc kết quả tra cứu" trong mục "# Độ dài câu trả
+lời": thêm yêu cầu kết bằng đúng một câu cố định "Quý Khách có cần em hỗ trợ
+gì thêm không ạ?", cấm tự liệt kê gợi ý nghiệp vụ cụ thể. Đây là thay đổi câu
+chữ prompt thuần tuý — không đổi control-flow, rủi ro thấp.
+
+`node --check` + `npm test`: 59/59 xanh. Cần theo dõi cuộc gọi thật tiếp theo:
+xác nhận model dùng đúng câu cố định thay vì tự bịa gợi ý — vì đây là chỉ dẫn
+qua prompt (không có `_speakVerbatim` ép buộc như luồng danh bộ), model
+`gpt-realtime-2.1-mini` có thể vẫn lệch đôi lúc, cần quan sát thêm.
+
+**Kiểm chứng ở 2 cuộc gọi thật ngay sau đó (18:48, 18:50)**: câu cố định CHƯA
+áp dụng đúng — model vẫn tự bịa câu khác kiểu cũ ("Nếu Quý Khách cần thêm chi
+tiết hoặc muốn hỗ trợ gì khác, cứ nói em nhé, em giúp tiếp!", "...em có thể
+giúp kiểm tra thêm so sánh lượng nước với kỳ trước hoặc hướng dẫn các bước
+thanh toán luôn ạ."). Nghi nhiều khả năng server CHƯA được restart để áp dụng
+`system-prompt.js` mới ở 2 cuộc test này — cần xác nhận với chủ dự án. Nếu đã
+restart mà vẫn lệch, xác nhận đúng rủi ro đã cảnh báo: chỉ dẫn qua prompt
+không đủ mạnh với model này, cần cân nhắc ép chặt hơn (vd qua tầng code check
+tương tự `_checkExpectedSpeak`, dù việc này tốn thêm phức tạp cho một câu
+không quan trọng bằng danh bộ).
+
+---
+
+## Ghi nhận thêm 05/08/2026 (~19:04) — 3 quan sát chưa sửa, chỉ theo dõi
+
+Cuộc `rtc_u2_E9UeaR7yMERpJKi73LrVv`: mã danh bộ chốt đúng cuối cùng, không rò
+rỉ dữ liệu sai, mọi lưới an toàn hoạt động đúng thiết kế. Có 3 điểm đáng ghi
+nhận, CHƯA đủ cơ sở hoặc CHƯA đáng để sửa ngay:
+
+1. **Tái diễn "2 câu AI nói trong cùng 1 response"** (lần 2, sau lần ở
+   `rtc_u2_E9UORU64laBnvR2Eg6eFx` 18:48:32) — 19:05:14, bot phát liên tiếp 2
+   item khác câu chữ nhưng cùng ý ("cho em xin số danh bộ nhé" rồi ngay "em
+   cần mã danh bộ gồm 11 chữ số... đọc liền một mạch") trong đúng 1 response
+   (1 cặp response.created/response.done). Cả 2 lần đều xảy ra đúng lúc bot
+   LẦN ĐẦU hỏi mã danh bộ (semantic_vad, model tự trả lời tự do, không qua
+   `_speakVerbatim`) — nghi model tách "câu dẫn" (mục "# Câu dẫn trước khi xử
+   lý" trong prompt) và "nội dung chính" thành 2 item riêng thay vì gộp 1 câu.
+   Không gây sai dữ liệu, chỉ khiến bot nghe như lặp ý. Cần thêm dữ liệu trước
+   khi cân nhắc sửa (vd giới hạn preamble không áp dụng cho câu hỏi ngắn).
+2. **Prompt-echo chen ngang đúng lúc `_speakVerbatim` đang phát** (19:05:52) —
+   guard chống prompt-echo (`response_cancel_skipped echo item ... ≠ trigger
+   item null`) quyết định KHÔNG huỷ response đang phát (đúng thiết kế, để
+   tránh huỷ nhầm phản hồi thật), nhưng response đó (đang ép đọc nguyên văn
+   `danh_bo_reread`) bị lệch nội dung: bot buột "Hi bạn! Vì bạn vừa đọc xong mã
+   số..." — vi phạm quy tắc xưng hô ("bạn" thay "Quý Khách", chèn "Hi" tiếng
+   Anh). `_checkExpectedSpeak` bắt đúng, gửi lại lần 1, bot đọc đúng ngay sau
+   — khách nghe cả 2 câu liền nhau (hơi lạ tai) nhưng không ảnh hưởng dữ liệu.
+   Không sửa guard prompt-echo vì rủi ro ngược (huỷ nhầm phản hồi thật của
+   khách) lớn hơn lợi ích cho 1 lần quan sát.
+3. **Model giải thích hơi thiếu chính xác khi khách hỏi "tới đâu rồi"** trong
+   lúc đang chờ khách xác nhận bằng lời (19:08:24) — model tự trả lời (VAD đã
+   mở khoá về normal do watchdog VAD 90s không hoạt động) "mã danh bộ vẫn đang
+   được hệ thống xác nhận... chưa có trạng thái xác minh cuối cùng" — thực ra
+   hệ thống đang chờ CHÍNH KHÁCH trả lời đúng/sai, không phải xử lý nền. Sai
+   lệch nhỏ, không gây hại, không sửa.
+
+---
+
+## Fix 05/08/2026 (đợt 25) — câu hỏi kết thúc cố định (đợt 24) không đủ mạnh khi chỉ đặt trong system-prompt.js
+
+### Bằng chứng
+
+Sau khi sửa đợt 24 (thêm yêu cầu câu hỏi kết thúc cố định vào mục "# Độ dài
+câu trả lời" của `system-prompt.js`), chủ dự án xác nhận ĐÃ RESTART SERVER,
+nhưng **3 cuộc test thật liên tiếp sau đó** (`rtc_u2_E9UORU64laBnvR2Eg6eFx`
+18:49, `rtc_u1_E9UQdwjWtxY0FuSNBuVr3` 18:51, `rtc_u0_E9UoIeaEym4t0pyg3T2Rs`
+19:16) đều cho bot tự bịa câu khác kiểu cũ thay vì câu cố định "Quý Khách có
+cần em hỗ trợ gì thêm không ạ?" — ví dụ "Nếu Quý Khách muốn, em có thể giúp
+kiểm tra thêm so sánh lượng nước với kỳ trước hoặc hướng dẫn các bước thanh
+toán luôn ạ." Xác nhận đúng rủi ro đã cảnh báo ở đợt 24: chỉ dẫn nằm trong
+system-prompt.js bị loãng theo lịch sử hội thoại, không đủ mạnh với
+`gpt-realtime-2.1-mini`.
+
+### Đã sửa
+
+`session-ws.js`, nhánh tạo `_instructions` cho response sau khi tool dữ liệu
+(get_bill/compare_usage/get_outages — không có `doc_cho_khach`) trả kết quả:
+thêm yêu cầu câu hỏi kết thúc cố định NGAY TRONG `instructions` của
+`response.create`, thay vì chỉ dựa vào system-prompt.js. Áp dụng đúng nguyên
+tắc đã kiểm chứng nhiều lần trong file này (`_speakVerbatim`, nhánh "Đọc CHÍNH
+XÁC..." ở tool có `doc_cho_khach`): chỉ dẫn đặt trực tiếp trong `instructions`
+của từng response.create luôn được tuân thủ ổn định hơn hẳn so với chỉ dẫn
+chung trong system prompt. Không đổi control-flow, chỉ đổi câu chữ instructions
+— rủi ro thấp.
+
+`node --check` + `npm test`: 59/59 xanh. Cần xác nhận qua cuộc gọi thật tiếp
+theo: bot có dùng đúng câu cố định không. Nếu vẫn lệch dù đã đặt trong
+instructions trực tiếp, đây sẽ là tín hiệu mạnh cho thấy model không tuân thủ
+được cả với cơ chế đã chứng minh hiệu quả cho các trường hợp khác — cần xem
+lại toàn diện hơn (có thể do câu trả lời có nhiều nội dung — đọc số liệu +
+câu hỏi kết thúc — trong khi mọi trường hợp `_speakVerbatim`/`doc_cho_khach`
+thành công trước đây đều là câu NGẮN, GẦN NHƯ CỐ ĐỊNH HOÀN TOÀN, không có phần
+biến thiên theo dữ liệu).
+
+---
+
+## Fix 05/08/2026 (đợt 26) — bot im lặng tuyệt đối 2 lần liên tiếp ("ngáo") do xoá nhầm câu xác nhận hợp lệ
+
+### Phát hiện từ cuộc `rtc_u1_E9UumC5wzEbQaiWgbxwSu` (19:21–19:24) — chủ dự án báo "cuộc gọi này ngáo ngáo sao ấy"
+
+Chuỗi sự kiện: danh bộ chốt đúng `22023247431`, nhưng lần đọc lại xác nhận
+(`danh_bo_confirm`) bị lỗi phát âm TTS lặp số 2 lần liên tiếp y hệt nhau
+("...Bốn-**Bốn**-Bảy-Bốn-Ba-Một" — thừa một chữ "Bốn", cùng lớp lỗi đã ghi
+nhận ở đợt 15/20/23) → bỏ cuộc sớm đúng thiết kế, mời DTMF. Câu mời DTMF cũng
+bị model lạc đề ở lần đọc đầu, nhưng sửa đúng ở lần gửi lại. Tới đây mọi thứ
+vẫn đúng thiết kế — **vấn đề bắt đầu sau đó**:
+
+1. Khách hỏi "đồng hồ.", "Vậy sao rồi?" — model tự trả lời chung chung (VAD đã
+   mở khoá về normal sau khi mời DTMF).
+2. Khách hỏi **"Bao nhiêu tiền?"** — model tự gọi `get_bill` (đúng, vì khách
+   hỏi rõ). Tool tính đúng: `danhBo.confirmed` vẫn `false` (khách chưa từng
+   xác nhận bằng lời) → trả về `cho_khach_xac_nhan: true` kèm
+   `doc_cho_khach` là đúng câu hỏi xác nhận cần đọc lại cho khách. Nhánh
+   `_camGoiTool` (ép đọc nguyên văn) nhận kết quả này, hoãn 900ms rồi kiểm tra
+   lại có "lỗi thời" không trước khi phát — **và bị đánh giá NHẦM là lỗi thời**
+   vì `callState.danhBo` đã tồn tại (dù `confirmed:false`) → **bỏ qua hoàn
+   toàn, không phát âm thanh nào**. Khách nhận im lặng tuyệt đối.
+3. Khách hỏi lại lần nữa qua vài lượt lạc đề khác — model tự gọi `get_bill`
+   LẦN THỨ HAI, tool trả về **ĐÚNG Y HỆT** `cho_khach_xac_nhan`, và **BỊ BỎ
+   QUA LẦN THỨ HAI** vì cùng lý do. Khách im lặng tuyệt đối lần 2, cúp máy
+   ngay sau đó.
+
+### Nguyên nhân
+
+Biến `_daCoUngVien = !!_toolCallState.danhBo` (session-ws.js, nhánh
+`_camGoiTool`) được đưa vào điều kiện "lỗi thời" **UNCONDITIONALLY cho MỌI
+kết quả tool** đi qua nhánh này:
+```js
+const _loiThoi = _daCoUngVien
+  || (_kq.invalid_danh_bo && _soDaCo > 0)
+  || (_kq.dang_gom_so && _soDaCo >= 11);
+```
+Thiết kế gốc (đợt 7, 27/07) chỉ nhắm đúng MỘT race cụ thể: model gọi tool
+NGAY lúc câu trả lời còn là "xin mã danh bộ" (`dang_gom_so`/`invalid_danh_bo`)
+trong khi thực ra khách đã có ứng viên rồi — câu "xin mã danh bộ" đó mới thật
+sự lỗi thời. Nhưng `cho_khach_xac_nhan`/`da_sai_nhieu_lan` **CHÍNH LÀ VỀ ứng
+viên đang có** — có ứng viên (kể cả CHƯA xác nhận) không phải dấu hiệu lỗi
+thời ở hai trường hợp này, mà là điều kiện BÌNH THƯỜNG để nói câu xác nhận.
+Đặt `_daCoUngVien` làm điều kiện đứng riêng (áp dụng cho mọi `_kq`) là lỗi
+logic — nó vô tình nuốt luôn câu xác nhận hợp lệ mỗi khi có ứng viên tồn tại.
+
+### Đã sửa
+
+`session-ws.js`: thu hẹp `_daCoUngVien` chỉ còn tác dụng trong nhánh
+`dang_gom_so` (đúng phạm vi race gốc), bỏ khỏi vị trí đứng riêng:
+```js
+const _loiThoi =
+  (_kq.invalid_danh_bo && _soDaCo > 0)
+  || (_kq.dang_gom_so && (_soDaCo >= 11 || _daCoUngVien));
+```
+Đồng thời tăng cường log khi discard (thêm lý do cụ thể + nội dung câu bị bỏ)
+và thêm 1 dòng log khi câu tool KHÔNG bị coi là lỗi thời (sẽ phát) — theo yêu
+cầu của chủ dự án về việc có thêm thông tin debug cho các cuộc "ngáo" tương tự
+sau này.
+
+**Thêm log mới (theo yêu cầu bổ sung debug info)**: `response.done` trước đây
+`break` im lặng khi `output` rỗng (bot hoàn tất response mà KHÔNG nói gì,
+không gọi tool) — log không có gì khác biệt ngoài việc THIẾU hẳn dòng
+"[AI nói]", rất khó phát hiện khi đọc log thủ công (đúng tình huống xảy ra ở
+19:23:52–19:23:53 trong cuộc trên — 1 response hoàn tất không có output, dấu
+hiệu con của cùng vấn đề). Giờ log rõ WARN
+`response.done KHÔNG có output nào (bot không nói gì, không gọi tool)` +
+event `response_empty_output` mỗi khi việc này xảy ra.
+
+`node --check` + `npm test`: 59/59 xanh. Cần theo dõi cuộc gọi thật tiếp theo,
+đặc biệt các tình huống khách hỏi lại thông tin SAU KHI luồng confirm/DTMF đã
+từng thất bại — xác nhận không còn im lặng khi tool trả `cho_khach_xac_nhan`.
+
+---
+
+## Fix 05/08/2026 (đợt 27)
+
+Chủ dự án báo "có vài câu thoại thừa" kèm log cuộc `rtc_u0_E9V6kgXusmTSDgZJejLgs`
+(19:33:59–19:36:20). Soát log tìm ra 2 chỗ có lời nói thừa, cả hai đều là hệ quả
+phụ của các fix trước đó chưa cấm đủ chặt, không phải bug mới phát sinh.
+
+### 1. Câu hỏi kết thúc bị lặp đôi sau kết quả tra cứu
+
+Tại 19:35:56, sau `get_bill` thành công, bot nói:
+
+> "Dạ, em đã kiểm tra xong rồi ạ. Kỳ 7 năm 2026, sản lượng nước là 32 mét khối,
+> tổng tiền là 633 nghìn 139 đồng, hiện trạng là chưa thanh toán. **Quý Khách
+> muốn em đọc thêm phần nào nữa không ạ? Quý Khách có cần em hỗ trợ gì thêm
+> không ạ?**"
+
+Câu cố định của đợt 25 ("Quý Khách có cần em hỗ trợ gì thêm không ạ?") ĐÃ xuất
+hiện đúng — nghĩa là fix đợt 25 có tác dụng, khác hẳn 3 lần thất bại của đợt 24.
+Nhưng model GIỮ LUÔN câu hỏi tự bịa của nó ("Quý Khách muốn em đọc thêm phần nào
+nữa không ạ?") ngay trước đó, ra 2 câu hỏi liên tiếp — nghe thừa/lặp, đúng như
+mô tả "câu thoại thừa" của chủ dự án. Chỉ dẫn đợt 25 chỉ cấm "liệt kê gợi ý
+nghiệp vụ cụ thể" (vd "em có thể hỗ trợ kiểm tra thêm..."), chưa cấm việc thêm
+MỘT CÂU HỎI KHÁC (không phải liệt kê gợi ý) trước/sau câu cố định — đây là dạng
+model chưa từng bị chặn.
+
+**Sửa** (`session-ws.js`, khối `_instructions` sau tool tra cứu không có
+`doc_cho_khach`): thêm cấm rõ ràng "không tự thêm bất kỳ câu hỏi nào khác
+trước hay sau câu này", nêu ví dụ cụ thể đúng câu model vừa bịa để model có
+mẫu tránh:
+
+```js
+: "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được. " +
+"Kết thúc bằng ĐÚNG MỘT câu hỏi duy nhất, không hơn không kém: " +
+"\"Quý Khách có cần em hỗ trợ gì thêm không ạ?\" " +
+"— không tự liệt kê gợi ý nghiệp vụ cụ thể nào khác (vd không nói " +
+"\"em có thể hỗ trợ kiểm tra thêm...\", \"hoặc tạo phiếu phản ánh nếu cần\"), " +
+"và TUYỆT ĐỐI không tự thêm bất kỳ câu hỏi nào khác trước hay sau câu " +
+"này (vd không nói thêm \"Quý Khách muốn em đọc thêm phần nào nữa " +
+"không ạ?\") — toàn bộ phản hồi chỉ được kết thúc bằng đúng một câu hỏi.";
+```
+
+### 2. Câu dẫn thừa trước khi gọi tool tra cứu
+
+Tại 19:35:53 (ngay sau khi khách nói "Đúng rồi" xác nhận danh bộ), bot nói
+"Chốt xong rồi, cho em xem thử thông tin tài khoản của Quý Khách nhé." rồi mới
+gọi `get_bill`. Đây là tra cứu tức thời (thông tin đã đủ, tool phản hồi nhanh)
+— theo đúng định nghĩa mục "# Câu dẫn" trong `system-prompt.js` thì KHÔNG cần
+nói gì trước, gọi tool rồi đọc kết quả luôn. Chỉ dẫn `_requestModelReply` gửi
+ở bước này chỉ cấm hỏi lại/đọc lại số, chưa cấm câu dẫn.
+
+**Sửa** (`session-ws.js`, nhánh `khách đã xác nhận mã danh bộ` khi
+`!_DANHBO_CONFIRM_TOOL`): thêm "KHÔNG nói câu dẫn nào trước (đây là tra cứu
+tức thời, không cần thông báo trước khi gọi tool)" vào instructions.
+
+### Mức độ ưu tiên & rủi ro
+
+Cả hai đều là lời nói THỪA (không sai dữ liệu, không làm hỏng luồng), mức độ
+nhẹ hơn nhiều so với đợt 26 (im lặng hoàn toàn). Sửa bằng cách siết thêm câu
+chữ trong `instructions` đã có sẵn (không đổi luồng, không đổi state) nên rủi
+ro thấp.
+
+Cùng cuộc gọi này còn 2 quan sát KHÔNG sửa (đã cân nhắc, quyết định để nguyên):
+
+- 19:34:21: bot hiểu sai hoàn toàn ý khách (khách hỏi tiền nước tháng này,
+  bot trả lời về "tạm ngưng cung cấp nước / tắt nước") — tự sửa đúng ở lượt
+  kế tiếp khi khách nói lại. Đây là lỗi nghe/hiểu một lần (ASR + free-form
+  response), không có guard sẵn có để thêm mà không tăng rủi ro chặn nhầm các
+  câu hỏi hợp lệ khác.
+- Một lượt `danh_bo_confirm` bị đọc lệch rồi retry thành công — đúng pattern
+  đã biết và đã có `_checkExpectedSpeak` xử lý từ đợt 22, không cần sửa thêm.
+
+`node --check src/session-ws.js` + `npm test`: 59/59 xanh. Cần theo dõi cuộc
+gọi thật tiếp theo sau khi restart để xác nhận câu hỏi kết thúc không còn bị
+lặp đôi và không còn câu dẫn thừa trước tra cứu tức thời.
+
+---
+
+## Fix 05/08/2026 (đợt 28) — race condition thật giữa câu chờ và câu xác nhận
+
+Chủ dự án nghi ngờ "lỗi chạy đua" ở cuộc `rtc_u2_E9VIg2a3Rt4vSKwsgKc39`
+(19:46:18–19:47:37). Soát log timestamp-theo-mili-giây xác nhận: **đúng là
+race condition thật**, không phải suy diễn.
+
+### Diễn biến (đã dựng lại từ log)
+
+1. `19:46:54.184` — khách đọc đủ 11/11 số. Code gọi `_speakVerbatim(filler,
+   "danh_bo_verify_filler", 0, {verify:true})` để lấp khoảng lặng, RỒI MỚI
+   `await verifyDanhBoFromSession(...)` (gọi trọng tài gpt-5.1, mất ~4.7s).
+2. `19:46:58.180` — bot đọc SAI câu chờ ("Em đã nhận được mã danh bộ...") →
+   `_checkExpectedSpeak` tự lên lịch gửi lại sau 600ms — vòng lặp RIÊNG, độc
+   lập với luồng `await` phía trên.
+3. `19:47:00.442` — trọng tài chốt xong `22023247431`. Luồng `await` (vẫn đang
+   chạy tiếp từ bước 1) gọi `_speakVerbatim(confirmText, "danh_bo_confirm", 0,
+   {verify:true})`. Lúc này response của filler retry vẫn đang phát
+   (`_responseActive`) → confirm bị xếp hàng, tự hẹn gửi lại sau 1200ms.
+4. Từ đây, **HAI vòng lặp retry độc lập cùng gọi `_speakVerbatim`, cùng
+   tranh nhau một biến `_expectedSpeak` dùng chung** — vòng của filler (đã
+   xong nhiệm vụ về mặt logic, chỉ còn "lỡ" retry vì bot đọc sai) và vòng của
+   confirm (mới, thật sự cần nói). Không có cơ chế nào đánh dấu "vòng nào mới
+   là ý định hiện tại".
+5. `19:47:04.139` — một retry MỒ CÔI của filler (lên lịch từ bước 2, đã lỗi
+   thời từ lâu) bắn ra, thấy response đang rảnh (confirm vừa nói ĐÚNG xong ở
+   `03.394`) nên **gửi luôn**, ghi đè `_expectedSpeak` về câu chờ đã hết tác
+   dụng — đúng ngay lúc lẽ ra phải lắng nghe khách trả lời "đúng"/"sai".
+6. Bot tiếp tục tự sửa câu chờ vô nghĩa vài vòng nữa (`04.139`→`07.700`),
+   không còn gắn với trạng thái thật của cuộc gọi. Sau `07.701` — im lặng
+   hoàn toàn 27 giây, `WebSocket đóng: 1006` (khách tự cúp máy).
+
+### Sửa (`session-ws.js`)
+
+Gắn mỗi Ý ĐỊNH nói (không phải mỗi LẦN gọi hàm) một số thế hệ `gen` tăng dần:
+
+```js
+let _verbatimGenSeq = 0;
+let _activeVerbatimGen = 0;
+
+const _speakVerbatim = (text, tag, attempt = 0, opts = {}) => {
+  ...
+  if (opts.verify) {
+    if (opts.gen === undefined) {
+      // Lượt gọi TƯƠI → luôn là ý định mới nhất, chiếm quyền hoạt động ngay.
+      opts.gen = ++_verbatimGenSeq;
+      _activeVerbatimGen = opts.gen;
+    } else if (opts.gen !== _activeVerbatimGen) {
+      // Retry mồ côi — ý định khác đã chiếm chỗ. Huỷ, không gửi, không lên lịch lại.
+      return;
+    }
+  }
+  if (_responseActive || _verbatimSending) { ... }
+  ...
+};
+```
+
+`_expectedSpeak` giữ lại `gen` khi gán; `_checkExpectedSpeak`'s retry (nhánh
+"nói sai, gửi lại 600ms") gửi kèm `gen: exp.gen` thay vì tạo `opts` rỗng mới.
+Nhánh "đang bận, đợi 1200ms" trong `_speakVerbatim` tự động mang gen đi tiếp
+vì dùng lại đúng object `opts`.
+
+Mọi lời gọi "tươi" (9 chỗ trong file: chào lại, filler, confirm, reread,
+DTMF invite, spam fallback, dtmf confirm...) đều truyền `{verify:true}` không
+kèm `gen` → luôn được coi là ý định mới nhất, không bị chặn bởi cơ chế này.
+Chỉ hai đường RETRY nội bộ (đã liệt kê) mang gen cũ, và giờ tự huỷ đúng lúc
+nếu đã lỗi thời — khớp chính xác kịch bản đã xảy ra ở bước 5 phía trên.
+
+`node --check src/session-ws.js` + `npm test`: 59/59 xanh (4 file `.test.mjs`
+qua hết, `danh_bo_verify_flow.test.mjs` không in dòng "Kết quả: N test đạt"
+riêng nhưng vẫn `pass 1 / fail 0`). Cần theo dõi cuộc gọi thật tiếp theo, đặc
+biệt kịch bản khách đọc đủ số RỒI trọng tài mất thời gian xử lý — xác nhận
+không còn retry mồ côi của câu chờ xen vào giai đoạn xác nhận.
+
+---
+
+## Fix 05/08/2026 (đợt 29) — cuộc test đầu tiên sau đợt 27+28: xác nhận + 1 lỗi nhỏ còn sót
+
+Cuộc `rtc_u1_E9VXRWAY6Kpz9kQIZGAiO` (20:01:35–20:03:15) là cuộc test thật đầu
+tiên sau khi deploy đợt 27+28. Kết quả tổng thể: **sạch, không còn 2 lỗi
+nặng nhất trước đó**:
+
+- Filler chờ + câu xác nhận danh bộ đều đọc ĐÚNG ngay lần đầu, không có retry
+  mồ côi nào xen vào (đợt 28 xác nhận hoạt động).
+- Sau `get_bill`, bot chỉ hỏi ĐÚNG MỘT câu kết thúc ("Quý Khách cần em hỗ trợ
+  gì thêm không ạ?") — không còn lặp đôi (đợt 27 xác nhận hoạt động).
+- `response.done` không có output cho lượt cuối (chỉ có function_call
+  `end_call`, không audio) không bị coi là lỗi — đúng thiết kế, có
+  `goodbye_forced` xử lý.
+
+Còn sót lại **đúng 1 điểm** đợt 27 đã cố sửa nhưng chưa triệt để: tại
+`20:02:36.804`, ngay sau khi khách xác nhận danh bộ, model vẫn nói câu dẫn
+"Được rồi, em sẽ tra cứu rồi đọc phần Quý Khách cần nghe ạ." trước khi gọi
+`get_bill` — dù chỉ dẫn đợt 27 đã có câu "KHÔNG nói câu dẫn nào trước". Đây là
+free-form response (`_requestModelReply`, không phải `_speakVerbatim` ép đọc
+nguyên văn) nên độ tuân thủ yếu hơn — đúng nguyên tắc đã ghi nhận nhiều lần
+trong file này.
+
+**Sửa**: áp đúng kỹ thuật đã hiệu quả ở đợt 27 cho vụ câu hỏi kết thúc — thêm
+NGUYÊN VĂN câu sai model vừa nói làm ví dụ cấm cụ thể, thay vì chỉ cấm chung
+chung:
+
+```js
+"... KHÔNG nói câu dẫn nào trước (đây là tra cứu tức thời, không cần thông " +
+"báo trước khi gọi tool) — vd KHÔNG nói \"Được rồi, em sẽ tra cứu rồi đọc " +
+"phần Quý Khách cần nghe ạ.\" hay bất kỳ câu tương tự nào khác, chỉ gọi tool " +
+"ngay, im lặng cho tới khi có kết quả để đọc. ..."
+```
+
+Mức độ ưu tiên: thấp — câu dẫn không sai dữ liệu, không phá luồng, chỉ hơi dư
+lời. `node --check src/session-ws.js` + `npm test`: 59/59 xanh. Cần theo dõi
+cuộc gọi thật tiếp theo có tình huống tương tự (khách vừa xác nhận danh bộ) để
+xem ví dụ cấm cụ thể có đủ hiệu quả không — nếu vẫn tái diễn, cân nhắc đổi
+sang cơ chế ép mạnh hơn (tương tự `_speakVerbatim`) dù nội dung đọc là động.

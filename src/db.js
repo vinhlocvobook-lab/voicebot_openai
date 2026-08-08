@@ -416,14 +416,17 @@ function _genTicketCode() {
 }
 
 /**
- * Ghi 1 phiếu ticket nội bộ mỗi khi tool create_ticket chạy (dù remote thành công
- * hay thất bại — đây chính là mục đích lưu nội bộ để đối soát).
+ * Ghi 1 phiếu ticket nội bộ mỗi khi tool create_ticket (hoặc [fix 07/08/2026]
+ * leave_callback_message — session-ws.js tự map args của nó sang cùng hình
+ * dạng bên dưới trước khi gọi) chạy, dù remote thành công hay thất bại — đây
+ * chính là mục đích lưu nội bộ để đối soát.
  * Link voicebot_calllog_id qua subselect theo voicebot_callid (dòng stub đã có sẵn).
  *
  * @param {object} p
  * @param {string}  p.callId       - OpenAI call ID
  * @param {string} [p.customerTel] - SĐT khách
- * @param {object}  p.args         - args của create_ticket { ma_danh_bo, loai, mo_ta }
+ * @param {object}  p.args         - { ma_danh_bo, loai, mo_ta } — ma_danh_bo có thể
+ *   rỗng/null với leave_callback_message (không bắt buộc)
  * @param {object}  p.output       - kết quả tool (đã parse) { success, message, data }
  */
 export async function insertTicket(p = {}) {

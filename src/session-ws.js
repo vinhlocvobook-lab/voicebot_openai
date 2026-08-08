@@ -23,11 +23,13 @@ import {
   // [migrate 30/07/2026 — DANH_BO_MODE=confirm_tool] mở lại "cửa sổ" cho phép
   // confirm_danh_bo báo trạng thái mới mỗi khi có một lượt khách THẬT.
   noteDanhBoConfirmNewTurn,
+
 } from "./tools.js";
 import { runWithApiTrace } from "./api-trace.js";
 import { log } from "./logger.js";
 import { ConversationLogger } from "./conversation-logger.js";
 import { insertCallStub, insertTicket } from "./db.js";
+import { getAvailableAgents } from "./api.js";
 // import { TOOLS } from "./system-prompt.js";
 
 const OPENAI_WS_URL = "wss://api.openai.com/v1/realtime";
@@ -121,7 +123,16 @@ export function openSessionWebSocket(callId, callOps) {
   // knownDanhBo: danh bộ hệ thống tra được theo SĐT — resolveDanhBo tin ngay,
   // không ép vòng xác nhận confirm_danh_bo (fix cuộc E2uhVdS9X4mVBoXs0uYMP).
   // _logger: cho tools.js ghi event (vd kết quả trọng tài danh bộ) vào timeline.
-  const _toolCallState = { knownDanhBo: callOps.knownDanhBo || [], _logger: logger };
+  // callerPhone: [fix 05/08/2026] SĐT THẬT của người gọi — KHÁC
+  // `callOps.asteriskData.phoneNumber` (trường đó đang hardcode '0967777637' cho
+  // mục đích test, xem server.js hàm extractAsteriskHeaders). Dùng cho
+  // leave_callback_message (tools.js) — ghi nhận lời nhắn khi không có tổng đài
+  // viên rảnh, không đi qua resolveDanhBo nên không cần mã danh bộ.
+  const _toolCallState = {
+    knownDanhBo: callOps.knownDanhBo || [],
+    _logger: logger,
+    callerPhone: callOps.asteriskData?.phoneNumber_real || callOps.tel || null,
+  };
 
   // [fix 04/08/2026] Cuộc rtc_u1_E96OlQKSLxBoNCZ4pU8Dp: hai `response.done`
   // liên tiếp (38ms) cùng chứa MỘT function_call `get_bill` giống hệt nhau
@@ -290,6 +301,19 @@ export function openSessionWebSocket(callId, callOps) {
     return _normTxt(spoken).includes(core);
   };
 
+  // [fix 05/08/2026 đợt 22] Cuộc rtc_u1_E9Ta33OZSQDxQb28eU2YB: câu xác nhận danh
+  // bộ luôn có dạng "...đọc lại mã danh bộ ... Bốn - Ba - Một. Quý Khách xác
+  // nhận giúp em có đúng không ạ?" — vì `_speakCore` ưu tiên chỉ lấy dãy số khi
+  // text có số, `_spokenMatchesCore` CHỈ so đúng phần số, bỏ qua hẳn câu hỏi xác
+  // nhận. Bot đọc đúng 11 số nhưng THAY hẳn câu hỏi bằng một câu mời hỗ trợ khác
+  // ("Nếu Quý Khách muốn kiểm tra thêm...") vẫn được tính là "khớp" — khách
+  // không hề được hỏi xác nhận, trả lời lạc đề ("Định mức em."). Nhánh "khách
+  // trả lời không rõ khi đang chờ xác nhận" (đợt 19) tự cứu được cuộc gọi lần
+  // này, nhưng gốc rễ (verify không kiểm câu hỏi) vẫn còn. Với các tag BẮT BUỘC
+  // có câu hỏi xác nhận, số đúng thôi CHƯA ĐỦ — câu hỏi phải còn nguyên.
+  const _CAN_CAU_HOI_XAC_NHAN = new Set(["danh_bo_confirm", "danh_bo_reassert", "dtmf_danh_bo_confirm"]);
+  const _coCauHoiXacNhan = (text) => _normTxt(text).includes("đúngkhông");
+
   // [fix 30/07/2026 — cuộc rtc_u1_E7DdCo6xvc1ydygN5r0Ez] Race giữa HAI cơ chế gọi
   // lại độc lập của _speakVerbatim: (1) tự chờ `_responseActive` rảnh rồi gửi
   // (nhánh attempt+1 bên dưới), và (2) `_checkExpectedSpeak` phát hiện bot nói
@@ -307,6 +331,38 @@ export function openSessionWebSocket(callId, callOps) {
   let _verbatimSending = false;
   let _verbatimSendingTimer = null;
 
+  // [fix 05/08/2026 đợt 28] Cuộc rtc_u2_E9VIg2a3Rt4vSKwsgKc39 (19:46:49–19:47:35):
+  // câu chờ "danh_bo_verify_filler" (gửi lúc khách vừa đọc đủ 11 số, TRƯỚC khi
+  // đợi trọng tài gpt-5.1 ~4.7s) và câu "danh_bo_confirm" (gửi NGAY sau khi
+  // trọng tài chốt xong) là HAI lượt _speakVerbatim ĐỘC LẬP, chạy gần như cùng
+  // lúc — filler còn đang tự retry (bot đọc sai câu chờ liên tục) trong khi
+  // confirm đã sẵn sàng gửi. Cả hai đều chỉ gate qua `_responseActive`/
+  // `_verbatimSending` (dùng chung, đúng chỗ) NHƯNG mỗi lượt retry (cả nhánh
+  // "đang bận, đợi 1200ms rồi thử lại" ở dưới lẫn nhánh "nói sai, gửi lại 600ms"
+  // trong `_checkExpectedSpeak`) đều là MỘT `setTimeout` giữ nguyên text/tag CŨ
+  // qua closure — không biết luồng đã đi tiếp sang câu KHÁC (confirm) hay chưa.
+  // Kết quả thật: sau khi confirm đã gửi và bot đọc ĐÚNG câu xác nhận (03.394),
+  // một retry MỒ CÔI của filler (lên lịch từ trước, tag đã lỗi thời) vẫn bắn ra
+  // ở 04.139, thấy response đang rảnh nên GỬI LUÔN, ghi đè `_expectedSpeak` về
+  // câu chờ đã xong nhiệm vụ — đúng lúc lẽ ra phải lắng nghe khách trả lời câu
+  // hỏi xác nhận. Từ đó bot cứ lặp lại việc tự sửa câu chờ vô nghĩa, không còn
+  // gắn với trạng thái thật của cuộc gọi, tới khi khách im lặng 27s rồi rớt máy
+  // (WebSocket đóng 1006 — dấu hiệu khách tự cúp vì chờ quá lâu không có phản hồi
+  // đúng nghĩa). Đây đúng là "chạy đua" (race) chủ dự án nghi ngờ: hai lượt gọi
+  // `_speakVerbatim` cho HAI Ý ĐỊNH khác nhau (chờ / xác nhận) giành nhau đúng
+  // một biến `_expectedSpeak` dùng chung, không có cách nào phân biệt "lượt gọi
+  // lại này còn ý nghĩa hay đã lỗi thời".
+  //
+  // Sửa: gắn mỗi Ý ĐỊNH nói (không phải mỗi LẦN gọi hàm) một số thế hệ tăng dần
+  // `gen`. Lượt gọi MỚI (không mang sẵn `gen` trong opts — luôn đúng với mọi
+  // lời gọi "tươi" từ nơi khác trong file) luôn được coi là ý định mới nhất,
+  // cấp `gen` mới và chiếm quyền "đang hoạt động". Lượt RETRY (mang theo `gen`
+  // cũ qua closure/opts) trước khi làm bất cứ gì phải so `gen` của mình với
+  // `gen` đang hoạt động — lệch thì coi là mồ côi, tự huỷ ngay, không gửi và
+  // không tự lên lịch lại nữa.
+  let _verbatimGenSeq = 0;
+  let _activeVerbatimGen = 0;
+
   const _speakVerbatim = (text, tag, attempt = 0, opts = {}) => {
     log.info("[_speakVerbatim]:text ", text);
     log.info("[_speakVerbatim]:tag ", tag);
@@ -315,6 +371,24 @@ export function openSessionWebSocket(callId, callOps) {
 
     if (_hungUp || _transferred) return;
     if (ws.readyState !== WebSocket.OPEN) return; // cuộc gọi đã kết thúc
+
+    if (opts.verify) {
+      if (opts.gen === undefined) {
+        // Lượt gọi TƯƠI (không phải retry mang gen cũ) → luôn là ý định mới
+        // nhất, chiếm quyền hoạt động ngay (kể cả khi phải xếp hàng chờ vì bận
+        // — xem nhánh busy bên dưới, opts đã có gen nên các lần rescheduled
+        // của CHÍNH nó vẫn hợp lệ).
+        opts.gen = ++_verbatimGenSeq;
+        _activeVerbatimGen = opts.gen;
+      } else if (opts.gen !== _activeVerbatimGen) {
+        // Retry mồ côi — một ý định KHÁC (gen mới hơn) đã chiếm chỗ từ khi lượt
+        // này được lên lịch. Huỷ hẳn, không gửi, không tự lên lịch lại nữa.
+        log.warn(`[WS][${callId}] _speakVerbatim(${tag}) đã lỗi thời (gen ${opts.gen} ≠ ${_activeVerbatimGen} đang hoạt động) → bỏ, không gửi.`);
+        logger.addEvent("speak_verbatim_stale_skip", `${tag} gen=${opts.gen} activeGen=${_activeVerbatimGen}`);
+        return;
+      }
+    }
+
     if (_responseActive || _verbatimSending) {
       if (attempt < 8) setTimeout(() => _speakVerbatim(text, tag, attempt + 1, opts), 1200);
       else logger.addEvent("speak_verbatim_dropped", `${tag} — response active quá lâu`);
@@ -381,6 +455,9 @@ export function openSessionWebSocket(callId, callOps) {
           text, tag, core: _speakCore(text), at: Date.now(),
           retries: _tiepTucCungTag ? (_expectedSpeak.retries || 0) : 0,
           lastSpokenCore: _tiepTucCungTag ? _expectedSpeak.lastSpokenCore : undefined,
+          // [fix 05/08/2026 đợt 28] Giữ lại gen để `_checkExpectedSpeak` gửi kèm
+          // khi tự lên lịch gọi lại — xem giải thích ở khai báo `_verbatimGenSeq`.
+          gen: opts.gen,
         };
       }
     } catch (e) {
@@ -610,8 +687,11 @@ export function openSessionWebSocket(callId, callOps) {
     // Quá hạn (câu đã trôi qua vài lượt) → thôi theo dõi.
     if (Date.now() - exp.at > 20000) { _expectedSpeak = null; return; }
 
-    if (_spokenMatchesCore(spoken, exp.core)) {
-      _expectedSpeak = null; // bot đã đọc đúng
+    // [fix 05/08/2026 đợt 22] Số đúng thôi chưa đủ với tag cần câu hỏi xác nhận —
+    // xem chú thích ở khai báo `_CAN_CAU_HOI_XAC_NHAN` phía trên.
+    const _canHoi = _CAN_CAU_HOI_XAC_NHAN.has(exp.tag) && _coCauHoiXacNhan(exp.text);
+    if (_spokenMatchesCore(spoken, exp.core) && (!_canHoi || _coCauHoiXacNhan(spoken))) {
+      _expectedSpeak = null; // bot đã đọc đúng (giữ đủ câu hỏi xác nhận nếu tag cần)
       return;
     }
 
@@ -635,8 +715,20 @@ export function openSessionWebSocket(callId, callOps) {
       _expectedSpeak = null;
       // Chỉ leo thang DTMF khi bỏ cuộc đúng ở bước đọc lại xác nhận mã danh bộ —
       // các câu ép đọc khác (chào, tạm biệt, chờ...) không liên quan tới DTMF.
+      // [fix 05/08/2026 đợt 23] Cuộc rtc_u0_E9TxnYZlW5VqDTcPRsxrt: sau khi
+      // "danh_bo_reassert" bỏ cuộc, `_escalateDanhBoToDtmf` mời bấm phím (tag
+      // "danh_bo_watchdog_dtmf") — nhưng CHÍNH câu mời đó cũng bị model đọc lạc
+      // đề liên tục (chào lại từ đầu, cảm ơn chung chung...), 2 lần gửi lại đều
+      // sai, khách cúp máy trước khi biết kết quả lần 3. Trước đây tag này
+      // KHÔNG nằm trong whitelist gọi `_escalateDanhBoToDtmf`, nên khi chính câu
+      // mời DTMF cũng đọc sai 3 lần, không escalate tiếp — cuộc gọi treo tới khi
+      // khách tự cúp, không hề chuyển máy. Vì `danhBoDtmfInviteResponse` đã set
+      // `_danhBoDtmfInvited=true` ngay từ lần mời đầu, gọi lại
+      // `_escalateDanhBoToDtmf` cho tag này sẽ tự rơi vào guard đợt 20 (chuyển
+      // máy tổng đài viên) thay vì mời DTMF lần nữa — đúng tinh thần "cả 2 kênh
+      // tự động đã thất bại thì chuyển máy" đã áp dụng cho các tag khác.
       if (exp.tag === "danh_bo_confirm" || exp.tag === "dtmf_danh_bo_confirm" ||
-        exp.tag === "danh_bo_reassert") {
+        exp.tag === "danh_bo_reassert" || exp.tag === "danh_bo_watchdog_dtmf") {
         _escalateDanhBoToDtmf(_lyDoGiveup);
       }
       return;
@@ -646,7 +738,10 @@ export function openSessionWebSocket(callId, callOps) {
     logger.addEvent("speak_verbatim_mismatch", `${exp.tag} — bot nói "${spoken.slice(0, 60)}", gửi lại lần ${exp.retries}`);
     log.warn(`[WS][${callId}] Bot nói KHÁC câu yêu cầu (${exp.tag}) → gửi lại lần ${exp.retries}.`);
     const { text, tag } = exp;
-    setTimeout(() => _speakVerbatim(text, tag, 0, { verify: true }), 600);
+    // [fix 05/08/2026 đợt 28] Gửi kèm gen cũ — nếu một Ý ĐỊNH nói KHÁC đã chiếm
+    // quyền hoạt động trong lúc chờ 600ms này, `_speakVerbatim` sẽ tự nhận ra
+    // mồ côi và bỏ, không gửi đè lên câu đang thật sự cần nói.
+    setTimeout(() => _speakVerbatim(text, tag, 0, { verify: true, gen: exp.gen }), 600);
   };
 
   // ── [2.4 — 26/07/2026] Phát hiện bot ĐỌC SỐ LẠ ra loa ─────────────────────
@@ -1010,7 +1105,7 @@ export function openSessionWebSocket(callId, callOps) {
     // [fix 08/07/2026 đợt 7] Siết chặt hơn — cuộc gọi DzLM04 model diễn giải
     // lại thành "Chào anh/chị..." (sai persona). Câu chào chuẩn cũng đã được
     // thêm vào SYSTEM_PROMPT (section Phong cách) làm lớp dự phòng.
-    const greetingInstruction = 'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: " Alo! Alo! Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ?"';
+    const greetingInstruction = 'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: " Alo! Alo! Xin chào Quý Khách, Cảm ơn Quý Khách đã gọi đến Tổng đài Công ty Cổ phần Cấp nước Trung An. Em là Trợ lý Ảo Ây Ai, Quý khách cần em hỗ trợ gì ạ? Nếu Quý Khách muốn gặp trực tiếp tổng đài viên thì nói em chuyển máy cho tổng đài viên nhé!"';
 
     setTimeout(() => {
       _pendingCodeResponse = true; // [fix 18/07/2026] đánh dấu response do code tạo
@@ -1096,7 +1191,16 @@ export function openSessionWebSocket(callId, callOps) {
         }
 
         const output = event?.response?.output;
-        if (!Array.isArray(output) || output.length === 0) break;
+        if (!Array.isArray(output) || output.length === 0) {
+          // [fix 05/08/2026 đợt 26] Trước đây break im lặng — response hoàn
+          // tất mà KHÔNG có output nào (bot không nói gì, không gọi tool) là
+          // dấu hiệu "im lặng bí ẩn" khó phát hiện khi đọc log (không có dòng
+          // nào khác biệt so với response bình thường ngoài việc thiếu hẳn
+          // dòng "[AI nói]"). Log rõ ràng ra để debug các cuộc "ngáo" sau này.
+          log.warn(`[WS][${callId}] response.done KHÔNG có output nào (bot không nói gì, không gọi tool) — status=${_respStatus}`);
+          logger.addEvent("response_empty_output", `status=${_respStatus}`);
+          break;
+        }
 
         // [fix 27/07/2026] Một response.done có thể chứa NHIỀU function_call.
         // Gom kết quả tool cuối cùng, chỉ tạo ĐÚNG MỘT response sau vòng lặp.
@@ -1124,7 +1228,22 @@ export function openSessionWebSocket(callId, callOps) {
           log.info(`[WS][${callId}] Tool call: ${name}(${argsStr})`);
 
           let args = {};
-          try { args = JSON.parse(argsStr); } catch { /* ignore */ }
+          try { args = JSON.parse(argsStr); } catch (e) {
+            // [fix 07/08/2026] Cuộc rtc_u7_EABQDU5tpimk6LbvxKJrg: model
+            // (leave_callback_message) trả `arguments` KHÔNG PHẢI JSON hợp lệ —
+            // lẫn cả một đoạn văn bản tiếng Anh giống "chain of thought" bị rò rỉ
+            // ("It's created? tool returned?...") và một khối khoảng trắng khổng
+            // lồ, thay vì dừng ở dấu `}` đóng JSON. Trước đây lỗi này bị NUỐT ÂM
+            // THẦM (falls back args={}), rất khó phát hiện nếu không đọc log thô
+            // từng dòng như lần này. Bot vẫn gọi tool với args rỗng → tool báo
+            // thiếu tham số → model TỰ gọi lại với args sạch ở lượt sau (tự phục
+            // hồi, không cần code can thiệp) — nhưng nếu tool có tham số bắt buộc
+            // mà thiếu validate rõ ràng, lỗi có thể trôi qua âm thầm hơn. Ghi WARN
+            // + event để các cuộc glitch tương tự sau này dễ phát hiện qua log,
+            // không cần đọc thủ công từng dòng.
+            log.warn(`[WS][${callId}] arguments của "${name}" KHÔNG PHẢI JSON hợp lệ (${e.message}) — dùng args rỗng. Raw (200 ký tự đầu): ${String(argsStr).slice(0, 200)}`);
+            logger.addEvent("tool_args_parse_error", `${name}: ${e.message} — raw_len=${String(argsStr).length}`);
+          }
 
           // Gọi handler trong context trace API (gom request/response backend
           // phát sinh trong tool call này) và gửi kết quả tool về cho OpenAI.
@@ -1145,11 +1264,20 @@ export function openSessionWebSocket(callId, callOps) {
 
           // Lưu phiếu ticket nội bộ mỗi khi tạo phiếu (đối soát với remote).
           // Fire-and-forget, lỗi DB không ảnh hưởng luồng cuộc gọi.
-          if (name === "create_ticket") {
+          // [fix 07/08/2026] leave_callback_message xử lý GIỐNG create_ticket ở
+          // bước lưu local (theo yêu cầu chủ dự án) — args của nó không có
+          // `loai`/`mo_ta` (chỉ `noi_dung` + `ma_danh_bo` không bắt buộc) nên map
+          // sang đúng field insertTicket() đang đọc; customerTel dùng SĐT THẬT
+          // của người gọi (_toolCallState.callerPhone) thay vì số hardcode test.
+          if (name === "create_ticket" || name === "leave_callback_message") {
             insertTicket({
               callId,
-              customerTel: callOps.asteriskData?.phoneNumber ?? callOps.tel,
-              args,
+              customerTel: name === "leave_callback_message"
+                ? (_toolCallState.callerPhone || callOps.asteriskData?.phoneNumber || callOps.tel)
+                : (callOps.asteriskData?.phoneNumber ?? callOps.tel),
+              args: name === "leave_callback_message"
+                ? { ma_danh_bo: args.ma_danh_bo, loai: "loi_nhan_goi_lai", mo_ta: args.noi_dung }
+                : args,
               output: result,
             });
           }
@@ -1216,9 +1344,36 @@ export function openSessionWebSocket(callId, callOps) {
             // Tương tự: không gửi response.create (model đã thông báo chuyển máy)
             logger.setOutcome("transferred");
             logger.addEvent("transfer_to_agent", result.ly_do || null);
+            // [fix 05/08/2026] Cùng lỗ hổng với `end_call` trước khi có
+            // `_hasGoodbyeAudio` (cuộc E2tY3rg44dIiQOsBGYFsi): nếu model gọi
+            // transfer_to_agent mà KHÔNG nói câu thông báo nào trong CHÍNH response
+            // chứa function_call này (response chỉ có function_call, không có audio),
+            // khách sẽ bị chuyển máy trong im lặng, không biết chuyện gì đang xảy ra.
+            // Giờ getAvailableAgents (tools.js) thêm một vòng gọi API trước khi tool
+            // trả lời, model càng dễ chỉ gọi tool mà không kèm lời nói. Kiểm tra +
+            // tự phát câu thông báo (dùng đúng "message" tool đã trả) nếu thiếu,
+            // giống hệt cơ chế `goodbye_forced` của end_call.
+            const _hasTransferAudio = output.some((it) =>
+              it?.type === "message" &&
+              Array.isArray(it.content) &&
+              it.content.some((c) => c?.type === "output_audio"));
+            let _transferDelayMs = 2000;
+            if (!_hasTransferAudio) {
+              const _transferInstruction =
+                'Đọc CHÍNH XÁC từng từ câu sau, không thêm bớt, không diễn giải lại: "' +
+                (result.message || "Dạ, em xin phép chuyển máy cho tổng đài viên hỗ trợ Quý Khách ngay ạ.") + '"';
+              _pendingCodeResponse = true;
+              ws.send(JSON.stringify({
+                type: "response.create",
+                response: { instructions: _transferInstruction },
+              }));
+              logger.addEvent("transfer_announce_forced", "transfer_to_agent không kèm audio — code tự tạo câu thông báo");
+              log.info(`[WS][${callId}]:`, "transfer_announce_forced", "transfer_to_agent không kèm audio — code tự tạo câu thông báo");
+              _transferDelayMs = 5000; // câu thông báo cần thời gian nói xong trước khi refer
+            }
             if (!_transferred) {
               _transferred = true;
-              await _handleTransfer(callId, callOps, result.ly_do);
+              await _handleTransfer(callId, callOps, result.ly_do, _transferDelayMs);
             } else {
               logger.addEvent("transfer_duplicate_ignored", null);
             }
@@ -1301,7 +1456,33 @@ export function openSessionWebSocket(callId, callOps) {
             : _kq?.doc_cho_khach
               ? "Đọc CHÍNH XÁC từng từ đoạn sau cho khách, không thêm bớt, " +
               "không tóm tắt, không diễn giải lại: \"" + _kq.doc_cho_khach + "\""
-              : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được.";
+              // [fix 05/08/2026 đợt 25] Chỉ dẫn "câu hỏi kết thúc cố định" trong
+              // system-prompt.js (đợt 24) KHÔNG đủ mạnh — 3 cuộc test thật liên
+              // tiếp SAU KHI đã restart server vẫn cho bot tự bịa câu gợi ý khác
+              // (vd "em có thể giúp kiểm tra thêm so sánh lượng nước với kỳ
+              // trước hoặc hướng dẫn các bước thanh toán luôn ạ" — đúng kiểu câu
+              // muốn loại bỏ). Toàn bộ chỉ dẫn ép đọc nguyên văn khác trong file
+              // này (`_speakVerbatim`, nhánh "Đọc CHÍNH XÁC..." ở trên) đều đặt
+              // NGAY TRONG `instructions` của response.create — và đều tuân thủ
+              // ổn định hơn hẳn so với chỉ dẫn nằm trong system-prompt.js (bị
+              // loãng dần theo lịch sử hội thoại). Áp dụng cùng nguyên tắc: đưa
+              // yêu cầu câu hỏi kết thúc cố định vào ngay đây thay vì chỉ dựa
+              // vào system-prompt.js.
+              // [fix 05/08/2026 đợt 27] Cuộc rtc_u0_E9V6kgXusmTSDgZJejLgs (19:35:56):
+              // câu hỏi cố định ĐÃ xuất hiện đúng (đợt 25 có tác dụng), nhưng model
+              // GIỮ LUÔN câu hỏi tự bịa của nó ngay trước đó, ra 2 câu hỏi liên tiếp
+              // ("Quý Khách muốn em đọc thêm phần nào nữa không ạ? Quý Khách có cần
+              // em hỗ trợ gì thêm không ạ?") — nghe thừa/lặp. Chỉ dẫn cũ mới cấm
+              // "liệt kê gợi ý nghiệp vụ cụ thể", chưa cấm việc thêm CÂU HỎI khác
+              // (không phải liệt kê gợi ý) trước/sau câu cố định. Thêm cấm rõ ràng.
+              : "Phản hồi lại khách hàng dựa trên kết quả vừa nhận được. " +
+              "Kết thúc bằng ĐÚNG MỘT câu hỏi duy nhất, không hơn không kém: " +
+              "\"Quý Khách có cần em hỗ trợ gì thêm không ạ?\" " +
+              "— không tự liệt kê gợi ý nghiệp vụ cụ thể nào khác (vd không nói " +
+              "\"em có thể hỗ trợ kiểm tra thêm...\", \"hoặc tạo phiếu phản ánh nếu cần\"), " +
+              "và TUYỆT ĐỐI không tự thêm bất kỳ câu hỏi nào khác trước hay sau câu " +
+              "này (vd không nói thêm \"Quý Khách muốn em đọc thêm phần nào nữa " +
+              "không ạ?\") — toàn bộ phản hồi chỉ được kết thúc bằng đúng một câu hỏi.";
 
           // [fix 27/07/2026] Câu thoại CỐ ĐỊNH của luồng danh bộ → CẤM model gọi
           // tool trong response này. Cùng cuộc gọi trên: response do code tạo để
@@ -1348,15 +1529,35 @@ export function openSessionWebSocket(callId, callOps) {
             setTimeout(() => {
               const _soDaCo = danhBoSessionDigits(_toolCallState);
               const _daCoUngVien = !!_toolCallState.danhBo;
-              const _loiThoi = _daCoUngVien
-                || (_kq.invalid_danh_bo && _soDaCo > 0)
-                || (_kq.dang_gom_so && _soDaCo >= 11);
+              // [fix 05/08/2026 đợt 26] Cuộc rtc_u1_E9UumC5wzEbQaiWgbxwSu (19:23):
+              // sau khi flow confirm/DTMF trước đó thất bại (TTS lặp số + model
+              // lạc đề), khách hỏi lại "Bao nhiêu tiền?" 2 LẦN LIÊN TIẾP ở VAD
+              // normal; model tự gọi get_bill cả 2 lần, tool ĐÚNG khi trả về
+              // cho_khach_xac_nhan (vì danhBo.confirmed vẫn false) kèm câu hỏi
+              // xác nhận — nhưng bị nhánh này bỏ qua CẢ HAI LẦN vì `_daCoUngVien`
+              // áp dụng UNCONDITIONALLY cho MỌI kết quả tool, khiến khách nhận
+              // im lặng tuyệt đối 2 lượt liền rồi cúp máy. Gốc rễ: `_daCoUngVien`
+              // (đợt 7, 27/07) chỉ nhắm đúng 1 race cụ thể — model gọi tool NGAY
+              // lúc câu trả lời còn là "xin mã danh bộ" (dang_gom_so) trong khi
+              // thực ra khách đã có ứng viên rồi, nên câu "xin mã danh bộ" đó lỗi
+              // thời. Nhưng `cho_khach_xac_nhan`/`da_sai_nhieu_lan` CHÍNH LÀ về
+              // ứng viên đang có — có ứng viên (kể cả CHƯA xác nhận) không phải
+              // dấu hiệu lỗi thời ở đây, mà là điều kiện BÌNH THƯỜNG để nói câu
+              // xác nhận. Thu hẹp `_daCoUngVien` chỉ áp dụng cho nhánh
+              // `dang_gom_so` (đúng phạm vi race gốc), không áp dụng chung nữa.
+              const _loiThoi =
+                (_kq.invalid_danh_bo && _soDaCo > 0)
+                || (_kq.dang_gom_so && (_soDaCo >= 11 || _daCoUngVien));
               if (_loiThoi) {
+                const _lyDo = _kq.invalid_danh_bo
+                  ? `invalid_danh_bo nhưng đã nghe ${_soDaCo} số kể từ đó`
+                  : `dang_gom_so nhưng đã đủ ${_soDaCo} số hoặc đã có ứng viên (${_toolCallState.danhBo?.value || "-"}, confirmed=${!!_toolCallState.danhBo?.confirmed})`;
                 logger.addEvent("tool_prompt_bo_qua",
-                  `${_tenTool}: câu đã lỗi thời (đã nghe ${_soDaCo}/11, ứng viên=${_daCoUngVien})`);
-                log.info(`[WS][${callId}] Bỏ câu tool đã lỗi thời — khách đã đọc ${_soDaCo}/11 số.`);
+                  `${_tenTool}: câu đã lỗi thời (đã nghe ${_soDaCo}/11, ứng viên=${_daCoUngVien}) — ${_lyDo}. Câu bị bỏ: "${(_kq.doc_cho_khach || "").slice(0, 100)}"`);
+                log.info(`[WS][${callId}] Bỏ câu tool đã lỗi thời — khách đã đọc ${_soDaCo}/11 số. Lý do: ${_lyDo}. Câu bị bỏ: "${(_kq.doc_cho_khach || "").slice(0, 100)}"`);
                 return;
               }
+              log.debug(`[WS][${callId}] Câu tool KHÔNG lỗi thời, sẽ phát: kq_keys=${Object.keys(_kq || {}).join(",")}, đã nghe=${_soDaCo}/11, ứng viên=${_daCoUngVien}`);
               _guiCauTool();
             }, Number(process.env.DANH_BO_TOOL_PROMPT_DELAY_MS || 900));
           } else {
@@ -1643,9 +1844,25 @@ export function openSessionWebSocket(callId, callOps) {
             if (_DANHBO_CONFIRM_TOOL) {
               _openDanhBoConfirmTurn("khach_da_xac_nhan");
             } else {
+              // [fix 05/08/2026 đợt 27] Cuộc rtc_u0_E9V6kgXusmTSDgZJejLgs (19:35:53):
+              // model nói câu dẫn "Chốt xong rồi, cho em xem thử thông tin tài khoản
+              // của Quý Khách nhé." trước khi gọi tool — thừa, vì đây là tra cứu tức
+              // thời (tool phản hồi nhanh) theo đúng định nghĩa "# Câu dẫn" trong
+              // system-prompt.js (không cần nói gì trước). Chỉ dẫn cũ chỉ cấm hỏi
+              // lại/đọc lại số, chưa cấm câu dẫn — thêm cấm rõ ràng.
+              // [fix 05/08/2026 đợt 29] Cuộc rtc_u1_E9VXRWAY6Kpz9kQIZGAiO (20:02:36):
+              // dù đã có chỉ dẫn "KHÔNG nói câu dẫn nào trước" của đợt 27, model vẫn
+              // nói "Được rồi, em sẽ tra cứu rồi đọc phần Quý Khách cần nghe ạ." trước
+              // khi gọi tool — chỉ dẫn chung chung chưa đủ mạnh với chỉ dẫn free-form
+              // (khác `_speakVerbatim` ép đọc nguyên văn). Theo đúng cách đã hiệu quả
+              // ở đợt 27 (thêm ví dụ câu SAI cụ thể model vừa nói ra), thêm luôn câu
+              // này làm ví dụ cấm.
               _requestModelReply("khách đã xác nhận mã danh bộ",
                 "Quý Khách vừa xác nhận mã danh bộ là ĐÚNG. Gọi NGAY tool tra cứu mà Quý Khách cần " +
-                "(get_bill / get_payment_status / get_water_usage / get_outages / create_ticket...). " +
+                "(get_bill / compare_usage / get_outages / create_ticket...), KHÔNG nói câu dẫn nào " +
+                "trước (đây là tra cứu tức thời, không cần thông báo trước khi gọi tool) — vd KHÔNG nói " +
+                "\"Được rồi, em sẽ tra cứu rồi đọc phần Quý Khách cần nghe ạ.\" hay bất kỳ câu tương tự " +
+                "nào khác, chỉ gọi tool ngay, im lặng cho tới khi có kết quả để đọc. " +
                 "KHÔNG hỏi lại số, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.");
             }
           }
@@ -1858,8 +2075,14 @@ function _tryParseJson(s) {
 
 // ─── Chuyển máy sang tổng đài viên ──────────────────────────────────────────
 
-async function _handleTransfer(callId, callOps, lyDo) {
+// [fix 05/08/2026] Thêm tham số delayMs (mặc định 2000, giữ nguyên hành vi cũ) —
+// session-ws.js truyền delay dài hơn khi phải TỰ tạo câu thông báo chuyển máy
+// (model không nói gì trong response chứa function_call), để refer không chạy
+// trước khi câu thông báo vừa gửi kịp nói xong.
+async function _handleTransfer(callId, callOps, lyDo, delayMs = 2000) {
   const agentUri = process.env.AGENT_QUEUE_URI;
+
+
   if (!agentUri) {
     log.warn(`[WS][${callId}]AGENT_QUEUE_URI chưa cấu hình, không thể chuyển máy`);
     return;
@@ -1867,8 +2090,8 @@ async function _handleTransfer(callId, callOps, lyDo) {
 
   log.info(`[WS][${callId}]Chuyển máy → ${agentUri}(lý do: ${lyDo})`);
 
-  // Delay nhỏ để AI nói xong câu thông báo chuyển máy
-  await new Promise((r) => setTimeout(r, 2000));
+  // Delay để AI nói xong câu thông báo chuyển máy
+  await new Promise((r) => setTimeout(r, delayMs));
 
   try {
     await callOps.refer(callId, agentUri);

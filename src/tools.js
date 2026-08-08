@@ -9,8 +9,9 @@ import {
   getThongBaoCupNuoc,
   baoSuCo,
   getTrangThaiTT,
-  getThongTinKhachHang,
+  getThongTinKhachHang, getAvailableAgents
 } from "./api.js";
+
 import { arbitrateDanhBo } from "./danh-bo-arbiter.js";
 import { PROCEDURES } from "./huongdanthutuc-data.js";
 import { log } from "./logger.js";
@@ -574,7 +575,7 @@ function handleConfirmDanhBo(callState = {}) {
       ma_danh_bo: callState.danhBo.value,
       message:
         "Mã danh bộ ĐÃ ĐƯỢC KHÁCH XÁC NHẬN — dùng NGAY số này để gọi tool tra cứu khách cần " +
-        "(get_bill/get_payment_status/get_water_usage/get_outages/create_ticket...). " +
+        "(get_bill/compare_usage/get_outages/create_ticket...). " +
         "KHÔNG hỏi lại, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo khác với số hệ thống đang giữ.",
     });
   }
@@ -913,10 +914,12 @@ function _docChoKhach(payloadJson) {
 }
 
 // ─── [2.1 — 26/07/2026] PHÁT HIỆN MODEL BỊA SỐ ───────────────────────────────
-// `ma_danh_bo` là trường `required` trong schema 5 tool tra cứu → structured
-// output BUỘC model phải điền một giá trị kể cả khi nó chưa nghe được gì. Cuộc
+// `ma_danh_bo` là trường `required` trong schema các tool tra cứu (get_bill,
+// compare_usage, get_outages — [fix 05/08/2026] gộp get_payment_status +
+// get_water_usage vào get_bill, giảm từ 5 xuống còn 3 tool) → structured output
+// BUỘC model phải điền một giá trị kể cả khi nó chưa nghe được gì. Cuộc
 // rtc_u2_E5eDfB96UnJE6iDWfPbRX: khách mới nói "xem giúp anh tiền nước tháng này",
-// chưa đọc số nào, model gọi get_payment_status({"ma_danh_bo":"725625"}).
+// chưa đọc số nào, model gọi get_bill({"ma_danh_bo":"725625"}).
 //
 // Ta GIỮ trường này (nó là nguồn nghe thứ hai cho trọng tài — `_danhBoReads` đã
 // chết từ 23/07 khi gỡ tool confirm_danh_bo), nhưng lọc số bịa ở đây.
@@ -1168,9 +1171,9 @@ function prevPeriod() {
 }
 
 /**
- * Fetch chung cho nhóm tra cứu hóa đơn: gọi trang-thai-thanh-toan (superset:
+ * Fetch chung cho tra cứu hóa đơn: gọi trang-thai-thanh-toan (superset:
  * TongTien + SanLuong + TrangThaiThanhToan) — 1 lần gọi đủ dữ liệu cho
- * get_bill / get_water_usage / get_payment_status, khách hỏi tiếp không cần gọi API lần 2.
+ * get_bill, khách hỏi tiếp (thanh toán/sản lượng) không cần gọi API lần 2.
  *
  * Backend KHÔNG tự lấy "kỳ gần nhất" khi thiếu ky/nam (mặc định kỳ hiện tại →
  * thường chưa có dữ liệu đầu tháng). Nên: không truyền ky/nam mà bị *_NOT_FOUND
@@ -1224,60 +1227,29 @@ async function fetchBilling(ma_danh_bo, ky, nam, callState) {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
+// [fix 05/08/2026] Gộp handleGetBill + handleGetWaterUsage + handleGetPaymentStatus
+// làm MỘT — cả 3 tool cũ gọi CHUNG một API (`getTrangThaiTT` qua `fetchBilling`,
+// trả sẵn TongTien + SanLuong + TrangThaiThanhToan trong cùng 1 lần gọi), chỉ khác
+// nhau ở cách format lại `message` từ CÙNG một bộ dữ liệu. Log thật cho thấy model
+// hay gọi get_bill rồi ngay sau đó gọi thêm get_water_usage cho đúng kỳ đó — 2
+// vòng round-trip cho cùng một lần tra cứu. Gộp lại: hỏi 1 trong 3 thứ (tiền, sản
+// lượng, trạng thái thanh toán) → trả lời đủ cả 3 luôn từ lần hỏi đầu.
+// KHÔNG đọc DonViThanhToan cho khách (mã nội bộ như "GDGV", chưa có bảng map).
 async function handleGetBill({ ma_danh_bo, ky, nam }, callState) {
   const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
   if (!f.ok) return f.error;
-  // const parts = f.rows.map((d) => {
-  //   const tt = d.TrangThaiThanhToan === "Đã thanh toán"
-  //     ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
-  //     : `, chưa thanh toán`;
-  //   return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
-  // });
   console.log("[handleGetBill] f=", f);
   console.log("f.ma_danh_bo", f.ma_danh_bo);
   const parts = f.rows.map((d) => {
     const tt = d.TrangThaiThanhToan === "Đã thanh toán"
-      ? `, đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
-      : `, chưa thanh toán`;
-    // return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}${tt}`;
-    return `Kỳ ${d.Ky}/${d.Nam}: tổng tiền ${docTienVN(d.TongTien)}`;
+      ? `đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}`
+      : `chưa thanh toán`;
+    return `Kỳ ${d.Ky}/${d.Nam}: sản lượng ${d.SanLuong} m³, tổng tiền ${docTienVN(d.TongTien)}, ${tt}`;
   });
 
   return JSON.stringify({
     success: true,
     message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu hóa đơn.",
-    data: f.rows.map(simplifyRow),
-  });
-}
-
-async function handleGetWaterUsage({ ma_danh_bo, ky, nam }, callState) {
-  const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
-  if (!f.ok) return f.error;
-  console.log("[handleGetBill] f=", f);
-  const parts = f.rows.map(
-    (d) => ` Kỳ ${d.Ky}/${d.Nam}: ${d.SanLuong} m³, thành tiền ${docTienVN(d.TongTien)}`
-  );
-  return JSON.stringify({
-    success: true,
-    message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu sản lượng.",
-    data: f.rows.map(simplifyRow),
-  });
-}
-
-async function handleGetPaymentStatus({ ma_danh_bo, ky, nam }, callState) {
-  const f = await fetchBilling(ma_danh_bo, ky, nam, callState);
-  if (!f.ok) return f.error;
-  console.log("[handleGetBill] f=", f);
-  // KHÔNG đọc DonViThanhToan cho khách (mã nội bộ như "GDGV", chưa có bảng map).
-  const parts = f.rows.map((d) => {
-    if (d.TrangThaiThanhToan === "Đã thanh toán") {
-      return `Kỳ ${d.Ky}/${d.Nam}: đã thanh toán ngày ${fmtNgay(d.NgayThanhToan)}, số tiền ${docTienVN(d.TongTien)}`;
-    }
-    return `Kỳ ${d.Ky}/${d.Nam}: chưa thanh toán, số tiền ${docTienVN(d.TongTien)}`;
-  });
-  return JSON.stringify({
-    success: true,
-    message: parts.length ? parts.join("; ") + "." : "Không có dữ liệu thanh toán.",
     data: f.rows.map(simplifyRow),
   });
 }
@@ -1334,7 +1306,8 @@ async function handleCreateTicket({ ma_danh_bo, loai, mo_ta }, callState) {
   if (!rs.ok) return rs.error;
   // Gộp loại + mô tả thành nội dung gửi lên endpoint bao-su-co.
   const noiDung = loai ? `[${loai}] ${mo_ta}` : mo_ta;
-  const r = await baoSuCo(rs.value, noiDung);
+  const r = await baoSuCo(rs.value, noiDung, callState.callerPhone);
+  console.log("[handleCreateTicket]:kq_baoSuCo=", r);
   if (!r.success) {
     return JSON.stringify({ success: false, message: r.message || "Không tạo được phiếu sự cố." });
   }
@@ -1817,12 +1790,119 @@ function handleCheckMissingDocs(rawArgs = {}) {
 
 // transfer_to_agent và end_call được xử lý ở session-ws.js vì cần gọi OpenAI REST API
 // Handlers này chỉ trả về confirmation text cho AI đọc
-function handleTransferToAgent({ ly_do }) {
+//
+// [fix 05/08/2026] Kiểm tra getAvailableAgents trước khi chuyển máy — nếu
+// KHÔNG có tổng đài viên rảnh (`available_agents === 0`) thì hỏi khách có
+// muốn để lại lời nhắn thay vì chuyển máy vào hàng chờ trống.
+//
+// `doc_cho_khach` (không phải chỉ `message`): session-ws.js có cơ chế ép đọc
+// NGUYÊN VĂN mọi tool result có trường này (cùng cơ chế đã dùng cho
+// get_procedure_info, các bước danh bộ...) — bắt buộc phải có để khách nghe
+// ĐÚNG câu hỏi "có muốn để lại lời nhắn không", không bị model tự diễn giải
+// hay (nghiêm trọng hơn) bị nhánh tool-thường ép thêm câu hỏi kết thúc cố định
+// "Quý Khách có cần em hỗ trợ gì thêm không ạ?" đè lên trên (xem đợt 25-27
+// trong docs/fix/fix_migrate_gpt_realtime_21_20260730.md — nhánh đó CHỈ áp
+// dụng khi thiếu doc_cho_khach).
+//
+// Bọc try/catch quanh getAvailableAgents: `callApi` (api.js) đã tự có timeout
+// nội bộ (TONGDAI_API_TIMEOUT_MS, mặc định 15000ms) và KHÔNG BAO GIỜ throw —
+// luôn trả về {success:false, error_code,...} khi lỗi/timeout. Race với
+// timeout NGẮN HƠN (bản cũ 3000ms) mà không có try/catch là nguy hiểm: nếu
+// API chỉ hơi chậm (3-15s, vẫn trong giới hạn bình thường của chính nó),
+// timeoutPromise reject TRƯỚC → exception văng lên dispatchTool's catch
+// chung, trả "Đã xảy ra lỗi hệ thống. Vui lòng thử lại." KHÔNG có field
+// "action" — khách hỏi chuyển máy nhưng không được mời chuyển máy hay để lại
+// lời nhắn gì cả, chỉ nghe một câu lỗi chung chung. Coi timeout/lỗi như
+// "không xác định được có ai rảnh" → an toàn hơn là mời để lại lời nhắn,
+// không phải im re.
+async function handleTransferToAgent({ ly_do }) {
+  let availableAgents = null;
+  try {
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), 4500)
+    );
+    availableAgents = await Promise.race([getAvailableAgents(), timeoutPromise]);
+    log.debug(`[tools][transfer_to_agent] availableAgents=`, availableAgents);
+  } catch (e) {
+    log.warn(`[tools][transfer_to_agent] Không lấy được trạng thái tổng đài viên (${e.message}) — coi như không có ai rảnh.`);
+  }
+  //  data: { available_agents: 0, queue: 'GroupDay5' }
+  let { available_agents, queue } = availableAgents?.data || {};
+  available_agents = 0;
+  if (available_agents > 0) {
+    return JSON.stringify({
+      success: true,
+      action: "transfer_to_agent",
+      doc_cho_khach: "Dạ, em xin phép chuyển máy cho tổng đài viên hỗ trợ Quý Khách ngay ạ.",
+      message: "Đang chuyển máy cho tổng đài viên, Quý khách vui lòng chờ trong giây lát.",
+      ly_do,
+      available_agents,
+      queue,
+    });
+  }
+  return JSON.stringify({
+    success: false,
+    action: "leave_message",
+    doc_cho_khach:
+      "Dạ, hiện tại chưa có tổng đài viên nào rảnh để hỗ trợ ạ. Quý Khách có muốn " +
+      "để lại lời nhắn để nhân viên liên hệ lại không ạ?",
+    // [fix 05/08/2026] Cuộc rtc_u7_EA507YePMlSD2e1ixrC08: hướng dẫn CŨ bảo gọi
+    // create_ticket — nhưng create_ticket LUÔN đòi mã danh bộ 11 số (qua
+    // resolveDanhBo). Khách vừa được thông báo "không có tổng đài viên" thường
+    // KHÔNG có mã danh bộ sẵn trong đầu (gọi chỉ để nhờ liên hệ lại, không phải
+    // đang tra cứu hoá đơn) — bot bị kẹt lặp lại yêu cầu đọc số, khách không
+    // hiểu vì sao, cúp máy. Đổi sang tool riêng `leave_callback_message` — không
+    // qua resolveDanhBo, dùng SĐT người gọi (hệ thống tự biết, không cần hỏi).
+    message:
+      "Không có tổng đài viên khả dụng — đã hỏi khách có muốn để lại lời nhắn không. " +
+      "Khách ĐỒNG Ý → hỏi lại nội dung cần nhắn, tóm tắt xác nhận đúng ý, CÓ THỂ hỏi " +
+      "thêm mã danh bộ nếu khách có sẵn (KHÔNG bắt buộc, khách không có/không nhớ thì " +
+      "bỏ qua, đừng ép đọc) rồi gọi leave_callback_message (KHÔNG dùng create_ticket " +
+      "cho trường hợp này — hệ thống tự dùng SĐT cuộc gọi, không cần hỏi SĐT). " +
+      "Khách TỪ CHỐI → hỏi khách còn cần hỗ trợ gì khác không, không tự gọi tool nào " +
+      "khi khách chưa đồng ý.",
+    ly_do,
+  });
+}
+
+/**
+ * [fix 05/08/2026, cập nhật 07/08/2026] Ghi nhận lời nhắn nhờ gọi lại khi
+ * KHÔNG có tổng đài viên rảnh (action "leave_message" ở handleTransferToAgent).
+ *
+ * [cập nhật 07/08/2026 — theo yêu cầu chủ dự án] Xử lý GIỐNG create_ticket:
+ * gọi `baoSuCo` lưu remote + `insertTicket` lưu local (session-ws.js). Khác
+ * biệt duy nhất: mã danh bộ KHÔNG BẮT BUỘC — model có thể hỏi thêm nếu khách
+ * có sẵn, nhưng KHÔNG được ép qua vòng thu thập/xác nhận nghiêm ngặt của
+ * `resolveDanhBo` (cơ chế đó dành cho tra cứu tài khoản, sai một chữ số là
+ * tra nhầm dữ liệu người khác — không phù hợp cho một trường tham khảo không
+ * bắt buộc trên lời nhắn). Cuộc rtc_u7_EA507YePMlSD2e1ixrC08: khách gọi chỉ để
+ * nhờ liên hệ lại, không có mã sẵn trong đầu, bot kẹt vòng lặp đòi đọc mã danh
+ * bộ (qua resolveDanhBo), khách không hiểu, cúp máy — đây chính là lý do tách
+ * tool riêng thay vì tái dùng create_ticket.
+ *
+ * `baoSuCo` (api.js) giờ nhận thêm SĐT làm tham số thứ 3 — không cần nhồi SĐT
+ * vào nội dung như bản trước nữa.
+ */
+async function handleLeaveCallbackMessage({ noi_dung, ma_danh_bo }, callState = {}) {
+  const phone = callState.callerPhone || null;
+  // Chuẩn hoá NẾU khách có cung cấp, nhưng không ép — chuỗi rỗng/null đều hợp lệ.
+  const maDanhBoChuan = ma_danh_bo ? normalizeDanhBo(ma_danh_bo) : "";
+  const r = await baoSuCo(maDanhBoChuan || null, noi_dung || "", phone);
+  if (!r.success) {
+    return JSON.stringify({
+      success: false,
+      message: r.message ||
+        "Không ghi nhận được lời nhắn. Xin lỗi khách, đề nghị khách gọi lại sau ít phút.",
+    });
+  }
   return JSON.stringify({
     success: true,
-    action: "transfer_to_agent",
-    message: "Đang chuyển máy cho tổng đài viên, Quý khách vui lòng chờ trong giây lát.",
-    ly_do,
+    doc_cho_khach:
+      "Dạ, em đã ghi nhận lời nhắn của Quý Khách rồi ạ. Nhân viên sẽ liên hệ lại " +
+      "Quý Khách sớm nhất có thể.",
+    message: "Đã ghi nhận lời nhắn thành công.",
+    ma_danh_bo: maDanhBoChuan || null,
+    data: r.data,
   });
 }
 
@@ -1870,15 +1950,23 @@ export async function dispatchTool(name, args, callState = {}) {
       // ép tool_choice gọi đúng tool này ở đúng thời điểm) — bản chất khác hẳn tool
       // cũ: KHÔNG tin arg model, chỉ đọc lại callState.danhBo đã được code xác minh.
       case "confirm_danh_bo": return handleConfirmDanhBo(callState);
-      case "get_bill": return await handleGetBill(args, callState);
-      case "get_water_usage": return await handleGetWaterUsage(args, callState);
-      case "get_payment_status": return await handleGetPaymentStatus(args, callState);
+      // [fix 05/08/2026] get_water_usage/get_payment_status đã GỘP vào get_bill
+      // (xem chú thích ở handleGetBill) — không còn nằm trong TOOLS schema nên
+      // model không thể tự gọi nữa, nhưng vẫn giữ alias ở đây để phòng thủ nếu có
+      // tham chiếu cũ nào còn sót (context cũ, tool_choice ép cứng...).
+      case "get_bill":
+      case "get_water_usage":
+      case "get_payment_status":
+        return await handleGetBill(args, callState);
       case "compare_usage": return await handleCompareUsage(args, callState);
       case "get_outages": return await handleGetOutages(args, callState);
       case "create_ticket": return await handleCreateTicket(args, callState);
       case "get_procedure_info": return handleGetProcedureInfo(args, callState);
       case "check_missing_docs": return handleCheckMissingDocs(args);
       case "transfer_to_agent": return handleTransferToAgent(args);
+      // [fix 05/08/2026] Ghi nhận lời nhắn khi không có tổng đài viên rảnh —
+      // xem chú thích ở handleLeaveCallbackMessage. KHÔNG qua resolveDanhBo.
+      case "leave_callback_message": return await handleLeaveCallbackMessage(args, callState);
       case "end_call": return handleEndCall(args);
       case "wait_for_user": return handleWaitForUser();
       default:

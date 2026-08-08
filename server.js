@@ -16,7 +16,7 @@ import { acceptCall, rejectCall, referCall, hangupCall } from "./src/call-manage
 import { openSessionWebSocket, flushAllSessions, activeSessionCount } from "./src/session-ws.js";
 import { verifyWebhookSignature } from "./src/webhook-verify.js";
 import { log } from "./src/logger.js";
-import { getThongTinKhachHang } from "./src/api.js";
+import { getThongTinKhachHang, getAvailableAgents } from "./src/api.js";
 import { closeDb } from "./src/db.js";
 
 const app = express();
@@ -193,6 +193,11 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
       const r = await Promise.race([getThongTinKhachHang(null, tel), timeoutPromise]);
       console.log('==getThongTinKhachHang===tel: ', tel);
       console.log('==getThongTinKhachHang===r : ', r);
+
+      // const availableAgents = await Promise.race([getAvailableAgents(), timeoutPromise]);
+      // console.log('==availableAgents===tel: ', tel);
+      // console.log('==availableAgents===r : ', availableAgents);
+
       customerContext = buildCustomerContext(r);
       knownDanhBo = (Array.isArray(r?.data) ? r.data : [])
         .map((c) => String(c?.danhBa ?? "").replace(/\D/g, ""))
@@ -215,6 +220,7 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
     acceptParams,
     customerContext,
     knownDanhBo,
+
   };
 
   // Mở WebSocket để điều khiển session
