@@ -28,7 +28,7 @@ import {
 import { runWithApiTrace } from "./api-trace.js";
 import { log } from "./logger.js";
 import { ConversationLogger } from "./conversation-logger.js";
-import { insertCallStub, insertTicket } from "./db.js";
+import { insertCallStub, insertTicket } from "./log-api.js";
 import { getAvailableAgents } from "./api.js";
 // import { TOOLS } from "./system-prompt.js";
 

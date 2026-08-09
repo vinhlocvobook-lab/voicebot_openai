@@ -10,7 +10,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { calcRealtimeCost, calcChatCost, calcTranscribeCost } from "./pricing.js";
-import { finalizeCallLog } from "./db.js";
+import { finalizeCallLog } from "./log-api.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Lưu trong thư mục gốc của project, cùng cấp với server.js

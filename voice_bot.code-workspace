@@ -28,6 +28,10 @@
 		},
 		{
 			"path": "../../voice_chat_bot/cntaapi1"
+		},
+		{
+			"name": "SSH FS - bms272.com",
+			"uri": "ssh://bms272.com/"
 		}
 	],
 	"settings": {}

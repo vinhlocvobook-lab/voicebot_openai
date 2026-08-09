@@ -17,7 +17,7 @@ import { openSessionWebSocket, flushAllSessions, activeSessionCount } from "./sr
 import { verifyWebhookSignature } from "./src/webhook-verify.js";
 import { log } from "./src/logger.js";
 import { getThongTinKhachHang, getAvailableAgents } from "./src/api.js";
-import { closeDb } from "./src/db.js";
+import { closeDb } from "./src/log-api.js";
 
 const app = express();
 const PORT = process.env.PORT || 8000;
