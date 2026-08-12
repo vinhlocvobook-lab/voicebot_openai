@@ -122,6 +122,15 @@ export function openSessionWebSocket(callId, callOps) {
   // doi_tuong ngay lượt đầu, cuộc E2u70cuT94h0rwpLAKOyA).
   // knownDanhBo: danh bộ hệ thống tra được theo SĐT — resolveDanhBo tin ngay,
   // không ép vòng xác nhận confirm_danh_bo (fix cuộc E2uhVdS9X4mVBoXs0uYMP).
+  // historyDanhBo: [fix 10/08/2026, revert sau kiểm chứng thật] mã danh bộ
+  // khách ĐÃ XÁC NHẬN ở (các) cuộc gọi TRƯỚC theo cùng SĐT (chỉ có khi
+  // knownDanhBo rỗng — xem server.js), đưa vào customerContext qua
+  // buildCustomerContextFromHistory giống hệt luồng knownDanhBo. NHƯNG khác
+  // knownDanhBo: resolveDanhBo KHÔNG tin ngay dù model echo đúng số — log thật
+  // (cuộc rtc_u2_EBIRJxR2Jf366tXhIOZzU) cho thấy model bỏ qua bước hỏi khách,
+  // gọi thẳng tool với mã lịch sử → nếu tin ngay sẽ lộ thông tin khách KHÁC nếu
+  // SĐT đã đổi chủ. Bắt qua gate xác nhận lời nói thật như bình thường (nguồn
+  // "history_tel").
   // _logger: cho tools.js ghi event (vd kết quả trọng tài danh bộ) vào timeline.
   // callerPhone: [fix 05/08/2026] SĐT THẬT của người gọi — KHÁC
   // `callOps.asteriskData.phoneNumber` (trường đó đang hardcode '0967777637' cho
@@ -130,6 +139,7 @@ export function openSessionWebSocket(callId, callOps) {
   // viên rảnh, không đi qua resolveDanhBo nên không cần mã danh bộ.
   const _toolCallState = {
     knownDanhBo: callOps.knownDanhBo || [],
+    historyDanhBo: callOps.historyDanhBo || [],
     _logger: logger,
     callerPhone: callOps.asteriskData?.phoneNumber_real || callOps.tel || null,
   };
@@ -603,12 +613,28 @@ export function openSessionWebSocket(callId, callOps) {
    * (hỏi chuyện khác, xác nhận xong...) thì CODE phải chủ động tạo response,
    * nếu không bot sẽ im lặng — lỗi nặng hơn cả việc trả lời sai.
    */
-  const _requestModelReply = (lyDo, instructions = null, attempt = 0) => {
+  // [fix 10/08/2026] `shouldSkip` (tuỳ chọn): hàm trả true nếu điều kiện gọi lúc
+  // ĐẶT LỊCH không còn đúng lúc THỰC SỰ gửi nữa — cần vì hàm này tự retry theo
+  // setTimeout khi `_responseActive`, có thể tới lúc gửi được thì việc đã xong
+  // rồi. Cuộc rtc_u0_EBIZRYDfQl3VhWK9fO3iw (10/08/2026): khách nói "Đúng rồi.",
+  // response.created đã kích hoạt TỪ TRƯỚC (VAD bắt audio, không đợi transcript)
+  // nên `_responseActive` đang true khi code gọi `_requestModelReply("khách đã
+  // xác nhận mã danh bộ"...)` → retry dời sau 1.2s. Trong lúc chờ, chính response
+  // đang chạy đó lại là lượt model TỰ gọi get_bill + đọc kết quả (đúng ý muốn),
+  // nhưng hàm cứ retry mù tới khi `_responseActive` rảnh rồi VẪN gửi nudge — bot
+  // đọc lại y hệt kết quả hóa đơn lần 2. `shouldSkip` cho phép huỷ nudge nếu mục
+  // đích đã đạt được bởi một đường khác trong lúc chờ.
+  const _requestModelReply = (lyDo, instructions = null, attempt = 0, shouldSkip = null) => {
     if (_hungUp || _transferred) return;
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (shouldSkip && shouldSkip()) {
+      logger.addEvent("model_reply_skipped", `${lyDo} — mục đích đã đạt được bởi đường khác, huỷ nudge`);
+      log.info(`[WS][${callId}] Bỏ nudge "${lyDo}" — đã có đường khác xử lý xong trong lúc chờ.`);
+      return;
+    }
     if (_responseActive) {
       // Đang nói dở → chờ xong rồi tạo, đừng để câu của khách rơi vào im lặng.
-      if (attempt < 5) setTimeout(() => _requestModelReply(lyDo, instructions, attempt + 1), 1200);
+      if (attempt < 5) setTimeout(() => _requestModelReply(lyDo, instructions, attempt + 1, shouldSkip), 1200);
       else logger.addEvent("model_reply_dropped", `${lyDo} — response active quá lâu`);
       return;
     }
@@ -900,11 +926,19 @@ export function openSessionWebSocket(callId, callOps) {
   // Dùng LẠI đúng hàng đợi `_verbatimSending`/`_responseActive` của `_speakVerbatim`
   // (race đã vá 30/07) — đây là cùng một hành động "code chủ động gửi
   // response.create", không phải một đường gửi mới chưa qua kiểm chứng.
-  const _openDanhBoConfirmTurn = (lyDo, attempt = 0) => {
+  // [fix 10/08/2026] `shouldSkip`: cùng lý do với _requestModelReply ở trên —
+  // hàm này cũng tự retry theo setTimeout khi đang có response/verbatim chạy,
+  // nên tới lúc gửi được có thể việc cần làm đã xong bởi model tự chủ động rồi.
+  const _openDanhBoConfirmTurn = (lyDo, attempt = 0, shouldSkip = null) => {
     if (_hungUp || _transferred) return;
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (shouldSkip && shouldSkip()) {
+      logger.addEvent("danh_bo_confirm_turn_skipped", `${lyDo} — mục đích đã đạt được bởi đường khác, huỷ`);
+      log.info(`[WS][${callId}] Bỏ mở lượt confirm_danh_bo "${lyDo}" — đã có đường khác xử lý xong trong lúc chờ.`);
+      return;
+    }
     if (_responseActive || _verbatimSending) {
-      if (attempt < 8) setTimeout(() => _openDanhBoConfirmTurn(lyDo, attempt + 1), 1200);
+      if (attempt < 8) setTimeout(() => _openDanhBoConfirmTurn(lyDo, attempt + 1, shouldSkip), 1200);
       else logger.addEvent("danh_bo_confirm_turn_dropped", `${lyDo} — response active quá lâu`);
       return;
     }
@@ -1834,6 +1868,11 @@ export function openSessionWebSocket(callId, callOps) {
             logger.markDanhBoResolved(_toolCallState._danhBoResolvedBy || "unknown", _toolCallState.danhBo.value);
             logger.addEvent("danh_bo_verbal_confirm", khText);
             log.info(`[WS][${callId}] danh_bo_verbal_confirm: ${khText} → ${_toolCallState.danhBo.value}`);
+            // [fix 10/08/2026] Reset trước khi lên lịch nudge bên dưới — cờ này do
+            // tools.js#resolveDanhBo bật lên khi MỘT tool tra cứu nào đó đã thật sự
+            // chạy bằng số vừa confirmed (xem shouldSkip truyền vào bên dưới).
+            _toolCallState._danhBoPostConfirmActionDone = false;
+            const _daTraCuuXongSauXacNhan = () => _toolCallState._danhBoPostConfirmActionDone === true;
             // [MỨC C — đợt 5] Lượt "đúng rồi" này được commit khi model còn đang bị
             // khoá → sẽ KHÔNG có response nào được sinh ra. Không tự tạo thì bot câm
             // ngay sau khi khách xác nhận. Nhờ model đi tra cứu luôn.
@@ -1842,7 +1881,7 @@ export function openSessionWebSocket(callId, callOps) {
             // da_xac_nhan + ma_danh_bo trong context, không chỉ tự suy đoán từ việc
             // vừa nghe khách nói "đúng".
             if (_DANHBO_CONFIRM_TOOL) {
-              _openDanhBoConfirmTurn("khach_da_xac_nhan");
+              _openDanhBoConfirmTurn("khach_da_xac_nhan", 0, _daTraCuuXongSauXacNhan);
             } else {
               // [fix 05/08/2026 đợt 27] Cuộc rtc_u0_E9V6kgXusmTSDgZJejLgs (19:35:53):
               // model nói câu dẫn "Chốt xong rồi, cho em xem thử thông tin tài khoản
@@ -1863,7 +1902,8 @@ export function openSessionWebSocket(callId, callOps) {
                 "trước (đây là tra cứu tức thời, không cần thông báo trước khi gọi tool) — vd KHÔNG nói " +
                 "\"Được rồi, em sẽ tra cứu rồi đọc phần Quý Khách cần nghe ạ.\" hay bất kỳ câu tương tự " +
                 "nào khác, chỉ gọi tool ngay, im lặng cho tới khi có kết quả để đọc. " +
-                "KHÔNG hỏi lại số, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.");
+                "KHÔNG hỏi lại số, KHÔNG đọc lại số, KHÔNG truyền ma_danh_bo — hệ thống tự dùng số đã xác nhận.",
+                0, _daTraCuuXongSauXacNhan);
             }
           }
 

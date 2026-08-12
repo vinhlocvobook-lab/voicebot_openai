@@ -17,7 +17,7 @@ import { openSessionWebSocket, flushAllSessions, activeSessionCount } from "./sr
 import { verifyWebhookSignature } from "./src/webhook-verify.js";
 import { log } from "./src/logger.js";
 import { getThongTinKhachHang, getAvailableAgents } from "./src/api.js";
-import { closeDb } from "./src/log-api.js";
+import { closeDb, getDanhBoHistory } from "./src/log-api.js";
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -166,6 +166,45 @@ Hỏi khách muốn tra cứu hợp đồng nào. Đọc ĐÚNG NGUYÊN VĂN ph�
 QUAN TRỌNG: Sau khi khách chọn → dùng danh bộ đó cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.`;
 }
 
+// ─── Build customer context từ LỊCH SỬ cuộc gọi TRƯỚC theo SĐT ──────────────
+// [fix 10/08/2026] Fallback khi buildCustomerContext(r) ở trên rỗng (tra API
+// sống theo SĐT lỗi/không ra hợp đồng nào) — dùng mã danh bộ khách ĐÃ XÁC NHẬN
+// ở (các) cuộc gọi TRƯỚC (getDanhBoHistory, nguồn voicebot_calllog.ma_danh_bo).
+// Cùng khuôn + cùng chỉ dẫn "xác nhận 1 lần rồi dùng cho cả cuộc gọi" như
+// buildCustomerContext, chỉ đổi cách nói cho ĐÚNG BẢN CHẤT dữ liệu: đây là số
+// đã dùng ở lần gọi TRƯỚC, KHÔNG PHẢI vừa tra cứu sống — để model không lỡ nói
+// với khách như thể hệ thống vừa xác minh xong.
+function buildCustomerContextFromHistory(candidates) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  if (list.length === 0) return "";
+
+  if (list.length === 1) {
+    const db = list[0].ma_danh_bo;
+    const spoken = spokenDanhBo(db);
+    return `# Thông tin từ hệ thống (lịch sử cuộc gọi TRƯỚC theo số điện thoại này)
+Số điện thoại này đã dùng mã danh bộ sau ở (các) cuộc gọi TRƯỚC (CHƯA tra cứu sống lại lần này):
+- Danh bộ: ${db}
+- Khi xác nhận, đọc ĐÚNG NGUYÊN VĂN: ${spoken}
+
+QUAN TRỌNG:
+- Xác nhận danh bộ đúng 1 LẦN DUY NHẤT (trước tra cứu đầu tiên trong cuộc gọi).
+- Sau khi khách đã xác nhận → dùng danh bộ ${db} cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.
+- Chỉ hỏi lại nếu khách chủ động báo sai hoặc muốn dùng danh bộ khác.`;
+  }
+
+  const lines = list.map((c, i) => {
+    const spoken = spokenDanhBo(c.ma_danh_bo);
+    return `- Danh bộ ${i + 1}: ${c.ma_danh_bo} (đọc: ${spoken})`;
+  }).join("\n");
+
+  return `# Thông tin từ hệ thống (lịch sử cuộc gọi TRƯỚC theo số điện thoại này)
+Số điện thoại này từng dùng ${list.length} mã danh bộ khác nhau ở các cuộc gọi TRƯỚC (CHƯA tra cứu sống lại lần này):
+${lines}
+
+Hỏi khách muốn tra cứu hợp đồng nào. Đọc ĐÚNG NGUYÊN VĂN phần "(đọc: ...)" của từng danh bộ, không tự chuyển đổi lại.
+QUAN TRỌNG: Sau khi khách chọn → dùng danh bộ đó cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.`;
+}
+
 // ─── Xử lý cuộc gọi đến ──────────────────────────────────────────────────────
 
 async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null) {
@@ -208,6 +247,38 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
     }
   }
 
+  // [fix 10/08/2026] Fallback: SĐT tra API sống KHÔNG ra hợp đồng nào (lỗi
+  // mạng/timeout hoặc SĐT chưa có trong hệ thống tổng đài) → dùng mã danh bộ
+  // khách ĐÃ XÁC NHẬN ở (các) cuộc gọi TRƯỚC theo cùng SĐT (voicebot_calllog, xem
+  // GET /danh-bo trong voicebot-log-api.php). Đưa vào customerContext GIỐNG HỆT
+  // luồng tra sống (buildCustomerContextFromHistory — model hỏi khách xác nhận
+  // 1 lần rồi dùng cho cả cuộc gọi, không hỏi lại) và đăng ký vào historyDanhBo
+  // để resolveDanhBo (tools.js) tin ngay khi model echo đúng số — cùng cơ chế
+  // trust như knownDanhBo, chỉ khác nhãn nguồn ("history_tel") để tách riêng
+  // trong thống kê, vì độ MỚI kém tin cậy hơn (SĐT có thể đổi chủ, hợp đồng có
+  // thể đã đổi/khoá từ lần gọi trước — khác hẳn lý do "nghe sai" mà knownDanhBo
+  // vốn được tin ngay để né).
+  let historyDanhBo = [];
+  if (tel && tel !== "Unknown" && knownDanhBo.length === 0) {
+    try {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 2000)
+      );
+      const candidates = await Promise.race([getDanhBoHistory(tel, { limit: 1, days: 180 }), timeoutPromise]);
+      console.log("candidates===: ", candidates);
+      const list = Array.isArray(candidates) ? candidates : [];
+      customerContext = buildCustomerContextFromHistory(list);
+      historyDanhBo = list
+        .map((c) => String(c?.ma_danh_bo ?? "").replace(/\D/g, ""))
+        .filter(Boolean);
+      if (historyDanhBo.length) {
+        log.info(`[Call][${callId}] Lịch sử SĐT ${tel}: ${historyDanhBo.length} mã danh bộ từng xác nhận — đưa vào customerContext.`);
+      }
+    } catch (err) {
+      log.warn(`[Call][${callId}] Tra lịch sử danh bộ theo SĐT thất bại (${err.message}), bỏ qua.`);
+    }
+  }
+
   // Accept cuộc gọi – instructions đã bao gồm customerContext (nếu có)
   const acceptParams = await acceptCall(callId, customerContext);
 
@@ -220,6 +291,7 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
     acceptParams,
     customerContext,
     knownDanhBo,
+    historyDanhBo,
 
   };
 

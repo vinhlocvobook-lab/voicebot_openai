@@ -25,14 +25,25 @@ export async function acceptCall(callId, customerContext = "") {
   // Giữ body tối giản giống Python example trong docs OpenAI.
   // Các config nâng cao (tools, voice, VAD, transcription) sẽ được gửi
   // qua session.update sau khi WebSocket kết nối thành công.
-  let context_chuacosodanhbo = `
+  //
+  // [fix 10/08/2026] Trước đây context_chuacosodanhbo được nối vào MỌI trường
+  // hợp, kể cả khi customerContext ĐÃ có mã (live API hoặc lịch sử cuộc gọi
+  // trước) — hai đoạn mâu thuẫn nhau nằm cạnh nhau trong cùng 1 prompt: một bên
+  // bảo "đã có mã X, đọc lại xin xác nhận", một bên bảo "khi CHƯA có thông tin,
+  // hỏi câu Y". Model bị rối, bám theo đoạn gần cuối hơn và bỏ qua hẳn mã đã
+  // biết (cuộc rtc_u2_EBHOI1DgBJmPL6Rn4HV8Z 10/08/2026: customerContext có mã
+  // lịch sử 22073242112, nhưng model vẫn hỏi "cho em xin mã danh bộ... đọc liền
+  // một mạch" y như chưa biết gì). Chỉ thêm câu "chưa có thông tin" khi THỰC SỰ
+  // không có customerContext nào (không phải live, không phải lịch sử).
+  const context_chuacosodanhbo = `
 # Số Danh Bộ
  Lời thoại để hỏi số danh bộ (ma_danh_bo) khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra ạ"`;
 
   const instructions = customerContext
-    ? `${SYSTEM_PROMPT}\n\n${customerContext}\n\n${context_chuacosodanhbo}`
-    : SYSTEM_PROMPT + "\n\n" + context_chuacosodanhbo;
+    ? `${SYSTEM_PROMPT}\n\n${customerContext}`
+    : `${SYSTEM_PROMPT}\n\n${context_chuacosodanhbo}`;
 
+  log.info("[acceptCall]: instructions= ", instructions);
   const body = {
     type: "realtime",
     // [migrate 30/07/2026] gpt-realtime-1.5 → gpt-realtime-2.1-mini (xem

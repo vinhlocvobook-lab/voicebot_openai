@@ -184,6 +184,42 @@ export async function insertTicket(p = {}) {
   }
 }
 
+// ─── danh-bo history (fallback khi tra khách hàng theo SĐT thất bại/rỗng) ───
+
+/**
+ * [fix 10/08/2026] Lấy mã danh bộ ĐÃ XÁC NHẬN gần nhất theo SĐT, từ lịch sử
+ * cuộc gọi TRƯỚC (voicebot_calllog.ma_danh_bo — endpoint GET /danh-bo bên
+ * voicebot-log-api.php). Dùng làm fallback khi api.js#getThongTinKhachHang tra
+ * theo SĐT lỗi mạng hoặc không ra hợp đồng nào.
+ *
+ * CHỈ trả về GỢI Ý — không phải bằng chứng đã xác minh cho lần gọi này (SĐT có
+ * thể đổi chủ, hợp đồng có thể đã đổi/khoá từ lần gọi trước). Nơi gọi phải đưa
+ * qua gate xác nhận lời nói thật trước khi dùng để tra cứu (xem resolveDanhBo
+ * trong tools.js, nguồn "history_tel").
+ *
+ * KHÔNG BAO GIỜ throw — lỗi mạng/timeout/JSON hỏng đều trả về mảng rỗng, giống
+ * nguyên tắc "lỗi ghi/đọc log không được làm sập cuộc gọi" của cả file này.
+ *
+ * @param {string} tel
+ * @param {object} [opts]
+ * @param {number} [opts.limit] - số ứng viên tối đa (mặc định 5, khớp server)
+ * @param {number} [opts.days]  - chỉ lấy trong N ngày gần nhất (mặc định 180, khớp server)
+ * @returns {Promise<Array<{ma_danh_bo:string, last_confirmed_at:string, voicebot_callid:string, outcome:string}>>}
+ */
+export async function getDanhBoHistory(tel, { limit = 5, days = 180 } = {}) {
+  if (!tel) return [];
+  try {
+    const qs = new URLSearchParams({ tel: String(tel), limit: String(limit), days: String(days) });
+    const r = await callApi(`/danh-bo?${qs.toString()}`, { method: "GET" });
+    if (!r.success) return [];
+    return Array.isArray(r.data?.candidates) ? r.data.candidates : [];
+  } catch (err) {
+    // Lưới an toàn cuối — callApi() ở trên đã tự nuốt mọi lỗi mạng rồi.
+    logger.warn(`[LogAPI] getDanhBoHistory(${tel}) lỗi bất ngờ: ${err.message}`);
+    return [];
+  }
+}
+
 // ─── tương thích chữ ký cũ ────────────────────────────────────────────────
 
 /**

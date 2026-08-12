@@ -1069,6 +1069,13 @@ async function resolveDanhBo(rawArg, callState = {}) {
       return { ok: false, error: confirmRequestResponse(txSession, callState) };
     }
     callState._danhBoLastPrompt = null; // đã chốt — tắt cơ chế re-assert
+    // [fix 10/08/2026] Đánh dấu "đã thật sự tra cứu bằng số vừa xác nhận" — cho
+    // session-ws.js biết KHÔNG cần gửi thêm nudge "gọi tool ngay" nữa nếu model
+    // đã tự chủ động gọi tool này trong chính lượt phản hồi "đúng rồi" (race giữa
+    // response tự nhiên của model và _requestModelReply/_openDanhBoConfirmTurn
+    // do code lên lịch — xem session-ws.js#_requestModelReply). Không đặt điều
+    // kiện gì thêm: MỌI lần tra cứu thành công bằng số đã confirmed đều tính.
+    callState._danhBoPostConfirmActionDone = true;
     return { ok: true, value: stored.value };
   }
 
@@ -1080,14 +1087,45 @@ async function resolveDanhBo(rawArg, callState = {}) {
   }
 
   // ── Chưa có số ────────────────────────────────────────────────────────────
-  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT) → tin ngay, không ép xác nhận
-  // (số này không đi qua "tai" model nên không sợ nghe sai).
+  // Danh bộ do HỆ THỐNG cấp (lookup theo SĐT SỐNG) → tin ngay, không ép xác
+  // nhận qua tầng code (số này VỪA được hệ thống sống xác minh khớp đúng SĐT
+  // đang gọi tới, nên dù model lỡ bỏ qua bước hỏi thì rủi ro vẫn thấp).
   const argModel = normalizeDanhBo(rawArg);
   if (argModel.length === DANH_BO_LENGTH &&
     Array.isArray(callState.knownDanhBo) && callState.knownDanhBo.includes(argModel)) {
     callState.danhBo = { value: argModel, confirmed: true };
     callState._logger?.markDanhBoResolved?.("known_tel", argModel);
     return { ok: true, value: argModel };
+  }
+
+  // [fix 10/08/2026 — revert sau kiểm chứng thật] historyDanhBo (mã lấy từ LỊCH
+  // SỬ cuộc gọi trước theo cùng SĐT, xem server.js#_handleIncomingCall +
+  // log-api.js#getDanhBoHistory) ĐÃ ĐƯA VÀO customerContext (giống knownDanhBo)
+  // nhưng TUYỆT ĐỐI KHÔNG được gộp vào nhóm "tin ngay" ở trên — ban đầu đã thử
+  // gộp chung, nhưng log thật (cuộc rtc_u2_EBIRJxR2Jf366tXhIOZzU 10/08/2026) cho
+  // thấy model KHÔNG hỏi khách xác nhận trước khi gọi get_bill, chỉ nói "để em
+  // kiểm tra" rồi gọi tool luôn với mã từ lịch sử — đúng điều nguyên tắc "Gate
+  // xác nhận lời nói" ở trên file này đã cảnh báo: "Model gọi thẳng tool tra cứu
+  // KHÔNG tính là bằng chứng đồng ý". Khác knownDanhBo (VỪA được xác minh sống
+  // khớp đúng SĐT), historyDanhBo là dữ liệu CŨ — SĐT có thể đã đổi chủ, hợp
+  // đồng có thể đã đổi/khoá — nếu tin ngay như trên, model lười hỏi sẽ đọc thẳng
+  // hóa đơn của khách KHÁC cho người gọi hiện tại nghe (lộ thông tin thật). Nên
+  // dù model có echo đúng số, vẫn ĐỀ XUẤT làm ứng viên rồi bắt qua gate xác nhận
+  // lời nói THẬT như luồng khách tự đọc số (dùng lại confirmRequestResponse).
+  // Chỉ đề xuất khi khách CHƯA tự đọc số nào trong phiên này (nhường luồng đọc
+  // số bình thường xử lý trước) và MỚI đề xuất LẦN ĐẦU trong cuộc gọi (bị khách
+  // bác thì thôi, chuyển sang xin đọc số bình thường).
+  if (session.digits.length === 0 &&
+    Array.isArray(callState.historyDanhBo) && callState.historyDanhBo.length > 0 &&
+    !callState._historyDanhBoOffered) {
+    callState._historyDanhBoOffered = true;
+    const candidate = callState.historyDanhBo[0];
+    callState.danhBo = { value: candidate, confirmed: false };
+    callState._danhBoResolvedBy = "history_tel";
+    callState._danhBoNeedsVerbalYes = false; // nguồn xác định (lịch sử), không phải suy luận trọng tài
+    log.info(`[danh_bo][history] Đề xuất mã "${candidate}" từ lịch sử cuộc gọi trước theo SĐT — chờ khách xác nhận lời nói.`);
+    callState._logger?.addEvent?.("danh_bo_history_proposed", candidate);
+    return { ok: false, error: confirmRequestResponse(candidate, callState) };
   }
 
   // [2.2] Arg của model CHỈ là một quan sát cho trọng tài — không bao giờ được
