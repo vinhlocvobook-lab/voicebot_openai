@@ -19,6 +19,14 @@
  * Các hàm dưới đây trả về "lớp trong" đã chuẩn hoá để tools.js dùng.
  */
 
+// [fix 12/08/2026] Dùng fetch của CHÍNH gói "undici" thay vì fetch built-in
+// của Node — fetch built-in dùng bản undici đóng gói SẴN BÊN TRONG Node
+// (khác version với gói "undici" cài qua npm). Gán `dispatcher` (Agent) từ
+// npm-undici vào fetch built-in gây lệch version nội bộ → lỗi
+// "UND_ERR_INVALID_ARG: invalid onRequestStart method" (thấy trên Node 22 +
+// undici 8.x của máy Mac test). Import cả fetch lẫn Agent từ CÙNG một gói để
+// đảm bảo khớp version, tránh lỗi này vĩnh viễn — không phụ thuộc Node version.
+import { Agent, fetch as undiciFetch } from "undici";
 import { log as logger } from "./logger.js";
 import { recordApiCall } from "./api-trace.js";
 
@@ -32,6 +40,20 @@ const API_TIMEOUT_MS = parseInt(process.env.TONGDAI_API_TIMEOUT_MS || "15000", 1
 const API_KEY = process.env.TONGDAI_API_KEY || "";
 if (!API_KEY) {
   logger?.warn?.("[API] TONGDAI_API_KEY trống — request tới api.php sẽ không có Authorization, có thể bị 401 nếu server đã bật auth.");
+}
+
+// [12/08/2026] api.php chuyển sang Apache HTTPS với self-signed cert (Node fetch
+// mặc định từ chối cert không tin cậy: "self-signed certificate" / "unable to
+// verify the first certificate"). BẬT TONGDAI_API_INSECURE_TLS=true để bỏ qua
+// verify CHỈ CHO request tới đúng base URL này (dùng undici Agent riêng qua
+// `dispatcher`, KHÔNG đụng NODE_TLS_REJECT_UNAUTHORIZED — biến đó tắt verify
+// CẢ TIẾN TRÌNH, kể cả các kết nối TLS thật tới OpenAI). Khớp quy ước
+// verify_ssl:false phía TongDaiApiClient.php cho endpoint nội bộ 127.0.0.1.
+// Đổi lại "false"/bỏ trống khi cert đã là CA hợp lệ (production thật).
+const API_INSECURE_TLS = /^true$/i.test(process.env.TONGDAI_API_INSECURE_TLS || "");
+const API_DISPATCHER = API_INSECURE_TLS ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+if (API_INSECURE_TLS) {
+  logger?.warn?.("[API] TONGDAI_API_INSECURE_TLS=true — BỎ QUA xác thực chứng chỉ TLS khi gọi api.php (chỉ dùng cho self-signed cert nội bộ).");
 }
 
 // ─── Trace helpers ───────────────────────────────────────────────────────────
@@ -95,13 +117,19 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
     if (API_KEY) {
       opts.headers["Authorization"] = `Bearer ${API_KEY}`;
     }
+    if (API_DISPATCHER) {
+      opts.dispatcher = API_DISPATCHER;
+    }
     if (body) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
 
     logger?.debug?.(`[API] → ${method} ${url}`);
-    const res = await fetch(url, opts);
+    // Chỉ dùng fetch của gói "undici" khi THỰC SỰ có dispatcher tuỳ chỉnh (khớp
+    // version, tránh UND_ERR_INVALID_ARG) — bình thường vẫn gọi qua `fetch`
+    // toàn cục để KHÔNG phá cơ chế mock `globalThis.fetch` của test_case/*.test.mjs.
+    const res = await (API_DISPATCHER ? undiciFetch : fetch)(url, opts);
     const text = await res.text();
     _trace.http_status = res.status;
     _trace.duration_ms = Date.now() - _t0;
@@ -133,7 +161,10 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
     const aborted = err.name === "AbortError";
     _trace.duration_ms = Date.now() - _t0;
     _trace.error_code = aborted ? "TIMEOUT" : "CONNECTION_ERROR";
-    logger?.error?.(`[API] Lỗi gọi ${url}: ${err.message} (${_trace.duration_ms}ms)`);
+    // undici bọc mọi lỗi mạng/TLS trong TypeError "fetch failed" — lý do thật
+    // (ECONNREFUSED, self-signed cert, DNS...) nằm ở err.cause, không phải
+    // err.message. Log cả 2 để đỡ phải đoán khi tunnel/TLS có vấn đề.
+    logger?.error?.(`[API] Lỗi gọi ${url}: ${err.message}${err.cause ? ` — nguyên nhân: ${err.cause.code || ""} ${err.cause.message || err.cause}` : ""} (${_trace.duration_ms}ms)`);
     return {
       success: false,
       error_code: aborted ? "TIMEOUT" : "CONNECTION_ERROR",

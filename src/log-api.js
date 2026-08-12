@@ -18,6 +18,11 @@
  * bình thường, chỉ lưu file JSON như cũ) — khớp hành vi DB_HOST trống của db.js.
  */
 
+// [fix 12/08/2026] Dùng fetch của CHÍNH gói "undici" thay vì fetch built-in
+// của Node — xem giải thích chi tiết trong api.js (cùng lỗi
+// "UND_ERR_INVALID_ARG: invalid onRequestStart method" do lệch version undici
+// nội bộ Node vs gói npm "undici" khi gán dispatcher/Agent vào fetch built-in).
+import { Agent, fetch as undiciFetch } from "undici";
 import { log as logger } from "./logger.js";
 
 const LOG_API_BASE = (process.env.LOG_API_BASE || "").replace(/\/$/, "");
@@ -27,6 +32,17 @@ const ENABLED = !!LOG_API_BASE;
 // config.json["auth"]["voicebot_log"]["api_key"] bên cntaapi1 (xem
 // docs/api_key/plan_xac_thuc_api_key_20260812.md).
 const LOG_API_KEY = process.env.LOG_API_KEY || "";
+
+// [12/08/2026] voicebot-log-api.php chuyển sang Apache HTTPS với self-signed
+// cert — cùng lý do/giải pháp như TONGDAI_API_INSECURE_TLS trong api.js: bật
+// LOG_API_INSECURE_TLS=true để bỏ qua verify CHỈ CHO request tới base URL này
+// (undici Agent riêng qua dispatcher), không đụng tới verify TLS toàn tiến
+// trình (không dùng NODE_TLS_REJECT_UNAUTHORIZED).
+const LOG_API_INSECURE_TLS = /^true$/i.test(process.env.LOG_API_INSECURE_TLS || "");
+const LOG_API_DISPATCHER = LOG_API_INSECURE_TLS ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+if (LOG_API_INSECURE_TLS) {
+  logger.warn("[LogAPI] LOG_API_INSECURE_TLS=true — BỎ QUA xác thực chứng chỉ TLS khi gọi voicebot-log-api.php (chỉ dùng cho self-signed cert nội bộ).");
+}
 
 let _warnedDisabled = false;
 let _warnedNoKey = false;
@@ -64,13 +80,19 @@ async function callApi(path, { method = "GET", body = null } = {}) {
     if (LOG_API_KEY) {
       opts.headers["Authorization"] = `Bearer ${LOG_API_KEY}`;
     }
+    if (LOG_API_DISPATCHER) {
+      opts.dispatcher = LOG_API_DISPATCHER;
+    }
     if (body) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
 
     logger.debug(`[LogAPI] → ${method} ${url}`);
-    const res = await fetch(url, opts);
+    // Chỉ dùng fetch của gói "undici" khi THỰC SỰ có dispatcher tuỳ chỉnh (khớp
+    // version, tránh UND_ERR_INVALID_ARG) — bình thường vẫn gọi qua `fetch`
+    // toàn cục để KHÔNG phá cơ chế mock `globalThis.fetch` của test_case/*.test.mjs.
+    const res = await (LOG_API_DISPATCHER ? undiciFetch : fetch)(url, opts);
     const text = await res.text();
     const durationMs = Date.now() - t0;
 
@@ -91,8 +113,11 @@ async function callApi(path, { method = "GET", body = null } = {}) {
   } catch (err) {
     const aborted = err.name === "AbortError";
     const durationMs = Date.now() - t0;
+    // undici bọc lỗi mạng/TLS trong TypeError "fetch failed" — lý do thật nằm ở
+    // err.cause (ECONNREFUSED nếu tunnel đóng, self-signed cert nếu TLS...).
+    const causeInfo = err.cause ? ` — nguyên nhân: ${err.cause.code || ""} ${err.cause.message || err.cause}` : "";
     logger.warn(
-      `[LogAPI] Lỗi gọi ${url}: ${err.message} (${durationMs}ms)${aborted ? " [TIMEOUT]" : ""}`
+      `[LogAPI] Lỗi gọi ${url}: ${err.message}${causeInfo} (${durationMs}ms)${aborted ? " [TIMEOUT]" : ""}`
     );
     return { success: false, error_code: aborted ? "TIMEOUT" : "CONNECTION_ERROR" };
   } finally {

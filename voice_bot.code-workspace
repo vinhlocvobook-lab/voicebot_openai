@@ -32,6 +32,10 @@
 		{
 			"name": "SSH FS - bms272.com",
 			"uri": "ssh://bms272.com/"
+		},
+		{
+			"name": "SSH FS - vdt_net_vn",
+			"uri": "ssh://vdt_net_vn/"
 		}
 	],
 	"settings": {}
