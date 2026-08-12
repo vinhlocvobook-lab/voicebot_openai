@@ -23,8 +23,13 @@ import { log as logger } from "./logger.js";
 const LOG_API_BASE = (process.env.LOG_API_BASE || "").replace(/\/$/, "");
 const LOG_API_TIMEOUT_MS = parseInt(process.env.LOG_API_TIMEOUT_MS || "15000", 10);
 const ENABLED = !!LOG_API_BASE;
+// API key gửi qua header Authorization: Bearer <key> — khớp
+// config.json["auth"]["voicebot_log"]["api_key"] bên cntaapi1 (xem
+// docs/api_key/plan_xac_thuc_api_key_20260812.md).
+const LOG_API_KEY = process.env.LOG_API_KEY || "";
 
 let _warnedDisabled = false;
+let _warnedNoKey = false;
 
 /** Có đang bật ghi log qua REST API không (LOG_API_BASE đã cấu hình). */
 export function isLogApiEnabled() {
@@ -44,6 +49,10 @@ async function callApi(path, { method = "GET", body = null } = {}) {
     }
     return { success: false, error_code: "DISABLED" };
   }
+  if (!LOG_API_KEY && !_warnedNoKey) {
+    logger.warn("[LogAPI] LOG_API_KEY trống — request tới voicebot-log-api.php sẽ không có Authorization, có thể bị 401 nếu server đã bật auth.");
+    _warnedNoKey = true;
+  }
 
   const url = LOG_API_BASE + path;
   const controller = new AbortController();
@@ -52,6 +61,9 @@ async function callApi(path, { method = "GET", body = null } = {}) {
 
   try {
     const opts = { method, signal: controller.signal, headers: { Accept: "application/json" } };
+    if (LOG_API_KEY) {
+      opts.headers["Authorization"] = `Bearer ${LOG_API_KEY}`;
+    }
     if (body) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);

@@ -25,6 +25,14 @@ import { recordApiCall } from "./api-trace.js";
 // Base URL của api.php. Đặt trong .env: TONGDAI_API_BASE
 const API_BASE = (process.env.TONGDAI_API_BASE || "http://127.0.0.1:7700/api.php").replace(/\/$/, "");
 const API_TIMEOUT_MS = parseInt(process.env.TONGDAI_API_TIMEOUT_MS || "15000", 10);
+// API key gửi qua header Authorization: Bearer <key> — khớp
+// config.json["auth"]["api"]["api_key"] bên cntaapi1 (xem
+// docs/api_key/plan_xac_thuc_api_key_20260812.md). Trống → không gửi header
+// (api.php sẽ tự 401 nếu phía server đã cấu hình api_key).
+const API_KEY = process.env.TONGDAI_API_KEY || "";
+if (!API_KEY) {
+  logger?.warn?.("[API] TONGDAI_API_KEY trống — request tới api.php sẽ không có Authorization, có thể bị 401 nếu server đã bật auth.");
+}
 
 // ─── Trace helpers ───────────────────────────────────────────────────────────
 
@@ -68,7 +76,7 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
   // Trace request/response — ghi vào context của tool call hiện tại (api-trace.js).
-  // KHÔNG ghi headers (đề phòng sau này có Authorization).
+  // KHÔNG ghi headers vào trace (tránh lộ API key trong log/trace).
   const _t0 = Date.now();
   const _trace = {
     time: _traceNow(),
@@ -84,6 +92,9 @@ async function callApi(path, { method = "GET", query = null, body = null } = {})
 
   try {
     const opts = { method, signal: controller.signal, headers: { Accept: "application/json" } };
+    if (API_KEY) {
+      opts.headers["Authorization"] = `Bearer ${API_KEY}`;
+    }
     if (body) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
