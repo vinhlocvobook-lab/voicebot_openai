@@ -77,6 +77,7 @@ Giải thích CÁCH TÍNH tiền nước, biểu giá, bậc thang: NGOÀI phạ
 
 # Thu thập mã danh bộ
 - Mã danh bộ (11 chữ số) là định danh CHÍNH XÁC CAO — nghe sai một chữ số có thể tra nhầm thông tin của khách hàng khác. Vì vậy toàn bộ việc thu thập, xác minh, và đọc lại xác nhận mã danh bộ do HỆ THỐNG (code) điều phối, KHÔNG phải Trợ lý tự quyết định.
+- NGOẠI LỆ DUY NHẤT được chủ động đọc số: nếu phần "Thông tin từ hệ thống" ở đầu ngữ cảnh cuộc gọi đã có sẵn mã danh bộ (tra theo SĐT hoặc lịch sử cuộc gọi trước) — TRƯỚC lần tra cứu đầu tiên trong cuộc gọi, chủ động đọc ĐÚNG NGUYÊN VĂN phần "đọc: ..." và hỏi khách xác nhận đúng/sai, KHÔNG hỏi khách tự đọc mã từ đầu, KHÔNG dùng câu "cho em xin mã danh bộ". Chỉ khi KHÔNG có mã nào trong ngữ cảnh mới áp dụng các quy tắc thu thập số bên dưới.
 - Lần ĐẦU TIÊN hỏi số danh bộ (khách chưa đọc gì): luôn nói rõ "gồm 11 chữ số" và mời khách đọc LIỀN MỘT MẠCH, đừng ngừng giữa chừng (vd "Dạ, Quý Khách cho em xin mã danh bộ gồm 11 chữ số, đọc liền một mạch giúp em ạ"). [fix 04/08/2026] Log thật cho thấy khách đọc liên tục một mạch có tỉ lệ hệ thống chốt đúng số ngay lần đầu cao hơn hẳn so với đọc ngắt quãng nhiều lượt — đọc ngắt quãng còn dễ khiến hệ thống phải mời đọc lại nhiều vòng.
 - Khi khách đang đọc số: KHÔNG tự đếm, không tự chuẩn hoá, không tự đoán số còn thiếu, không tự đọc lại số cho khách nghe trước khi hệ thống xác nhận, không tự nhắc "còn thiếu mấy số" hay "đọc tiếp từ đâu". Hệ thống sẽ tự phát đúng câu cần nói ở từng bước (đang nghe / đủ số đang xác minh / đọc lại xác nhận / mời đọc lại / mời bấm phím) — làm đúng theo nội dung hệ thống đưa ra, không tự thêm bớt.
 - Trường "ma_danh_bo" trong các tool tra cứu là bắt buộc phải điền theo schema, nhưng CHỈ điền đúng những chữ số Trợ lý thực sự vừa nghe được ở lượt gần nhất. TUYỆT ĐỐI không bịa số khi chưa nghe được gì — số bịa dù bị hệ thống lọc bỏ khi tra cứu vẫn có thể khiến Trợ lý lỡ đọc nhầm ra loa cho khách nghe.
@@ -136,7 +137,7 @@ export const TOOLS = [
     description: `
     Mục đích :
       - Tra cứu tiền nước, trạng thái thanh toán (đã đóng hay chưa, ngày thanh toán), và sản lượng nước sử dụng của khách hàng — CẢ BA thông tin có trong MỘT lần gọi tool này. Khách hỏi bất kỳ thông tin nào trong 3 thứ trên đều gọi tool này, rồi đọc đúng phần khách hỏi (không cần đọc hết cả 3 nếu khách chỉ hỏi 1 thứ, nhưng không cần gọi lại tool nếu khách hỏi tiếp 1 trong 2 thứ còn lại — dữ liệu đã có sẵn trong kết quả).
-    Lời thoại để hỏi số danh bộ khi chưa có thông tin : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra ạ"`,
+    Lời thoại để hỏi số danh bộ CHỈ dùng khi ngữ cảnh cuộc gọi thực sự CHƯA có mã danh bộ nào (không có phần "Thông tin từ hệ thống" gợi ý danh bộ) : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra ạ". Nếu ngữ cảnh ĐÃ có mã (tra theo SĐT hoặc lịch sử), đọc lại xin xác nhận theo mục "Thu thập mã danh bộ" — KHÔNG dùng câu này.`,
     parameters: {
       type: "object",
       properties: {

@@ -148,7 +148,7 @@ Tìm thấy 1 hợp đồng liên kết với số điện thoại này:
 - Khi xác nhận, đọc ĐÚNG NGUYÊN VĂN: ${spoken}
 
 QUAN TRỌNG:
-- Xác nhận danh bộ đúng 1 LẦN DUY NHẤT (trước tra cứu đầu tiên trong cuộc gọi).
+- Ngay khi khách vừa nêu nhu cầu tra cứu ĐẦU TIÊN trong cuộc gọi (tiền nước/sản lượng/thanh toán/cúp nước), CHỦ ĐỘNG đọc số trên hỏi xác nhận trước — KHÔNG hỏi khách "cho em xin mã danh bộ", chỉ hỏi ĐÚNG 1 LẦN (trước tra cứu đầu tiên).
 - Sau khi khách đã xác nhận → dùng danh bộ ${db} cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.
 - Chỉ hỏi lại nếu khách chủ động báo sai hoặc muốn dùng danh bộ khác.`;
   }
@@ -187,7 +187,7 @@ Số điện thoại này đã dùng mã danh bộ sau ở (các) cuộc gọi T
 - Khi xác nhận, đọc ĐÚNG NGUYÊN VĂN: ${spoken}
 
 QUAN TRỌNG:
-- Xác nhận danh bộ đúng 1 LẦN DUY NHẤT (trước tra cứu đầu tiên trong cuộc gọi).
+- Ngay khi khách vừa nêu nhu cầu tra cứu ĐẦU TIÊN trong cuộc gọi (tiền nước/sản lượng/thanh toán/cúp nước), CHỦ ĐỘNG đọc số trên hỏi xác nhận trước — KHÔNG hỏi khách "cho em xin mã danh bộ", chỉ hỏi ĐÚNG 1 LẦN (trước tra cứu đầu tiên).
 - Sau khi khách đã xác nhận → dùng danh bộ ${db} cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.
 - Chỉ hỏi lại nếu khách chủ động báo sai hoặc muốn dùng danh bộ khác.`;
   }
@@ -259,13 +259,14 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
   // thể đã đổi/khoá từ lần gọi trước — khác hẳn lý do "nghe sai" mà knownDanhBo
   // vốn được tin ngay để né).
   let historyDanhBo = [];
+  console.log("1./: ", { tel, knownDanhBo, customerContext });
   if (tel && tel !== "Unknown" && knownDanhBo.length === 0) {
     try {
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error("timeout")), 2000)
       );
       const candidates = await Promise.race([getDanhBoHistory(tel, { limit: 1, days: 180 }), timeoutPromise]);
-      console.log("candidates===: ", candidates);
+      console.log("[getDanhBoHistory]: candidates===: ", candidates);
       const list = Array.isArray(candidates) ? candidates : [];
       customerContext = buildCustomerContextFromHistory(list);
       historyDanhBo = list
@@ -278,7 +279,7 @@ async function _handleIncomingCall(callId, fromHeader, tel, asteriskData = null)
       log.warn(`[Call][${callId}] Tra lịch sử danh bộ theo SĐT thất bại (${err.message}), bỏ qua.`);
     }
   }
-
+  console.log("2./ historyDanhBo===: ", { tel, knownDanhBo, customerContext });
   // Accept cuộc gọi – instructions đã bao gồm customerContext (nếu có)
   const acceptParams = await acceptCall(callId, customerContext);
 

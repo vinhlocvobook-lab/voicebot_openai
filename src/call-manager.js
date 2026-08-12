@@ -43,7 +43,7 @@ export async function acceptCall(callId, customerContext = "") {
     ? `${SYSTEM_PROMPT}\n\n${customerContext}`
     : `${SYSTEM_PROMPT}\n\n${context_chuacosodanhbo}`;
 
-  log.info("[acceptCall]: instructions= ", instructions);
+  // log.info("[acceptCall]: instructions= ", instructions);
   const body = {
     type: "realtime",
     // [migrate 30/07/2026] gpt-realtime-1.5 → gpt-realtime-2.1-mini (xem
