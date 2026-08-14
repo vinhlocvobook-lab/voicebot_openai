@@ -184,7 +184,10 @@ export const TOOLS = [
   {
     type: "function",
     name: "get_outages",
-    description: "Tra cứu thông tin gián đoạn cung cấp nước/lịch cúp nước bảo trì hiện tại.",
+    description: `
+    Mục đích :
+      - Tra cứu thông tin gián đoạn cung cấp nước/lịch cúp nước bảo trì hiện tại theo số danh bộ.
+    Lời thoại để hỏi số danh bộ CHỈ dùng khi ngữ cảnh cuộc gọi thực sự CHƯA có mã danh bộ nào (không có phần "Thông tin từ hệ thống" gợi ý danh bộ) : "Dạ, Quý Khách vui lòng cho em xin số danh bộ để kiểm tra ạ". Nếu ngữ cảnh ĐÃ có mã (tra theo SĐT hoặc lịch sử), đọc lại xin xác nhận theo mục "Thu thập mã danh bộ" — KHÔNG dùng câu này.`,
     parameters: {
       type: "object",
       properties: {

@@ -16,6 +16,11 @@
  *
  * Bật/tắt: cần LOG_API_BASE trong .env. Trống thì bỏ qua ghi log (bot vẫn chạy
  * bình thường, chỉ lưu file JSON như cũ) — khớp hành vi DB_HOST trống của db.js.
+ *
+ * [thêm 13/08/2026] finalizeCallLog() nhận thêm tham số thứ 3 (relativeLogPath,
+ * optional) để server (voicebot-log-api.php) tự ghi thêm 1 bản JSON log trên
+ * MÁY CHỨA API — xem VOICEBOT_LOG_FOLDER_ON_API_SERVER bên dưới. Tham số này
+ * là optional nên không phá chữ ký cũ ở các nơi gọi chưa cập nhật.
  */
 
 // [fix 12/08/2026] Dùng fetch của CHÍNH gói "undici" thay vì fetch built-in
@@ -28,6 +33,15 @@ import { log as logger } from "./logger.js";
 const LOG_API_BASE = (process.env.LOG_API_BASE || "").replace(/\/$/, "");
 const LOG_API_TIMEOUT_MS = parseInt(process.env.LOG_API_TIMEOUT_MS || "15000", 10);
 const ENABLED = !!LOG_API_BASE;
+
+// [thêm 13/08/2026] Thư mục gốc trên MÁY CHỨA API (cntaapi1), nơi
+// voicebot-log-api.php sẽ ghi thêm 1 bản JSON log — KHÁC máy Node đang chạy
+// conversation-logger.js. Gửi lên trong body PUT /calls/{callId} kèm đường
+// dẫn tương đối; server ghi file xong thì DÙNG đường dẫn TRÊN MÁY API cho cột
+// json_log_filepath (thay cho đường dẫn Node cũ) — xem finalizeCallLog() bên
+// dưới và ghi chú "LƯU BẢN LOG TRÊN MÁY API" ở đầu voicebot-log-api.php.
+// Để trống → bỏ qua bước này, server dùng lại đường dẫn Node gửi lên như cũ.
+const VOICEBOT_LOG_FOLDER_ON_API_SERVER = process.env.VOICEBOT_LOG_FOLDER_ON_API_SERVER || "";
 // API key gửi qua header Authorization: Bearer <key> — khớp
 // config.json["auth"]["voicebot_log"]["api_key"] bên cntaapi1 (xem
 // docs/api_key/plan_xac_thuc_api_key_20260812.md).
@@ -167,16 +181,28 @@ export async function insertCallStub(p = {}) {
  * file. Server (voicebot-log-api.php) tự lo phần dedupe prompt_logs, tra
  * llm_price hiện hành, và ghi từng dòng voicebot_toolcall.
  *
- * @param {object} document      - object log đầy đủ (meta/stats/token_usage/cost_usd/summary/...)
- * @param {string} [jsonFilePath] - đường dẫn file JSON gốc
+ * @param {object} document        - object log đầy đủ (meta/stats/token_usage/cost_usd/summary/...)
+ * @param {string} [jsonFilePath]   - đường dẫn file JSON gốc trên máy Node (dùng làm fallback
+ *                                    nếu server không ghi được bản trên máy API)
+ * @param {string} [relativeLogPath] - đường dẫn tương đối yyyy/mm/dd/{tel}_{callId}.json
+ *                                    (khớp cấu trúc file cục bộ) — cần để server tự ghi
+ *                                    thêm 1 bản JSON log trên máy API, xem
+ *                                    VOICEBOT_LOG_FOLDER_ON_API_SERVER ở trên.
  */
-export async function finalizeCallLog(document, jsonFilePath = null) {
+export async function finalizeCallLog(document, jsonFilePath = null, relativeLogPath = null) {
   const callId = document?.meta?.callId;
   if (!callId) return;
   try {
+    const body = { ...document, json_log_filepath: jsonFilePath };
+    // Có đủ root folder (env) + relativeLogPath (nơi gọi truyền vào) thì gửi
+    // kèm — server sẽ tự ghi bản trên máy API và ưu tiên dùng đường dẫn đó.
+    if (VOICEBOT_LOG_FOLDER_ON_API_SERVER && relativeLogPath) {
+      body.log_file_root_folder = VOICEBOT_LOG_FOLDER_ON_API_SERVER;
+      body.log_file_relative_path = relativeLogPath;
+    }
     const r = await callApi(`/calls/${encodeURIComponent(callId)}`, {
       method: "PUT",
-      body: { ...document, json_log_filepath: jsonFilePath },
+      body,
     });
     if (r.success) {
       const d = r.data || {};

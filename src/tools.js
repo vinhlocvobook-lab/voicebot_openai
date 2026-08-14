@@ -1866,7 +1866,7 @@ async function handleTransferToAgent({ ly_do }) {
   }
   //  data: { available_agents: 0, queue: 'GroupDay5' }
   let { available_agents, queue } = availableAgents?.data || {};
-  available_agents = 0;
+  // available_agents = 1;
   if (available_agents > 0) {
     return JSON.stringify({
       success: true,

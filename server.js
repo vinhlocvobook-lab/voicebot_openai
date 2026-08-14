@@ -148,7 +148,7 @@ Tìm thấy 1 hợp đồng liên kết với số điện thoại này:
 - Khi xác nhận, đọc ĐÚNG NGUYÊN VĂN: ${spoken}
 
 QUAN TRỌNG:
-- Ngay khi khách vừa nêu nhu cầu tra cứu ĐẦU TIÊN trong cuộc gọi (tiền nước/sản lượng/thanh toán/cúp nước), CHỦ ĐỘNG đọc số trên hỏi xác nhận trước — KHÔNG hỏi khách "cho em xin mã danh bộ", chỉ hỏi ĐÚNG 1 LẦN (trước tra cứu đầu tiên).
+- Ngay khi khách vừa nêu nhu cầu tra cứu ĐẦU TIÊN trong cuộc gọi (tiền nước/sản lượng/thanh toán/cúp nước), CHỦ ĐỘNG gọi NGAY tool tra cứu tương ứng (get_bill/compare_usage/get_outages/create_ticket...) với danh bộ ${db} — tool sẽ TỰ đọc số và hỏi khách xác nhận, Trợ lý không cần tự soạn câu hỏi. TUYỆT ĐỐI KHÔNG tự đọc số ${db} trong câu nói của Trợ lý TRƯỚC KHI gọi tool — nếu tự đọc trước, hệ thống sẽ không ghi nhận được là khách vừa được hỏi, khiến bước xác nhận ngay sau đó bị lỗi (khách nói "đúng rồi" nhưng không được tính). KHÔNG hỏi khách "cho em xin mã danh bộ" — chỉ cần gọi tool trên, không cần hỏi gì thêm.
 - Sau khi khách đã xác nhận → dùng danh bộ ${db} cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.
 - Chỉ hỏi lại nếu khách chủ động báo sai hoặc muốn dùng danh bộ khác.`;
   }
@@ -187,7 +187,7 @@ Số điện thoại này đã dùng mã danh bộ sau ở (các) cuộc gọi T
 - Khi xác nhận, đọc ĐÚNG NGUYÊN VĂN: ${spoken}
 
 QUAN TRỌNG:
-- Ngay khi khách vừa nêu nhu cầu tra cứu ĐẦU TIÊN trong cuộc gọi (tiền nước/sản lượng/thanh toán/cúp nước), CHỦ ĐỘNG đọc số trên hỏi xác nhận trước — KHÔNG hỏi khách "cho em xin mã danh bộ", chỉ hỏi ĐÚNG 1 LẦN (trước tra cứu đầu tiên).
+- Ngay khi khách vừa nêu nhu cầu tra cứu ĐẦU TIÊN trong cuộc gọi (tiền nước/sản lượng/thanh toán/cúp nước), CHỦ ĐỘNG gọi NGAY tool tra cứu tương ứng (get_bill/compare_usage/get_outages/create_ticket...) với danh bộ ${db} — tool sẽ TỰ đọc số và hỏi khách xác nhận, Trợ lý không cần tự soạn câu hỏi. TUYỆT ĐỐI KHÔNG tự đọc số ${db} trong câu nói của Trợ lý TRƯỚC KHI gọi tool — nếu tự đọc trước, hệ thống sẽ không ghi nhận được là khách vừa được hỏi, khiến bước xác nhận ngay sau đó bị lỗi (khách nói "đúng rồi" nhưng không được tính). KHÔNG hỏi khách "cho em xin mã danh bộ" — chỉ cần gọi tool trên, không cần hỏi gì thêm.
 - Sau khi khách đã xác nhận → dùng danh bộ ${db} cho TẤT CẢ tra cứu tiếp theo, KHÔNG hỏi lại.
 - Chỉ hỏi lại nếu khách chủ động báo sai hoặc muốn dùng danh bộ khác.`;
   }

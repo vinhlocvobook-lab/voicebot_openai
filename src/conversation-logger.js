@@ -430,7 +430,8 @@ export class ConversationLogger {
       },
     };
 
-    const filePath = _buildFilePath(this.startTime, this.tel, this.callId);
+    const relativeLogPath = _buildRelativeLogPath(this.startTime, this.tel, this.callId);
+    const filePath = path.join(SUMMARY_ROOT, relativeLogPath);
     _ensureDir(path.dirname(filePath));
 
     fs.writeFileSync(filePath, JSON.stringify(document, null, 2), "utf-8");
@@ -438,7 +439,10 @@ export class ConversationLogger {
 
     // Pha 2 — upsert đầy đủ vào DB (single writer = bot). File JSON vẫn là nguồn đầy đủ.
     // Lỗi DB không làm hỏng việc lưu file (hàm tự nuốt lỗi).
-    await finalizeCallLog(document, filePath);
+    // [thêm 13/08/2026] relativeLogPath cho voicebot-log-api.php tự ghi thêm 1
+    // bản trên máy API nếu VOICEBOT_LOG_FOLDER_ON_API_SERVER đã cấu hình — xem
+    // log-api.js.
+    await finalizeCallLog(document, filePath, relativeLogPath);
 
     return filePath;
   }
@@ -550,10 +554,13 @@ function _buildConversation(transcript, toolCalls) {
 }
 
 /**
- * Tạo đường dẫn file:
- *   conversation_summary/yyyy/mm/dd/{tel}_{callId_short}.json
+ * Tạo đường dẫn TƯƠNG ĐỐI: yyyy/mm/dd/{tel}_{callId_short}.json — dùng để nối
+ * với SUMMARY_ROOT (file cục bộ trên máy Node) VÀ gửi cho voicebot-log-api.php
+ * làm log_file_relative_path (nối với VOICEBOT_LOG_FOLDER_ON_API_SERVER để ghi
+ * bản trên máy API) — [thêm 13/08/2026], xem finalizeCallLog() trong log-api.js.
+ * Tách riêng khỏi _buildFilePath cũ để 2 máy dùng CHUNG một cấu trúc thư mục.
  */
-function _buildFilePath(date, tel, callId) {
+function _buildRelativeLogPath(date, tel, callId) {
   const yyyy = date.getFullYear().toString();
   const mm   = String(date.getMonth() + 1).padStart(2, "0");
   const dd   = String(date.getDate()).padStart(2, "0");
@@ -565,7 +572,7 @@ function _buildFilePath(date, tel, callId) {
   const safeTel = String(tel).replace(/[^0-9+]/g, "") || "unknown";
 
   const filename = `${safeTel}_${shortId}.json`;
-  return path.join(SUMMARY_ROOT, yyyy, mm, dd, filename);
+  return path.join(yyyy, mm, dd, filename);
 }
 
 function _ensureDir(dir) {
