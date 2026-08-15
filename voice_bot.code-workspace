@@ -19,14 +19,7 @@
 			"path": "../../../../study/claudecode/speech_to_text/speech to text"
 		},
 		{
-			"name": "SSH FS - cnhue_main",
-			"uri": "ssh://cnhue_main/"
-		},
-		{
-			"name": "SSH FS - cnnamdinh",
-			"uri": "ssh://cnnamdinh/"
-		},
-		{
+			"name": "cntaapi1",
 			"path": "../../voice_chat_bot/cntaapi1"
 		},
 		{

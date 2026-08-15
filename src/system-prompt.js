@@ -372,7 +372,12 @@ export const TOOLS = [
       "(qua instructions của đúng lượt nói đó, thường có chữ 'Gọi NGAY tool confirm_danh_bo'). " +
       "KHÔNG tự ý gọi tool này để 'kiểm tra lại cho chắc' trước khi tra cứu dữ liệu — nếu " +
       "mã danh bộ đã xác nhận thì cứ dùng thẳng tool tra cứu (get_bill/...), không cần gọi " +
-      "confirm_danh_bo trước. Hệ thống sẽ tự nhắc lại khi cần.",
+      "confirm_danh_bo trước. Hệ thống sẽ tự nhắc lại khi cần. " +
+      "Ví dụ SAI (đã xảy ra thật, tránh lặp lại): khách vừa nói 'đúng rồi' xác nhận mã danh bộ " +
+      "→ Trợ lý nói 'Để em xác nhận lại thông tin cho chắc chắn một chút rồi báo lại kết quả " +
+      "nhé' RỒI mới gọi confirm_danh_bo — SAI, thừa một bước và thừa câu dẫn; khách ĐÃ xác nhận " +
+      "rồi thì phải gọi THẲNG tool tra cứu khách cần (get_bill/compare_usage/get_outages/...) " +
+      "NGAY, không nói gì trước, không gọi confirm_danh_bo.",
     parameters: {
       type: "object",
       properties: {},

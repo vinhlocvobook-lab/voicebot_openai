@@ -50,7 +50,7 @@ function extractAsteriskHeaders(payload) {
     const kq = {
       uniqueid: headerMap['Uniqueid'] || headerMap['X-Uniqueid'] || null,
       recordPath: headerMap['RecordPath'] || headerMap['X-RecordPath'] || null,
-      phoneNumber: '0967777637',// tel for test
+      phoneNumber: '0967777638',// tel for test
       phoneNumber_real: phoneNumber // <-- Đã bổ sung số điện thoại
     };
     console.log("KQ extractAsteriskHeaders", kq);
