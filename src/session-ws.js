@@ -1204,6 +1204,10 @@ export function openSessionWebSocket(callId, callOps) {
         // [fix 18/07/2026 v2] Response HOÀN TẤT (không bị cancel/interrupt) →
         // lượt khách gần nhất coi như đã được trả lời. Response dở dang
         // (cancelled/incomplete) KHÔNG tính — câu hỏi vẫn chưa được đáp.
+        console.log("...response.done....:event.response.status = ", { status: event?.response?.status });
+        //completed : mô hình sinh xong văn bản, không bị gián đoạn
+        //cancelled : Khách ngắt nói hoặc code gởi lệnh huỷ
+        //incomplete : bị giới hạn token, bị kiểm duyệt, audio stream bị lỗi
         if (event?.response?.status === "completed") _unansweredRealTurn = false;
         // [debug 08/07/2026] Response không hoàn tất (bị khách ngắt lời / hủy / lỗi)
         // → ghi lại để phân tích các câu AI nói dở (vd "Dạ, cảm ơn Qu...")
